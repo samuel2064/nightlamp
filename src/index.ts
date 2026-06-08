@@ -1,53 +1,27 @@
 import * as http from 'http';
+import * as cron from 'node-cron';
+import { Database } from 'sql.js';
+import * as dotenv from 'dotenv';
+import { createDatabase, saveDatabase } from './db';
+import { SentryConfig, SentryIssue, UptimeRobotConfig, UptimeRobotMonitor } from './connectors';
+import { runSentryCheck, runUptimeRobotCheck } from './engine';
+import { createStripeClient } from './billing';
+import { startApiServer } from './api';
 
 process.on('uncaughtException', (err) => {
-  console.error('[Nightlamp] UNCAUGHT EXCEPTION:', err.message, err.stack);
+  console.error('[Nightlamp] UNCAUGHT EXCEPTION:', err);
   process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
   console.error('[Nightlamp] UNHANDLED REJECTION:', reason);
 });
 
-async function main(): Promise<void> {
-  try {
-    console.log('[Nightlamp] Node version:', process.version);
-    console.log('[Nightlamp] CWD:', process.cwd());
-    console.log('[Nightlamp] Env:', JSON.stringify({ NODE_ENV: process.env.NODE_ENV, API_PORT: process.env.API_PORT }));
-
-    const { Database } = await import('sql.js');
-    const { default: dotenv } = await import('dotenv');
-    const { createDatabase, saveDatabase } = await import('./db');
-    const { createStripeClient } = await import('./billing');
-    const { startApiServer } = await import('./api');
-
-    dotenv.config();
-
-    const DB_PATH = process.env.DB_PATH || './data/nightlamp.db';
-    const PLAYBOOK_DIR = process.env.PLAYBOOK_DIR || './playbook';
-
-    console.log('[Nightlamp] Initializing health check engine...');
-    const db = await createDatabase(DB_PATH);
-    console.log('[Nightlamp] Database created');
-
-    const apiPort = parseInt(process.env.API_PORT || '3001', 10);
-    startApiServer(db, { port: apiPort });
-    console.log('[Nightlamp] API server started on port', apiPort);
-    console.log('[Nightlamp] Health check engine running. Press Ctrl+C to stop.');
-  } catch (err: any) {
-    console.error('[Nightlamp] Fatal startup error:', err.message, err.stack);
-    console.log('[Nightlamp] Starting fallback health server...');
-    http.createServer((q, r) => {
-      r.writeHead(200, { 'Content-Type': 'application/json' });
-      r.end(JSON.stringify({ status: 'ok', mode: 'fallback', error: err.message }));
-    }).listen(parseInt(process.env.API_PORT || '10000'));
-  }
-}
-
-main();
+dotenv.config();
 
 const POLL_INTERVAL_SEC = parseInt(process.env.POLL_INTERVAL_SEC || '60', 10);
 const DB_PATH = process.env.DB_PATH || './data/nightlamp.db';
 const PLAYBOOK_DIR = process.env.PLAYBOOK_DIR || './playbook';
+const API_PORT = parseInt(process.env.API_PORT || '3001', 10);
 
 let db: Database;
 let sentryIssueCache: SentryIssue[] = [];
@@ -73,20 +47,16 @@ async function init(): Promise<void> {
       console.log(`[Nightlamp] Running Sentry check (every ${POLL_INTERVAL_SEC}s)...`);
       try {
         const result = await runSentryCheck(db, sentryConfig, sentryIssueCache, PLAYBOOK_DIR);
-
         sentryIssueCache = result.issues;
-
         console.log(`[Nightlamp] Sentry check complete: ${result.status} - ${result.summary}`);
         if (result.failureEvents > 0) {
           console.log(`[Nightlamp] ${result.failureEvents} failure(s) detected, playbook: ${result.playbookEntries.join(', ')}`);
         }
-
         saveDatabase(db, DB_PATH);
       } catch (err: any) {
         console.error(`[Nightlamp] Sentry check failed: ${err.message}`);
       }
     });
-
     console.log(`[Nightlamp] Sentry monitor scheduled: every ${POLL_INTERVAL_SEC}s`);
   } else {
     console.log('[Nightlamp] Sentry not configured (set SENTRY_AUTH_TOKEN, SENTRY_ORG_SLUG, SENTRY_PROJECT_SLUG)');
@@ -104,20 +74,16 @@ async function init(): Promise<void> {
       console.log(`[Nightlamp] Running UptimeRobot check (every ${POLL_INTERVAL_SEC}s)...`);
       try {
         const result = await runUptimeRobotCheck(db, uptimeRobotConfig, uptimeRobotMonitorCache, PLAYBOOK_DIR);
-
         uptimeRobotMonitorCache = result.monitors;
-
         console.log(`[Nightlamp] UptimeRobot check complete: ${result.status} - ${result.summary}`);
         if (result.failureEvents > 0) {
           console.log(`[Nightlamp] ${result.failureEvents} failure(s) detected, playbook: ${result.playbookEntries.join(', ')}`);
         }
-
         saveDatabase(db, DB_PATH);
       } catch (err: any) {
         console.error(`[Nightlamp] UptimeRobot check failed: ${err.message}`);
       }
     });
-
     console.log(`[Nightlamp] UptimeRobot monitor scheduled: every ${POLL_INTERVAL_SEC}s`);
   } else {
     console.log('[Nightlamp] UptimeRobot not configured (set UPTIMEROBOT_API_KEY)');
@@ -125,8 +91,7 @@ async function init(): Promise<void> {
 
   const stripeKey = process.env.STRIPE_SECRET_KEY;
   const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-  const apiPort = parseInt(process.env.API_PORT || '3001', 10);
-  const baseUrl = process.env.BASE_URL || `http://localhost:${apiPort}`;
+  const baseUrl = process.env.BASE_URL || `http://localhost:${API_PORT}`;
 
   if (stripeKey) {
     const stripeClient = createStripeClient({
@@ -137,16 +102,15 @@ async function init(): Promise<void> {
     });
 
     startApiServer(db, {
-      port: apiPort,
+      port: API_PORT,
       stripeClient,
       stripeWebhookSecret,
       baseUrl,
     });
-
-    console.log(`[Nightlamp] Billing API configured (port ${apiPort})`);
+    console.log(`[Nightlamp] Billing API configured (port ${API_PORT})`);
   } else {
-    startApiServer(db, { port: apiPort });
-    console.log(`[Nightlamp] API server started without billing (port ${apiPort})`);
+    startApiServer(db, { port: API_PORT });
+    console.log(`[Nightlamp] API server started without billing (port ${API_PORT})`);
     console.log('[Nightlamp] Set STRIPE_SECRET_KEY to enable subscription billing');
   }
 
@@ -154,8 +118,12 @@ async function init(): Promise<void> {
 }
 
 init().catch((err) => {
-  console.error('[Nightlamp] Fatal initialization error:', err);
-  process.exit(1);
+  console.error('[Nightlamp] Fatal initialization error:', err.message, err.stack);
+  console.log('[Nightlamp] Starting fallback health server...');
+  http.createServer((q, r) => {
+    r.writeHead(200, { 'Content-Type': 'application/json' });
+    r.end(JSON.stringify({ status: 'ok', mode: 'fallback', error: err.message }));
+  }).listen(API_PORT);
 });
 
 process.on('SIGINT', () => {
