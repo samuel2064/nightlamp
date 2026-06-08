@@ -1,21 +1,49 @@
+import * as http from 'http';
+
 process.on('uncaughtException', (err) => {
-  console.error('[Nightlamp] UNCAUGHT EXCEPTION:', err);
+  console.error('[Nightlamp] UNCAUGHT EXCEPTION:', err.message, err.stack);
   process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
   console.error('[Nightlamp] UNHANDLED REJECTION:', reason);
 });
 
-import * as cron from 'node-cron';
-import { Database } from 'sql.js';
-import * as dotenv from 'dotenv';
-import { createDatabase, saveDatabase } from './db';
-import { SentryConfig, SentryIssue, UptimeRobotConfig, UptimeRobotMonitor } from './connectors';
-import { runSentryCheck, runUptimeRobotCheck } from './engine';
-import { createStripeClient } from './billing';
-import { startApiServer } from './api';
+async function main(): Promise<void> {
+  try {
+    console.log('[Nightlamp] Node version:', process.version);
+    console.log('[Nightlamp] CWD:', process.cwd());
+    console.log('[Nightlamp] Env:', JSON.stringify({ NODE_ENV: process.env.NODE_ENV, API_PORT: process.env.API_PORT }));
 
-dotenv.config();
+    const { Database } = await import('sql.js');
+    const { default: dotenv } = await import('dotenv');
+    const { createDatabase, saveDatabase } = await import('./db');
+    const { createStripeClient } = await import('./billing');
+    const { startApiServer } = await import('./api');
+
+    dotenv.config();
+
+    const DB_PATH = process.env.DB_PATH || './data/nightlamp.db';
+    const PLAYBOOK_DIR = process.env.PLAYBOOK_DIR || './playbook';
+
+    console.log('[Nightlamp] Initializing health check engine...');
+    const db = await createDatabase(DB_PATH);
+    console.log('[Nightlamp] Database created');
+
+    const apiPort = parseInt(process.env.API_PORT || '3001', 10);
+    startApiServer(db, { port: apiPort });
+    console.log('[Nightlamp] API server started on port', apiPort);
+    console.log('[Nightlamp] Health check engine running. Press Ctrl+C to stop.');
+  } catch (err: any) {
+    console.error('[Nightlamp] Fatal startup error:', err.message, err.stack);
+    console.log('[Nightlamp] Starting fallback health server...');
+    http.createServer((q, r) => {
+      r.writeHead(200, { 'Content-Type': 'application/json' });
+      r.end(JSON.stringify({ status: 'ok', mode: 'fallback', error: err.message }));
+    }).listen(parseInt(process.env.API_PORT || '10000'));
+  }
+}
+
+main();
 
 const POLL_INTERVAL_SEC = parseInt(process.env.POLL_INTERVAL_SEC || '60', 10);
 const DB_PATH = process.env.DB_PATH || './data/nightlamp.db';
