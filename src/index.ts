@@ -7,6 +7,7 @@ import { SentryConfig, SentryIssue, UptimeRobotConfig, UptimeRobotMonitor } from
 import { runSentryCheck, runUptimeRobotCheck } from './engine';
 import { createStripeClient } from './billing';
 import { startApiServer } from './api';
+import { initEngine, setDb } from './remediation/engine';
 
 process.on('uncaughtException', (err) => {
   console.error('[Nightlamp] UNCAUGHT EXCEPTION:', err);
@@ -30,6 +31,8 @@ let uptimeRobotMonitorCache: UptimeRobotMonitor[] = [];
 async function init(): Promise<void> {
   console.log('[Nightlamp] Initializing health check engine...');
   db = await createDatabase(DB_PATH);
+  setDb(db);
+  initEngine();
 
   const sentryToken = process.env.SENTRY_AUTH_TOKEN;
   const sentryOrg = process.env.SENTRY_ORG_SLUG;

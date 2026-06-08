@@ -18,7 +18,7 @@ describe('Database', () => {
   it('should create all tables', () => {
     const tables = db.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
     const names = tables[0].values.map((r: any) => r[0]).sort();
-    assert.deepStrictEqual(names, ['check_results', 'checks', 'customers', 'dependencies', 'dependency_updates', 'failure_events', 'perf_diagnoses', 'perf_metrics', 'perf_regressions', 'perf_runs', 'playbook_entries', 'remediation_log', 'subscriptions', 'usage_records']);
+    assert.deepStrictEqual(names, ['check_results', 'checks', 'customers', 'dependencies', 'dependency_updates', 'failure_events', 'perf_diagnoses', 'perf_metrics', 'perf_regressions', 'perf_runs', 'playbook_entries', 'remediation_actions', 'remediation_log', 'remediation_policies', 'remediation_runs', 'subscriptions', 'usage_records']);
   });
 
   it('should insert and query a check', () => {
