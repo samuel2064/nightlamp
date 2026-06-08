@@ -1,3 +1,11 @@
+process.on('uncaughtException', (err) => {
+  console.error('[Nightlamp] UNCAUGHT EXCEPTION:', err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[Nightlamp] UNHANDLED REJECTION:', reason);
+});
+
 import * as cron from 'node-cron';
 import { Database } from 'sql.js';
 import * as dotenv from 'dotenv';
