@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nightlamp Billing Portal Mockup</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --color-primary-50: #eef2ff;
+    --color-primary-500: #6366f1;
+    --color-primary-600: #4f46e5;
+    --color-surface-0: #ffffff;
+    --color-surface-50: #f8fafc;
+    --color-surface-100: #f1f5f9;
+    --color-surface-200: #e2e8f0;
+    --color-surface-700: #334155;
+    --color-surface-900: #0f172a;
+    --color-success: #22c55e;
+    --color-warning: #f59e0b;
+    --color-error: #ef4444;
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-full: 9999px;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+    --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1);
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', sans-serif; background: var(--color-surface-50); color: var(--color-surface-900); padding: var(--space-6); }
+  .app { max-width: 1000px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: var(--space-6); }
+  .card { background: var(--color-surface-0); border-radius: var(--radius-lg); padding: var(--space-6); border: 1px solid var(--color-surface-200); box-shadow: var(--shadow-sm); margin-bottom: var(--space-6); }
+  .card-title { font-size: 1.125rem; font-weight: 600; margin-bottom: var(--space-4); }
+  .current-plan { display: flex; justify-content: space-between; align-items: flex-start; }
+  .plan-info .plan-name { font-size: 1.25rem; font-weight: 700; }
+  .plan-info .plan-price { font-size: 1.5rem; font-weight: 700; color: var(--color-primary-500); margin-top: var(--space-1); }
+  .plan-info .plan-price span { font-size: 0.875rem; font-weight: 400; color: var(--color-surface-700); }
+  .plan-actions { display: flex; gap: var(--space-3); }
+  .btn { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); border-radius: var(--radius-md); font-size: 0.875rem; font-weight: 500; border: none; cursor: pointer; transition: all 150ms; }
+  .btn-primary { background: var(--color-primary-500); color: white; }
+  .btn-primary:hover { background: var(--color-primary-600); }
+  .btn-secondary { background: transparent; color: var(--color-primary-500); border: 1px solid var(--color-primary-500); }
+  .btn-ghost { background: transparent; color: var(--color-surface-700); border: 1px solid var(--color-surface-200); }
+  .meters { margin-top: var(--space-5); }
+  .meter-row { display: flex; align-items: center; gap: var(--space-4); margin-bottom: var(--space-3); }
+  .meter-row .label { width: 140px; font-size: 0.875rem; color: var(--color-surface-700); }
+  .meter-row .bar { flex: 1; height: 8px; background: var(--color-surface-200); border-radius: var(--radius-full); overflow: hidden; }
+  .meter-row .bar .fill { height: 100%; border-radius: var(--radius-full); }
+  .meter-row .count { font-size: 0.8125rem; color: var(--color-surface-700); width: 80px; text-align: right; }
+
+  .comparison { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: var(--space-3) var(--space-4); text-align: center; font-size: 0.875rem; border-bottom: 1px solid var(--color-surface-100); }
+  th { font-size: 0.75rem; font-weight: 600; color: var(--color-surface-700); text-transform: uppercase; letter-spacing: 0.05em; background: var(--color-surface-50); }
+  th:first-child, td:first-child { text-align: left; }
+  .popular-badge { display: inline-block; background: var(--color-primary-500); color: white; font-size: 0.65rem; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-full); margin-bottom: var(--space-1); }
+  .current-badge { display: inline-block; background: var(--color-surface-100); color: var(--color-surface-700); font-size: 0.65rem; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-full); margin-bottom: var(--space-1); }
+  .feature-check { color: var(--color-success); }
+  .feature-cross { color: var(--color-surface-300); }
+  .price-col { font-size: 1.125rem; font-weight: 700; margin-top: var(--space-1); }
+  .price-col span { font-size: 0.75rem; font-weight: 400; color: var(--color-surface-700); }
+
+  .payment-card { display: flex; align-items: center; justify-content: space-between; padding: var(--space-4); background: var(--color-surface-50); border-radius: var(--radius-md); border: 1px solid var(--color-surface-200); }
+  .payment-card .card-info { display: flex; align-items: center; gap: var(--space-3); }
+  .payment-card .card-info .icon { font-size: 1.5rem; }
+  .payment-card .actions { display: flex; gap: var(--space-2); }
+
+  .invoice-table td .badge { display: inline-flex; padding: 2px 8px; border-radius: var(--radius-full); font-size: 0.75rem; font-weight: 500; }
+  .badge-success { background: #f0fdf4; color: #16a34a; }
+  .badge-warning { background: #fffbeb; color: #d97706; }
+  .badge-error { background: #fef2f2; color: #dc2626; }
+  .badge-neutral { background: var(--color-surface-100); color: var(--color-surface-700); }
+  a { color: var(--color-primary-500); text-decoration: none; font-size: 0.8125rem; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>Billing & Subscription</h1>
+
+  <div class="card">
+    <div class="card-title">Current Plan</div>
+    <div class="current-plan">
+      <div class="plan-info">
+        <div class="plan-name">🛡️ Advanced Support</div>
+        <div class="plan-price">$299 <span>/ month</span></div>
+      </div>
+      <div class="plan-actions">
+        <button class="btn btn-primary">Change Plan</button>
+        <button class="btn btn-ghost">▼ Manage Billing</button>
+      </div>
+    </div>
+    <div class="meters">
+      <div class="meter-row">
+        <span class="label">Monitors</span>
+        <div class="bar"><div class="fill" style="width:75%;background:var(--color-primary-500);"></div></div>
+        <span class="count">15 / 20</span>
+      </div>
+      <div class="meter-row">
+        <span class="label">Reports / month</span>
+        <div class="bar"><div class="fill" style="width:40%;background:var(--color-success);"></div></div>
+        <span class="count">200 / 500</span>
+      </div>
+      <div class="meter-row">
+        <span class="label">Storage</span>
+        <div class="bar"><div class="fill" style="width:60%;background:var(--color-primary-500);"></div></div>
+        <span class="count">300 / 500 MB</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Compare Plans</div>
+    <div class="comparison">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th><div class="popular-badge">★ Popular</div><div>Basic Support</div><div class="price-col">$99 <span>/mo</span></div></th>
+            <th><div class="current-badge">Current</div><div>Advanced Support</div><div class="price-col">$299 <span>/mo</span></div></th>
+            <th><div>White-Glove</div><div class="price-col">$499 <span>/mo</span></div></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Monitors</td><td>5</td><td>20</td><td>100</td></tr>
+          <tr><td>Reports / mo</td><td>100</td><td>500</td><td>2000</td></tr>
+          <tr><td>Storage</td><td>100 MB</td><td>500 MB</td><td>2000 MB</td></tr>
+          <tr><td>Team Members</td><td>1</td><td>5</td><td>Unlimited</td></tr>
+          <tr><td>Slack Alerts</td><td><span class="feature-cross">✗</span></td><td><span class="feature-check">✓</span></td><td><span class="feature-check">✓</span></td></tr>
+          <tr><td>API Access</td><td><span class="feature-check">✓</span></td><td><span class="feature-check">✓</span></td><td><span class="feature-check">✓</span></td></tr>
+          <tr><td>SSO</td><td><span class="feature-cross">✗</span></td><td><span class="feature-cross">✗</span></td><td><span class="feature-check">✓</span></td></tr>
+          <tr><td>Audit Logs</td><td><span class="feature-cross">✗</span></td><td><span class="feature-check">✓</span></td><td><span class="feature-check">✓</span></td></tr>
+          <tr>
+            <td></td>
+            <td><button class="btn btn-secondary">Downgrade</button></td>
+            <td><button class="btn btn-primary" disabled style="opacity:0.5;">Current</button></td>
+            <td><button class="btn btn-primary">Upgrade</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Payment Method</div>
+    <div class="payment-card">
+      <div class="card-info">
+        <span class="icon">💳</span>
+        <span><strong>Visa</strong> ···· 4242 &nbsp; Exp: 12/28</span>
+      </div>
+      <div class="actions">
+        <button class="btn btn-ghost">Update</button>
+        <button class="btn btn-ghost">Replace</button>
+        <button class="btn btn-ghost" style="color:var(--color-error);">Remove</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Billing History</div>
+    <table class="invoice-table">
+      <thead>
+        <tr><th>Date</th><th>Plan</th><th>Amount</th><th>Status</th><th>Invoice</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>May 18, 2026</td><td>Advanced</td><td>$299.00</td><td><span class="badge badge-success">✅ Paid</span></td><td><a href="#">Download PDF</a></td></tr>
+        <tr><td>Apr 18, 2026</td><td>Advanced</td><td>$299.00</td><td><span class="badge badge-success">✅ Paid</span></td><td><a href="#">Download PDF</a></td></tr>
+        <tr><td>Mar 18, 2026</td><td>Basic</td><td>$99.00</td><td><span class="badge badge-success">✅ Paid</span></td><td><a href="#">Download PDF</a></td></tr>
+        <tr><td>Feb 18, 2026</td><td>Basic</td><td>$99.00</td><td><span class="badge badge-success">✅ Paid</span></td><td><a href="#">Download PDF</a></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+</body>
+</html>

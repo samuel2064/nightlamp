@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nightlamp Playbook Reader Mockup</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --color-primary-50: #eef2ff;
+    --color-primary-500: #6366f1;
+    --color-primary-600: #4f46e5;
+    --color-surface-0: #ffffff;
+    --color-surface-50: #f8fafc;
+    --color-surface-100: #f1f5f9;
+    --color-surface-200: #e2e8f0;
+    --color-surface-700: #334155;
+    --color-surface-900: #0f172a;
+    --color-success: #22c55e;
+    --color-warning: #f59e0b;
+    --color-error: #ef4444;
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-full: 9999px;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+    --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1);
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', sans-serif; background: var(--color-surface-50); color: var(--color-surface-900); padding: var(--space-6); }
+  .app { max-width: 1200px; margin: 0 auto; display: flex; gap: var(--space-6); }
+  .content { flex: 1; }
+  .breadcrumb { font-size: 0.875rem; color: var(--color-surface-700); margin-bottom: var(--space-4); }
+  .breadcrumb a { color: var(--color-primary-500); text-decoration: none; }
+  h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: var(--space-3); }
+  .meta { display: flex; gap: var(--space-3); align-items: center; margin-bottom: var(--space-5); font-size: 0.875rem; color: var(--color-surface-700); flex-wrap: wrap; }
+  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: var(--radius-full); font-size: 0.75rem; font-weight: 500; }
+  .badge-critical { background: #fef2f2; color: #dc2626; }
+  .badge-primary { background: var(--color-primary-50); color: var(--color-primary-600); }
+  .actions { display: flex; gap: var(--space-3); margin-bottom: var(--space-6); }
+  .btn { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); border-radius: var(--radius-md); font-size: 0.875rem; font-weight: 500; border: none; cursor: pointer; transition: all 150ms; }
+  .btn-primary { background: var(--color-primary-500); color: white; }
+  .btn-primary:hover { background: var(--color-primary-600); }
+  .btn-secondary { background: transparent; color: var(--color-primary-500); border: 1px solid var(--color-primary-500); }
+  .btn-ghost { background: transparent; color: var(--color-surface-700); border: 1px solid var(--color-surface-200); }
+  .btn-ghost:hover { background: var(--color-surface-100); }
+  .layout { display: grid; grid-template-columns: 1fr 260px; gap: var(--space-6); align-items: start; }
+  .playbook-body { background: var(--color-surface-0); border-radius: var(--radius-lg); padding: var(--space-6); border: 1px solid var(--color-surface-200); box-shadow: var(--shadow-sm); }
+  .section { margin-bottom: var(--space-6); }
+  .section-header { font-size: 1.125rem; font-weight: 600; margin-bottom: var(--space-3); padding-bottom: var(--space-2); border-bottom: 1px solid var(--color-surface-200); }
+  .checklist { list-style: none; }
+  .checklist li { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-2) 0; cursor: pointer; font-size: 0.875rem; line-height: 1.6; }
+  .checklist li .checkbox { width: 18px; height: 18px; border: 2px solid var(--color-surface-300); border-radius: var(--radius-sm); flex-shrink: 0; margin-top: 2px; display: flex; align-items: center; justify-content: center; transition: all 150ms; }
+  .checklist li.checked .checkbox { background: var(--color-primary-500); border-color: var(--color-primary-500); }
+  .checklist li.checked .checkbox::after { content: '✓'; color: white; font-size: 0.65rem; font-weight: 700; }
+  .checklist li.checked { color: var(--color-surface-700); text-decoration: line-through; }
+  .code-block { background: var(--color-surface-100); padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); font-family: 'JetBrains Mono', monospace; font-size: 0.8125rem; margin: var(--space-2) 0; position: relative; overflow-x: auto; }
+  .code-block .copy { position: absolute; top: var(--space-2); right: var(--space-2); padding: 2px 6px; font-size: 0.65rem; background: var(--color-surface-0); border: 1px solid var(--color-surface-200); border-radius: var(--radius-sm); cursor: pointer; font-family: 'Inter', sans-serif; }
+  .resolution-steps { list-style: none; }
+  .resolution-steps li { padding: var(--space-2) 0; display: flex; align-items: flex-start; gap: var(--space-2); font-size: 0.875rem; }
+  .resolution-steps li::before { content: '▶'; color: var(--color-primary-500); font-size: 0.75rem; flex-shrink: 0; margin-top: 2px; }
+  .related-sidebar { background: var(--color-surface-0); border-radius: var(--radius-lg); padding: var(--space-5); border: 1px solid var(--color-surface-200); box-shadow: var(--shadow-sm); }
+  .related-sidebar h3 { font-size: 0.875rem; font-weight: 600; margin-bottom: var(--space-4); text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-surface-700); }
+  .related-card { padding: var(--space-3); border: 1px solid var(--color-surface-200); border-radius: var(--radius-md); margin-bottom: var(--space-3); cursor: pointer; transition: all 150ms; }
+  .related-card:hover { border-color: var(--color-primary-500); box-shadow: var(--shadow-sm); }
+  .related-card .title { font-size: 0.875rem; font-weight: 500; margin-bottom: var(--space-1); }
+  .related-card .sub { display: flex; gap: var(--space-2); align-items: center; font-size: 0.75rem; color: var(--color-surface-700); }
+  .quick-actions { margin-top: var(--space-5); padding-top: var(--space-5); border-top: 1px solid var(--color-surface-200); }
+  .quick-actions h3 { font-size: 0.875rem; font-weight: 600; margin-bottom: var(--space-3); text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-surface-700); }
+  .quick-actions .qa-item { display: block; width: 100%; text-align: left; padding: var(--space-2) 0; font-size: 0.8125rem; color: var(--color-primary-500); background: none; border: none; cursor: pointer; }
+  .quick-actions .qa-item:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="content">
+    <div class="breadcrumb"><a href="#">← Playbooks</a> / Expired Token Investigation</div>
+    <h1>Expired Token Investigation</h1>
+    <div class="meta">
+      <span class="badge badge-critical">🔴 Critical</span>
+      <span>First seen: May 18, 2026</span>
+      <span>Last occurrence: 12 seconds ago</span>
+      <span>Occurrence count: <strong>3</strong></span>
+    </div>
+    <div class="actions">
+      <button class="btn btn-primary">▶ Run Diagnostic</button>
+      <button class="btn btn-secondary">Acknowledge</button>
+      <button class="btn btn-ghost">⋮ More</button>
+    </div>
+
+    <div class="layout">
+      <div class="playbook-body">
+        <div class="section">
+          <div class="section-header">Symptoms</div>
+          <ul class="checklist">
+            <li class="checked"><span class="checkbox"></span> 401/403 responses from API calls</li>
+            <li><span class="checkbox"></span> Error messages mentioning "expired", "invalid token", or "unauthorized"</li>
+          </ul>
+        </div>
+
+        <div class="section">
+          <div class="section-header">Diagnostic Steps</div>
+          <ul class="checklist">
+            <li><span class="checkbox"></span> <strong>1.</strong> Check token expiry date in provider dashboard</li>
+            <li class="checked"><span class="checkbox"></span> <strong>2.</strong> Verify token is correctly set in environment variables</li>
+            <li><span class="checkbox"></span> <strong>3.</strong> Test token manually:
+              <div class="code-block">
+                curl -H "Authorization: Bearer &lt;token&gt;" &lt;api_endpoint&gt;
+                <span class="copy">📋 Copy</span>
+              </div>
+            </li>
+            <li><span class="checkbox"></span> <strong>4.</strong> Check if token was revoked or rotated</li>
+          </ul>
+        </div>
+
+        <div class="section">
+          <div class="section-header">Resolution</div>
+          <ul class="resolution-steps">
+            <li>Generate new token from provider dashboard</li>
+            <li>Update environment variable and restart service</li>
+            <li>If using short-lived tokens, implement token refresh logic</li>
+          </ul>
+        </div>
+      </div>
+
+      <aside class="related-sidebar">
+        <h3>Related Playbooks</h3>
+        <div class="related-card">
+          <div class="title">Rate Limit Shift</div>
+          <div class="sub"><span class="badge badge-warning" style="font-size:0.65rem;">🟡 warning</span> 2m ago</div>
+        </div>
+        <div class="related-card">
+          <div class="title">Broken Webhook</div>
+          <div class="sub"><span class="badge badge-critical" style="font-size:0.65rem;">🔴 critical</span> 5m ago</div>
+        </div>
+        <div class="related-card">
+          <div class="title">Schema Drift</div>
+          <div class="sub"><span class="badge badge-warning" style="font-size:0.65rem;">🟡 warning</span> 10m ago</div>
+        </div>
+        <a href="#" style="display:block;text-align:center;font-size:0.8125rem;color:var(--color-primary-500);margin-top:var(--space-3);text-decoration:none;font-weight:500;">View All Playbooks →</a>
+
+        <div class="quick-actions">
+          <h3>Quick Actions</h3>
+          <button class="qa-item">📊 View in Dashboard</button>
+          <button class="qa-item">🎫 Create Ticket</button>
+          <button class="qa-item">🔗 Copy Share Link</button>
+        </div>
+      </aside>
+    </div>
+  </div>
+</div>
+</body>
+</html>

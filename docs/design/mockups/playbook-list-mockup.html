@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nightlamp Playbook List Mockup</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --color-primary-50: #eef2ff;
+    --color-primary-500: #6366f1;
+    --color-primary-600: #4f46e5;
+    --color-surface-0: #ffffff;
+    --color-surface-50: #f8fafc;
+    --color-surface-100: #f1f5f9;
+    --color-surface-200: #e2e8f0;
+    --color-surface-700: #334155;
+    --color-surface-900: #0f172a;
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-full: 9999px;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+    --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1);
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', sans-serif; background: var(--color-surface-50); color: var(--color-surface-900); padding: var(--space-6); }
+  .app { max-width: 1000px; margin: 0 auto; }
+  .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-6); }
+  .header h1 { font-size: 1.5rem; font-weight: 700; }
+  .search-bar { display: flex; align-items: center; gap: var(--space-2); background: var(--color-surface-0); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); border: 1px solid var(--color-surface-200); width: 280px; }
+  .search-bar input { border: none; background: transparent; outline: none; font-size: 0.875rem; width: 100%; }
+  .layout { display: grid; grid-template-columns: 200px 1fr; gap: var(--space-6); align-items: start; }
+  .filters { background: var(--color-surface-0); border-radius: var(--radius-md); padding: var(--space-4); border: 1px solid var(--color-surface-200); }
+  .filters h3 { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-surface-700); margin-bottom: var(--space-3); }
+  .filter-group { margin-bottom: var(--space-5); }
+  .filter-group label { display: flex; align-items: center; gap: var(--space-2); font-size: 0.8125rem; padding: var(--space-1) 0; cursor: pointer; }
+  .filter-group input[type="checkbox"] { accent-color: var(--color-primary-500); }
+  .filter-group select { width: 100%; padding: var(--space-2); border: 1px solid var(--color-surface-200); border-radius: var(--radius-sm); font-size: 0.8125rem; background: var(--color-surface-50); }
+  .playbook-grid { display: flex; flex-direction: column; gap: var(--space-3); }
+  .playbook-card { display: flex; align-items: center; background: var(--color-surface-0); border-radius: var(--radius-md); padding: var(--space-4) var(--space-5); border: 1px solid var(--color-surface-200); box-shadow: var(--shadow-sm); cursor: pointer; transition: all 150ms; }
+  .playbook-card:hover { box-shadow: var(--shadow-md); border-left: 3px solid var(--color-primary-500); padding-left: calc(var(--space-5) - 2px); }
+  .playbook-card .left { flex: 1; }
+  .playbook-card .title { font-size: 0.9375rem; font-weight: 600; margin-bottom: var(--space-1); }
+  .playbook-card .meta { display: flex; gap: var(--space-3); align-items: center; font-size: 0.75rem; color: var(--color-surface-700); }
+  .playbook-card .right { text-align: right; }
+  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: var(--radius-full); font-size: 0.75rem; font-weight: 500; }
+  .badge-critical { background: #fef2f2; color: #dc2626; }
+  .badge-warning { background: #fffbeb; color: #d97706; }
+  .badge-info { background: #eff6ff; color: #2563eb; }
+  .badge-success { background: #f0fdf4; color: #16a34a; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <h1>📖 Playbooks</h1>
+    <div class="search-bar">🔍 <input type="text" placeholder="Search playbooks..."></div>
+  </div>
+  <div class="layout">
+    <div class="filters">
+      <div class="filter-group">
+        <h3>By Type</h3>
+        <label><input type="checkbox" checked> 🔴 Critical</label>
+        <label><input type="checkbox" checked> 🟡 Warning</label>
+        <label><input type="checkbox"> ℹ️ Info</label>
+      </div>
+      <div class="filter-group">
+        <h3>By Source</h3>
+        <label><input type="checkbox" checked> Sentry</label>
+        <label><input type="checkbox" checked> UptimeRobot</label>
+      </div>
+      <div class="filter-group">
+        <h3>Severity</h3>
+        <select>
+          <option>All</option>
+          <option>Critical</option>
+          <option>Warning</option>
+          <option>Info</option>
+        </select>
+      </div>
+    </div>
+    <div class="playbook-grid">
+      <div class="playbook-card">
+        <div class="left">
+          <div class="title">Expired Token Investigation</div>
+          <div class="meta">
+            <span class="badge badge-critical">🔴 Critical</span>
+            <span>Seen 3 times</span>
+            <span>First: May 18</span>
+          </div>
+        </div>
+        <div class="right">
+          <div style="font-size:0.75rem;color:var(--color-surface-700);">12s ago</div>
+        </div>
+      </div>
+      <div class="playbook-card">
+        <div class="left">
+          <div class="title">Rate Limit Shift Investigation</div>
+          <div class="meta">
+            <span class="badge badge-warning">🟡 Warning</span>
+            <span>Seen 2 times</span>
+            <span>First: May 17</span>
+          </div>
+        </div>
+        <div class="right">
+          <div style="font-size:0.75rem;color:var(--color-surface-700);">2m ago</div>
+        </div>
+      </div>
+      <div class="playbook-card">
+        <div class="left">
+          <div class="title">Broken Webhook Investigation</div>
+          <div class="meta">
+            <span class="badge badge-critical">🔴 Critical</span>
+            <span>Seen 5 times</span>
+            <span>First: May 15</span>
+          </div>
+        </div>
+        <div class="right">
+          <div style="font-size:0.75rem;color:var(--color-surface-700);">5m ago</div>
+        </div>
+      </div>
+      <div class="playbook-card">
+        <div class="left">
+          <div class="title">Schema Drift Investigation</div>
+          <div class="meta">
+            <span class="badge badge-warning">🟡 Warning</span>
+            <span>Seen 1 time</span>
+            <span>First: May 18</span>
+          </div>
+        </div>
+        <div class="right">
+          <div style="font-size:0.75rem;color:var(--color-surface-700);">10m ago</div>
+        </div>
+      </div>
+      <div class="playbook-card">
+        <div class="left">
+          <div class="title">Error Spike Investigation</div>
+          <div class="meta">
+            <span class="badge badge-info">ℹ️ Info</span>
+            <span>Seen 1 time</span>
+            <span>First: May 12</span>
+          </div>
+        </div>
+        <div class="right">
+          <div style="font-size:0.75rem;color:var(--color-surface-700);">6d ago</div>
+        </div>
+      </div>
+      <div class="playbook-card">
+        <div class="left">
+          <div class="title">New Error Pattern Investigation</div>
+          <div class="meta">
+            <span class="badge badge-info">ℹ️ Info</span>
+            <span>Seen 1 time</span>
+            <span>First: May 10</span>
+          </div>
+        </div>
+        <div class="right">
+          <div style="font-size:0.75rem;color:var(--color-surface-700);">8d ago</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

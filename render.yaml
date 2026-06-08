@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: nightlamp-staging
+    runtime: docker
+    repo: https://github.com/samuel2064/nightlamp
+    plan: free
+    region: oregon
+    envVars:
+      - key: NODE_ENV
+        value: staging
+      - key: API_PORT
+        value: "10000"
+      - key: DB_PATH
+        value: /data/nightlamp.db
+      - key: PLAYBOOK_DIR
+        value: /app/playbook
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: SENTRY_AUTH_TOKEN
+        sync: false
+      - key: SENTRY_ORG_SLUG
+        sync: false
+      - key: SENTRY_PROJECT_SLUG
+        sync: false
+      - key: UPTIMEROBOT_API_KEY
+        sync: false
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
+    healthCheckPath: /api/health

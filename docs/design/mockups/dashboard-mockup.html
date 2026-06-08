@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nightlamp Dashboard Mockup</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --color-primary-50: #eef2ff;
+    --color-primary-100: #e0e7ff;
+    --color-primary-500: #6366f1;
+    --color-primary-600: #4f46e5;
+    --color-primary-700: #4338ca;
+    --color-surface-0: #ffffff;
+    --color-surface-50: #f8fafc;
+    --color-surface-100: #f1f5f9;
+    --color-surface-200: #e2e8f0;
+    --color-surface-300: #cbd5e1;
+    --color-surface-700: #334155;
+    --color-surface-900: #0f172a;
+    --color-success: #22c55e;
+    --color-warning: #f59e0b;
+    --color-error: #ef4444;
+    --color-info: #3b82f6;
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-full: 9999px;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+    --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1);
+    --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.1);
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-8: 32px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', sans-serif; background: var(--color-surface-50); color: var(--color-surface-900); }
+  .app { display: flex; min-height: 100vh; }
+  .sidebar { width: 240px; background: var(--color-surface-0); border-right: 1px solid var(--color-surface-200); padding: var(--space-5); display: flex; flex-direction: column; }
+  .sidebar .logo { font-size: 1.25rem; font-weight: 700; color: var(--color-primary-500); margin-bottom: var(--space-8); display: flex; align-items: center; gap: var(--space-2); }
+  .sidebar .logo span { background: var(--color-primary-100); padding: 4px 8px; border-radius: var(--radius-sm); font-size: 0.75rem; color: var(--color-primary-700); }
+  .sidebar nav { display: flex; flex-direction: column; gap: var(--space-1); }
+  .sidebar nav a { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); text-decoration: none; color: var(--color-surface-700); font-size: 0.875rem; font-weight: 500; display: flex; align-items: center; gap: var(--space-3); transition: all 150ms; }
+  .sidebar nav a:hover { background: var(--color-surface-100); }
+  .sidebar nav a.active { background: var(--color-primary-50); color: var(--color-primary-600); font-weight: 600; }
+  .sidebar .nav-icon { width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; }
+  .main { flex: 1; display: flex; flex-direction: column; }
+  .topbar { height: 56px; background: var(--color-surface-0); border-bottom: 1px solid var(--color-surface-200); display: flex; align-items: center; justify-content: space-between; padding: 0 var(--space-6); }
+  .topbar .search { display: flex; align-items: center; gap: var(--space-2); background: var(--color-surface-50); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); border: 1px solid var(--color-surface-200); width: 300px; }
+  .topbar .search input { border: none; background: transparent; outline: none; font-size: 0.875rem; width: 100%; }
+  .topbar .actions { display: flex; align-items: center; gap: var(--space-4); }
+  .topbar .actions .notif { width: 32px; height: 32px; border-radius: var(--radius-full); background: var(--color-surface-100); display: flex; align-items: center; justify-content: center; cursor: pointer; position: relative; }
+  .topbar .actions .notif .dot { width: 8px; height: 8px; background: var(--color-error); border-radius: 50%; position: absolute; top: 4px; right: 4px; }
+  .topbar .avatar { width: 32px; height: 32px; border-radius: var(--radius-full); background: var(--color-primary-500); color: white; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 600; cursor: pointer; }
+  .content { padding: var(--space-6); flex: 1; }
+  .hero { background: var(--color-surface-0); border-radius: var(--radius-lg); padding: var(--space-6); margin-bottom: var(--space-6); border: 1px solid var(--color-surface-200); }
+  .hero .status { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-4); }
+  .hero .status .pill { display: inline-flex; align-items: center; gap: var(--space-2); background: #f0fdf4; color: #166534; padding: var(--space-2) var(--space-4); border-radius: var(--radius-full); font-size: 0.875rem; font-weight: 600; border: 1px solid #bbf7d0; }
+  .hero .status .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-success); }
+  .hero .status .timestamp { font-size: 0.75rem; color: var(--color-surface-700); }
+  .hero .stats { display: flex; gap: var(--space-4); }
+  .stat-card { flex: 1; background: var(--color-surface-50); border-radius: var(--radius-md); padding: var(--space-4); text-align: center; border: 1px solid var(--color-surface-200); }
+  .stat-card .num { font-size: 1.875rem; font-weight: 700; color: var(--color-surface-900); }
+  .stat-card .label { font-size: 0.75rem; color: var(--color-surface-700); margin-top: var(--space-1); }
+  .widget-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--space-4); margin-bottom: var(--space-6); }
+  .widget { background: var(--color-surface-0); border-radius: var(--radius-md); padding: var(--space-5); border: 1px solid var(--color-surface-200); box-shadow: var(--shadow-sm); }
+  .widget-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-4); font-size: 0.875rem; font-weight: 600; color: var(--color-surface-900); }
+  .widget .failure-item { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) 0; border-bottom: 1px solid var(--color-surface-100); font-size: 0.8125rem; }
+  .widget .failure-item:last-child { border-bottom: none; }
+  .widget .failure-item .sev-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .sev-critical { background: var(--color-error); }
+  .sev-warning { background: var(--color-warning); }
+  .sev-info { background: var(--color-info); }
+  .widget .failure-item .type { font-weight: 500; }
+  .widget .failure-item .time { margin-left: auto; color: var(--color-surface-700); font-size: 0.75rem; }
+  .widget .sparkline { height: 48px; background: linear-gradient(90deg, var(--color-surface-100) 0%, var(--color-primary-100) 50%, var(--color-primary-500) 100%); border-radius: var(--radius-sm); margin-bottom: var(--space-2); opacity: 0.6; }
+  .widget .sparkline-label { font-size: 0.75rem; color: var(--color-surface-700); }
+  .widget .meter { display: flex; align-items: center; gap: var(--space-2); font-size: 0.8125rem; padding: var(--space-1) 0; }
+  .widget .meter .bar { flex: 1; height: 6px; background: var(--color-surface-200); border-radius: var(--radius-full); overflow: hidden; }
+  .widget .meter .bar .fill { height: 100%; border-radius: var(--radius-full); transition: width 300ms; }
+  .widget .view-all { display: block; text-align: right; font-size: 0.75rem; color: var(--color-primary-500); text-decoration: none; margin-top: var(--space-3); font-weight: 500; }
+  .section-title { font-size: 1.125rem; font-weight: 600; margin-bottom: var(--space-4); display: flex; align-items: center; justify-content: space-between; }
+  .section-title .actions { display: flex; gap: var(--space-3); }
+  .btn { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); border-radius: var(--radius-md); font-size: 0.875rem; font-weight: 500; border: none; cursor: pointer; transition: all 150ms; }
+  .btn-primary { background: var(--color-primary-500); color: white; }
+  .btn-primary:hover { background: var(--color-primary-600); }
+  .btn-secondary { background: transparent; color: var(--color-primary-500); border: 1px solid var(--color-primary-500); }
+  .btn-secondary:hover { background: var(--color-primary-50); }
+  .btn-ghost { background: transparent; color: var(--color-surface-700); }
+  .btn-ghost:hover { background: var(--color-surface-100); }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; padding: var(--space-3) var(--space-4); font-size: 0.75rem; font-weight: 600; color: var(--color-surface-700); text-transform: uppercase; letter-spacing: 0.05em; background: var(--color-surface-50); border-bottom: 1px solid var(--color-surface-200); }
+  td { padding: var(--space-3) var(--space-4); font-size: 0.875rem; border-bottom: 1px solid var(--color-surface-100); }
+  tr:hover td { background: var(--color-surface-50); }
+  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: var(--radius-full); font-size: 0.75rem; font-weight: 500; }
+  .badge-critical { background: #fef2f2; color: #dc2626; }
+  .badge-warning { background: #fffbeb; color: #d97706; }
+  .badge-success { background: #f0fdf4; color: #16a34a; }
+  .badge-info { background: #eff6ff; color: #2563eb; }
+  .badge-neutral { background: var(--color-surface-100); color: var(--color-surface-700); }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="logo">🌙 Nightlamp <span>v0.1</span></div>
+    <nav>
+      <a href="#" class="active"><span class="nav-icon">◆</span> Dashboard</a>
+      <a href="#"><span class="nav-icon">◈</span> Monitors</a>
+      <a href="#"><span class="nav-icon">◇</span> Playbooks <span style="margin-left:auto;background:var(--color-error);color:white;border-radius:var(--radius-full);padding:0 6px;font-size:0.65rem;font-weight:600;">3</span></a>
+      <a href="#"><span class="nav-icon">○</span> Billing</a>
+      <a href="#"><span class="nav-icon">⚙</span> Settings</a>
+    </nav>
+  </aside>
+  <div class="main">
+    <header class="topbar">
+      <div class="search">🔍 <input type="text" placeholder="Search monitors, playbooks..."></div>
+      <div class="actions">
+        <div class="notif">🔔 <span class="dot"></span></div>
+        <div class="avatar">U</div>
+      </div>
+    </header>
+    <div class="content">
+      <div class="hero">
+        <div class="status">
+          <div class="pill"><span class="dot"></span> All Systems Operational</div>
+          <span class="timestamp">Last checked: 12 seconds ago</span>
+        </div>
+        <div class="stats">
+          <div class="stat-card"><div class="num">24</div><div class="label">Monitors</div></div>
+          <div class="stat-card"><div class="num">3</div><div class="label">Active Failures</div></div>
+          <div class="stat-card"><div class="num" style="color:var(--color-error);">1</div><div class="label">Critical</div></div>
+        </div>
+      </div>
+
+      <div class="widget-grid">
+        <div class="widget">
+          <div class="widget-header">Active Failures</div>
+          <div class="failure-item"><span class="sev-dot sev-critical"></span><span class="type">Expired Token</span><span class="badge badge-critical">critical</span><span class="time">12s ago</span></div>
+          <div class="failure-item"><span class="sev-dot sev-warning"></span><span class="type">Rate Limit Shift</span><span class="badge badge-warning">warning</span><span class="time">2m ago</span></div>
+          <div class="failure-item"><span class="sev-dot sev-warning"></span><span class="type">Schema Drift</span><span class="badge badge-warning">warning</span><span class="time">5m ago</span></div>
+          <a href="#" class="view-all">View all failures →</a>
+        </div>
+        <div class="widget">
+          <div class="widget-header">Uptime (24h)</div>
+          <div class="sparkline"></div>
+          <div class="sparkline-label">99.7% uptime · 3 min downtime</div>
+        </div>
+        <div class="widget">
+          <div class="widget-header">Error Rate</div>
+          <div class="sparkline" style="background:linear-gradient(90deg,var(--color-surface-100) 0%,var(--color-error) 30%,var(--color-warning) 60%,var(--color-primary-500) 100%);"></div>
+          <div class="sparkline-label">12 errors/min · Peak: 47</div>
+        </div>
+        <div class="widget">
+          <div class="widget-header">SSL Expiry</div>
+          <div class="meter"><span>api.nightlamp.dev</span><div class="bar"><div class="fill" style="width:90%;background:var(--color-success);"></div></div><span>27d</span></div>
+          <div class="meter"><span>app.nightlamp.dev</span><div class="bar"><div class="fill" style="width:45%;background:var(--color-warning);"></div></div><span>14d</span></div>
+          <div class="meter"><span>billing.nightlamp.dev</span><div class="bar"><div class="fill" style="width:12%;background:var(--color-error);"></div></div><span>4d</span></div>
+        </div>
+        <div class="widget">
+          <div class="widget-header">Rate Limit Shifts</div>
+          <div class="failure-item"><span class="sev-dot sev-warning"></span><span>Sentry API</span><span class="badge badge-warning">2 shifts</span></div>
+          <div class="failure-item"><span class="sev-dot sev-info"></span><span>Stripe API</span><span class="badge badge-info">1 shift</span></div>
+          <a href="#" class="view-all">View details →</a>
+        </div>
+        <div class="widget">
+          <div class="widget-header">Recent Failures</div>
+          <div class="failure-item"><span class="sev-dot sev-critical"></span><span>Auth Service</span><span>401 on POST /token</span><span class="time">12s</span></div>
+          <div class="failure-item"><span class="sev-dot sev-warning"></span><span>Web API</span><span>429 rate limit</span><span class="time">2m</span></div>
+          <div class="failure-item"><span class="sev-dot sev-warning"></span><span>Web API</span><span>Unexpected schema</span><span class="time">5m</span></div>
+          <a href="#" class="view-all">Open playbook →</a>
+        </div>
+      </div>
+
+      <div class="section-title">
+        <span>Monitors</span>
+        <div class="actions">
+          <button class="btn btn-secondary">+ Add Monitor</button>
+          <button class="btn btn-ghost">🔍 Search...</button>
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr><th>Name</th><th>Source</th><th>Status</th><th>Last Run</th><th>Failures</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Auth Service</strong></td>
+            <td><span class="badge badge-info">Sentry</span></td>
+            <td><span class="badge badge-critical">Critical</span></td>
+            <td>12s ago</td>
+            <td><span style="color:var(--color-error);font-weight:600;">1</span></td>
+            <td><button class="btn btn-ghost" style="padding:2px 8px;font-size:0.75rem;">View</button> ⋮</td>
+          </tr>
+          <tr>
+            <td><strong>Web API</strong></td>
+            <td><span class="badge badge-neutral">UptimeRobot</span></td>
+            <td><span class="badge badge-warning">Degraded</span></td>
+            <td>2m ago</td>
+            <td><span style="color:var(--color-warning);font-weight:600;">2</span></td>
+            <td><button class="btn btn-ghost" style="padding:2px 8px;font-size:0.75rem;">View</button> ⋮</td>
+          </tr>
+          <tr>
+            <td><strong>Payment API</strong></td>
+            <td><span class="badge badge-info">Sentry</span></td>
+            <td><span class="badge badge-success">OK</span></td>
+            <td>30s ago</td>
+            <td>0</td>
+            <td><button class="btn btn-ghost" style="padding:2px 8px;font-size:0.75rem;">View</button> ⋮</td>
+          </tr>
+          <tr>
+            <td><strong>User DB</strong></td>
+            <td><span class="badge badge-neutral">UptimeRobot</span></td>
+            <td><span class="badge badge-success">OK</span></td>
+            <td>45s ago</td>
+            <td>0</td>
+            <td><button class="btn btn-ghost" style="padding:2px 8px;font-size:0.75rem;">View</button> ⋮</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+</body>
+</html>
