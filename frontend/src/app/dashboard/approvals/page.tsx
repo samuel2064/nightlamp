@@ -13,37 +13,92 @@ import {
 } from '@/components/ui/table'
 import { trpc } from '@/lib/trpc'
 import { toast } from 'sonner'
-import { RefreshCw, CheckCircle2, XCircle } from 'lucide-react'
+import { RefreshCw, CheckCircle2, XCircle, ClipboardCheck } from 'lucide-react'
+import { Skeleton } from '@/components/ui/skeleton'
+import { EmptyState } from '@/components/ui/empty-state'
+import { Spinner } from '@/components/ui/spinner'
 
 export default function ApprovalsPage() {
   const utils = trpc.useUtils()
   const { data: runs, isLoading, isError, refetch } = trpc.remediation.listRuns.useQuery({ status: 'pending_approval' })
 
   const approveRun = trpc.remediation.approveRun.useMutation({
+    onMutate: async ({ id }) => {
+      await utils.remediation.listRuns.cancel()
+      const prev = utils.remediation.listRuns.getData({ status: 'pending_approval' })
+      if (prev?.runs) {
+        utils.remediation.listRuns.setData({ status: 'pending_approval' }, {
+          ...prev,
+          runs: prev.runs.filter((r: any) => r.id !== id),
+        })
+      }
+      return { prev }
+    },
     onSuccess: () => {
       toast.success('Run approved and executed')
-      utils.remediation.listRuns.invalidate()
     },
-    onError: (err) => {
+    onError: (err, { id }, context) => {
+      if (context?.prev) {
+        utils.remediation.listRuns.setData({ status: 'pending_approval' }, context.prev)
+      }
       toast.error(`Failed to approve: ${err.message}`)
+    },
+    onSettled: () => {
+      utils.remediation.listRuns.invalidate()
     },
   })
 
   const rejectRun = trpc.remediation.rejectRun.useMutation({
+    onMutate: async ({ id }) => {
+      await utils.remediation.listRuns.cancel()
+      const prev = utils.remediation.listRuns.getData({ status: 'pending_approval' })
+      if (prev?.runs) {
+        utils.remediation.listRuns.setData({ status: 'pending_approval' }, {
+          ...prev,
+          runs: prev.runs.filter((r: any) => r.id !== id),
+        })
+      }
+      return { prev }
+    },
     onSuccess: () => {
       toast.success('Run rejected')
-      utils.remediation.listRuns.invalidate()
     },
-    onError: (err) => {
+    onError: (err, { id }, context) => {
+      if (context?.prev) {
+        utils.remediation.listRuns.setData({ status: 'pending_approval' }, context.prev)
+      }
       toast.error(`Failed to reject: ${err.message}`)
+    },
+    onSettled: () => {
+      utils.remediation.listRuns.invalidate()
     },
   })
 
   if (isLoading) {
     return (
       <div className="space-y-6">
-        <h1 className="text-2xl font-semibold">Approvals</h1>
-        <p className="text-sm text-muted-foreground">Loading pending approvals...</p>
+        <div className="space-y-1">
+          <Skeleton className="h-8 w-32" />
+          <Skeleton className="h-4 w-64" />
+        </div>
+        <Card>
+          <div className="p-6">
+            <div className="space-y-3">
+              <div className="flex gap-4 pb-2 border-b">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <Skeleton key={i} className="h-4 flex-1" />
+                ))}
+              </div>
+              {Array.from({ length: 3 }).map((_, r) => (
+                <div key={r} className="flex gap-4 py-2">
+                  {Array.from({ length: 6 }).map((_, c) => (
+                    <Skeleton key={c} className="h-4 flex-1" />
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
       </div>
     )
   }
@@ -62,6 +117,8 @@ export default function ApprovalsPage() {
     )
   }
 
+  const isMutating = approveRun.isPending || rejectRun.isPending
+
   return (
     <div className="space-y-6">
       <div>
@@ -71,10 +128,14 @@ export default function ApprovalsPage() {
         </p>
       </div>
 
-      {!runs || runs.length === 0 ? (
+      {!runs || !runs.runs || runs.runs.length === 0 ? (
         <Card>
-          <CardContent className="py-8 text-center text-sm text-muted-foreground">
-            No pending approvals
+          <CardContent className="py-8">
+            <EmptyState
+              icon={ClipboardCheck}
+              title="No pending approvals"
+              description="All remediation actions have been reviewed."
+            />
           </CardContent>
         </Card>
       ) : (
@@ -91,7 +152,7 @@ export default function ApprovalsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {runs.map((run) => (
+              {runs.runs.map((run: any) => (
                 <TableRow key={run.id as string}>
                   <TableCell className="font-medium">{run.failure_type as string || (run.action_name as string)}</TableCell>
                   <TableCell>{run.action_name as string}</TableCell>
@@ -120,9 +181,9 @@ export default function ApprovalsPage() {
                         variant="outline"
                         className="text-green-600 border-green-300 hover:bg-green-50"
                         onClick={() => approveRun.mutate({ id: run.id as string })}
-                        disabled={approveRun.isPending}
+                        disabled={isMutating}
                       >
-                        <CheckCircle2 className="size-3 mr-1" />
+                        {approveRun.isPending ? <Spinner className="size-3 mr-1" /> : <CheckCircle2 className="size-3 mr-1" />}
                         Approve
                       </Button>
                       <Button
@@ -130,9 +191,9 @@ export default function ApprovalsPage() {
                         variant="outline"
                         className="text-red-600 border-red-300 hover:bg-red-50"
                         onClick={() => rejectRun.mutate({ id: run.id as string })}
-                        disabled={rejectRun.isPending}
+                        disabled={isMutating}
                       >
-                        <XCircle className="size-3 mr-1" />
+                        {rejectRun.isPending ? <Spinner className="size-3 mr-1" /> : <XCircle className="size-3 mr-1" />}
                         Reject
                       </Button>
                     </div>
