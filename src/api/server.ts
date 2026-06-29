@@ -2,7 +2,7 @@ import * as http from 'http';
 import { Database } from 'sql.js';
 import { BillingApi } from '../billing/billing-api';
 import { StripeClient } from '../billing/stripe-client';
-import { runRemediation, getRemediationLogs } from '../remediation/engine';
+import { runRemediation, getRemediationLogs, listRuns, approveRun, rejectRun, retryRun, listPolicies, updatePolicy } from '../remediation/engine';
 import { getOrCreatePlaybookEntry } from '../playbook';
 import { FailureType } from '../classifier';
 import { matchPlaybookEntries, getCorrelatedPatterns } from '../playbook/matcher';
@@ -192,15 +192,128 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         return;
       }
 
+      if (path === '/api/dependencies' || path === '/api/dependencies/') {
+        const result = db.exec('SELECT id, name, current_version, specified_range, is_dev, created_at, updated_at FROM dependencies ORDER BY name ASC');
+        const dependencies = result.length > 0 ? result[0].values.map((row: any) => ({
+          id: row[0],
+          name: row[1],
+          currentVersion: row[2],
+          specifiedRange: row[3],
+          isDev: row[4] === 1,
+          createdAt: row[5],
+          updatedAt: row[6],
+        })) : [];
+        res.end(JSON.stringify({ dependencies, count: dependencies.length }));
+        return;
+      }
+
+      if (path === '/api/dependencies/updates' || path === '/api/dependencies/updates/') {
+        const breakingOnly = parsedUrl.searchParams.get('breaking') === 'true';
+        let sql = `SELECT du.id, du.dependency_id, du.available_version, du.current_version, du.change_type, du.is_breaking, du.changelog_url, du.detected_at
+                   FROM dependency_updates du WHERE 1=1`;
+        const params: any[] = [];
+        if (breakingOnly) {
+          sql += ' AND du.is_breaking = 1';
+        }
+        sql += ' ORDER BY du.detected_at DESC';
+        const result = db.exec(sql, params);
+        const updates = result.length > 0 ? result[0].values.map((row: any) => ({
+          id: row[0],
+          dependencyId: row[1],
+          availableVersion: row[2],
+          currentVersion: row[3],
+          changeType: row[4],
+          isBreaking: row[5] === 1,
+          changelogUrl: row[6],
+          detectedAt: row[7],
+        })) : [];
+        res.end(JSON.stringify({ updates, count: updates.length }));
+        return;
+      }
+
+      if (path === '/api/remediation/policies' || path === '/api/remediation/policies/') {
+        if (req.method === 'POST') {
+          let body = '';
+          req.on('data', (chunk) => { body += chunk; });
+          req.on('end', () => {
+            try {
+              const data = JSON.parse(body);
+              const policy = listPolicies().find((p: any) => p.id === data.id);
+              if (!policy) {
+                res.writeHead(404);
+                res.end(JSON.stringify({ error: 'Policy not found' }));
+                return;
+              }
+              const updated = updatePolicy(data.id, { auto_approve: data.auto_approve, require_dry_run: data.require_dry_run, cooldown_minutes: data.cooldown_minutes });
+              res.end(JSON.stringify({ success: true, policy: updated }));
+            } catch (err: any) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: err.message }));
+            }
+          });
+          return;
+        }
+        const policies = listPolicies();
+        res.end(JSON.stringify({ policies }));
+        return;
+      }
+
+      if (path === '/api/remediation/approve' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', async () => {
+          try {
+            const { id } = JSON.parse(body);
+            if (!id) { res.writeHead(400); res.end(JSON.stringify({ error: 'id is required' })); return; }
+            const result = await approveRun(id);
+            res.end(JSON.stringify({ success: true, ...result }));
+          } catch (err: any) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: err.message }));
+          }
+        });
+        return;
+      }
+
+      if (path === '/api/remediation/reject' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { id } = JSON.parse(body);
+            if (!id) { res.writeHead(400); res.end(JSON.stringify({ error: 'id is required' })); return; }
+            const result = rejectRun(id);
+            res.end(JSON.stringify({ success: true, ...result }));
+          } catch (err: any) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: err.message }));
+          }
+        });
+        return;
+      }
+
+      if (path === '/api/remediation/retry' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', async () => {
+          try {
+            const { id } = JSON.parse(body);
+            if (!id) { res.writeHead(400); res.end(JSON.stringify({ error: 'id is required' })); return; }
+            const result = await retryRun(id);
+            res.end(JSON.stringify({ success: true, ...result }));
+          } catch (err: any) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: err.message }));
+          }
+        });
+        return;
+      }
+
       if (billingApi && billingApi.handle(req, res)) {
         return;
       }
 
       if (perfApi.handle(req, res)) {
-        return;
-      }
-
-      if (billingApi && billingApi.handle(req, res)) {
         return;
       }
 
@@ -222,7 +335,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       }
 
       res.writeHead(404);
-      res.end(JSON.stringify({ error: 'Not found', available: ['/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/health'] }));
+      res.end(JSON.stringify({ error: 'Not found', available: ['/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/health'] }));
     } catch (err: any) {
       res.writeHead(500);
       res.end(JSON.stringify({ error: err.message }));

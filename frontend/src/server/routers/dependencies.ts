@@ -20,7 +20,7 @@ interface DependencyUpdate {
   detectedAt: string
 }
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3000'
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'
 
 async function fetchDeps(): Promise<Dependency[]> {
   const res = await fetch(`${BACKEND_URL}/api/dependencies`)

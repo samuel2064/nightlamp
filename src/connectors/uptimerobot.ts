@@ -10,6 +10,7 @@ export interface UptimeRobotMonitor {
   status: number;
   interval: number;
   createDatetime: number;
+  responseTime?: number;
 }
 
 export interface UptimeRobotPollResult {
@@ -38,6 +39,7 @@ export async function pollUptimeRobot(config: UptimeRobotConfig): Promise<Uptime
         api_key: config.apiKey,
         format: 'json',
         logs: '1',
+        response_times: '1',
       }),
     });
 
@@ -59,6 +61,7 @@ export async function pollUptimeRobot(config: UptimeRobotConfig): Promise<Uptime
       status: m.status,
       interval: m.interval,
       createDatetime: m.create_datetime,
+      responseTime: m.response_times?.[0]?.value,
     }));
 
     return { monitors, error: null };
@@ -116,6 +119,10 @@ export function detectResponseDegradation(
 
   for (const monitor of current) {
     const prev = prevMap.get(monitor.id);
+    if (!prev || monitor.responseTime == null || prev.responseTime == null) continue;
+    if (prev.responseTime > 0 && monitor.responseTime >= prev.responseTime * threshold) {
+      degraded.push(monitor);
+    }
   }
 
   return degraded;

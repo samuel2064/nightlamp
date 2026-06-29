@@ -24,6 +24,7 @@
     "@types/axios": "^0.9.36",
     "@types/better-sqlite3": "^7.6.13",
     "@types/chai": "^5.2.3",
+    "@types/express": "^5.0.6",
     "@types/mocha": "^10.0.10",
     "@types/node": "^25.9.0",
     "@types/node-cron": "^3.0.11",

@@ -6,7 +6,6 @@ import { remediateWebhookRestart } from './scripts/webhook-restart';
 import { remediateTokenRefresh } from './scripts/token-refresh';
 import { remediateSchemaMigrate } from './scripts/schema-migrate';
 import { remediateRateLimitBackoff } from './scripts/rate-limit-backoff';
-import { listActions } from './actions/registry';
 import { getAction, registerAction } from './actions/registry';
 import { handleRetryWebhook } from './actions/retry-webhook';
 import { handleRateLimitBackoff } from './actions/rate-limit-backoff';
@@ -31,6 +30,14 @@ export interface RemediationResult {
   logId: string;
   status: RemediationStatus;
   output: string;
+}
+
+export interface Policy {
+  id: string;
+  failure_type: string;
+  auto_approve: boolean | number;
+  require_dry_run: boolean | number;
+  cooldown_minutes: number;
 }
 
 const SCRIPT_MAP: Record<FailureType, string> = {
@@ -200,13 +207,13 @@ export async function retryRun(id: string): Promise<any> {
   return { id, status, output: result.output };
 }
 
-export function listPolicies(): any {
+export function listPolicies(): Policy[] {
   const db = getDb();
   const res = db.exec(`SELECT id, failure_type, auto_approve, require_dry_run, cooldown_minutes FROM remediation_policies`);
-  return res.length ? res[0].values.map(r => ({ id: r[0], failure_type: r[1], auto_approve: r[2], require_dry_run: r[3], cooldown_minutes: r[4] })) : [];
+  return res.length ? res[0].values.map(r => ({ id: r[0] as string, failure_type: r[1] as string, auto_approve: r[2] as number, require_dry_run: r[3] as number, cooldown_minutes: r[4] as number })) : [];
 }
 
-export function updatePolicy(id: string, data: { auto_approve?: boolean; require_dry_run?: boolean; cooldown_minutes?: number }): any {
+export function updatePolicy(id: string, data: { auto_approve?: boolean; require_dry_run?: boolean; cooldown_minutes?: number }): Policy | null {
   const db = getDb();
   const updates: string[] = [];
   const params: any[] = [];
@@ -216,7 +223,38 @@ export function updatePolicy(id: string, data: { auto_approve?: boolean; require
   if (!updates.length) throw new Error('No fields to update');
   params.push(id);
   db.run(`UPDATE remediation_policies SET ${updates.join(', ')} WHERE id = ?`, params);
-  return listPolicies().find(p => p.id === id);
+  return listPolicies().find((p: Policy) => p.id === id) ?? null;
+}
+
+export async function evaluatePlaybookEntries(): Promise<{ processed: number; executed: number; pending: number; errors: string[] }> {
+  const db = getDb();
+  const entries = db.exec(
+    `SELECT id, failure_type, title, status FROM playbook_entries WHERE status = 'open' OR status = 'detected'`
+  );
+  const errors: string[] = [];
+  let executed = 0;
+
+  for (const row of (entries[0]?.values ?? [])) {
+    const id = row[0] as string;
+    const failureType = row[1] as FailureType;
+    const title = row[2] as string;
+
+    try {
+      const result = await runRemediation(db, { id, failureType, title, body: '', firstSeenAt: new Date().toISOString(), lastOccurrenceAt: new Date().toISOString(), occurrenceCount: 1 });
+      if (result.status === 'success' || result.status === 'failed') {
+        executed++;
+      }
+    } catch (err: any) {
+      errors.push(`Entry ${id}: ${err.message}`);
+    }
+  }
+
+  return {
+    processed: (entries[0]?.values ?? []).length,
+    executed,
+    pending: (entries[0]?.values ?? []).length - executed,
+    errors,
+  };
 }
 
 export function initEngine(): void {

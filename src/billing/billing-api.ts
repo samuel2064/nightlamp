@@ -62,6 +62,16 @@ export class BillingApi {
       return true;
     }
 
+    if (path === '/api/billing/summary' && req.method === 'GET') {
+      this.handleSummary(res);
+      return true;
+    }
+
+    if (path === '/api/billing/subscriptions' && req.method === 'GET') {
+      this.handleListSubscriptions(res);
+      return true;
+    }
+
     return false;
   }
 
@@ -281,5 +291,60 @@ export class BillingApi {
         storageMb: Math.max(0, limits.storageMb - usage.storageMb),
       },
     }));
+  }
+
+  private handleSummary(res: ServerResponse): void {
+    const customerResult = this.deps.db.exec('SELECT COUNT(*) FROM customers');
+    const totalCustomers = customerResult.length > 0 ? (customerResult[0].values[0][0] as number) : 0;
+
+    const subscriptionsResult = this.deps.db.exec('SELECT COUNT(*) FROM subscriptions');
+    const totalSubscriptions = subscriptionsResult.length > 0 ? (subscriptionsResult[0].values[0][0] as number) : 0;
+
+    const activeResult = this.deps.db.exec("SELECT COUNT(*) FROM subscriptions WHERE status = 'active'");
+    const activeSubscriptions = activeResult.length > 0 ? (activeResult[0].values[0][0] as number) : 0;
+
+    const pastDueResult = this.deps.db.exec("SELECT COUNT(*) FROM subscriptions WHERE status = 'past_due'");
+    const pastDue = pastDueResult.length > 0 ? (pastDueResult[0].values[0][0] as number) : 0;
+
+    const canceledResult = this.deps.db.exec("SELECT COUNT(*) FROM subscriptions WHERE status = 'canceled'");
+    const canceled = canceledResult.length > 0 ? (canceledResult[0].values[0][0] as number) : 0;
+
+    const planResult = this.deps.db.exec('SELECT plan_tier, COUNT(*) FROM subscriptions WHERE status = \'active\' GROUP BY plan_tier');
+    let mrr = 0;
+    if (planResult.length > 0) {
+      const planPrices: Record<string, number> = { basic: 99, advanced: 299, white_glove: 499 };
+      for (const row of planResult[0].values) {
+        mrr += (planPrices[row[0] as string] || 0) * (row[1] as number);
+      }
+    }
+
+    res.end(JSON.stringify({
+      customers: totalCustomers,
+      subscriptions: totalSubscriptions,
+      mrr,
+      activeSubscriptions,
+      pastDue,
+      canceled,
+    }));
+  }
+
+  private handleListSubscriptions(res: ServerResponse): void {
+    const result = this.deps.db.exec(
+      `SELECT s.id, s.customer_id, c.name as customer_name, c.email as customer_email, s.plan_tier, s.status, s.current_period_start, s.current_period_end, s.created_at
+       FROM subscriptions s LEFT JOIN customers c ON s.customer_id = c.id
+       ORDER BY s.created_at DESC`
+    );
+    const subscriptions = result.length > 0 ? result[0].values.map((row: any) => ({
+      id: row[0],
+      customerId: row[1],
+      customerName: row[2],
+      customerEmail: row[3],
+      planTier: row[4],
+      status: row[5],
+      currentPeriodStart: row[6],
+      currentPeriodEnd: row[7],
+      createdAt: row[8],
+    })) : [];
+    res.end(JSON.stringify({ subscriptions }));
   }
 }

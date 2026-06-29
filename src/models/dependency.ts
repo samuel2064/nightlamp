@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { Database } from 'sql.js';
-import { DependencyInfo, analyzeVersionChange, pollNpmRegistry } from '../connectors/npm-registry';
+import { DependencyInfo, analyzeVersionChange, pollNpmRegistry, parsePackageJson } from '../connectors/npm-registry';
 
 export interface Dependency {
   id: string;
@@ -142,7 +142,6 @@ export async function runDependencyCheck(
   packageJsonContent: string,
 ): Promise<{ dependenciesChecked: number; updatesFound: number; breakingChanges: number }> {
   const model = new DependencyModel(db);
-  const { parsePackageJson } = require('../connectors/npm-registry');
   const deps = parsePackageJson(packageJsonContent);
   let updatesFound = 0;
   let breakingChanges = 0;

@@ -1,6 +1,6 @@
 import { createDatabase } from '../db/schema';
 import { detectSpikes, detectNewPatterns } from '../connectors/sentry';
-import { detectStatusChanges } from '../connectors/uptimerobot';
+import { detectStatusChanges, detectResponseDegradation } from '../connectors/uptimerobot';
 
 import assert from 'assert';
 
@@ -64,5 +64,39 @@ describe('UptimeRobot Connector', () => {
       { id: 1, friendlyName: 'Site A', url: 'https://a.com', type: 1, status: 2, interval: 300, createDatetime: 0 },
     ];
     assert.strictEqual(detectStatusChanges(monitors, monitors).length, 0);
+  });
+
+  it('detectResponseDegradation should find monitors with degraded response times', () => {
+    const prev = [
+      { id: 1, friendlyName: 'Site A', url: 'https://a.com', type: 1, status: 2, interval: 300, createDatetime: 0, responseTime: 200 },
+      { id: 2, friendlyName: 'Site B', url: 'https://b.com', type: 1, status: 2, interval: 300, createDatetime: 0, responseTime: 500 },
+    ];
+    const curr = [
+      { id: 1, friendlyName: 'Site A', url: 'https://a.com', type: 1, status: 2, interval: 300, createDatetime: 0, responseTime: 1500 },
+      { id: 2, friendlyName: 'Site B', url: 'https://b.com', type: 1, status: 2, interval: 300, createDatetime: 0, responseTime: 600 },
+    ];
+    const degraded = detectResponseDegradation(curr, prev);
+    assert.strictEqual(degraded.length, 1);
+    assert.strictEqual(degraded[0].id, 1);
+  });
+
+  it('detectResponseDegradation should return empty when no degradation', () => {
+    const prev = [
+      { id: 1, friendlyName: 'Site A', url: 'https://a.com', type: 1, status: 2, interval: 300, createDatetime: 0, responseTime: 200 },
+    ];
+    const curr = [
+      { id: 1, friendlyName: 'Site A', url: 'https://a.com', type: 1, status: 2, interval: 300, createDatetime: 0, responseTime: 300 },
+    ];
+    assert.strictEqual(detectResponseDegradation(curr, prev).length, 0);
+  });
+
+  it('detectResponseDegradation should skip monitors with missing response times', () => {
+    const prev = [
+      { id: 1, friendlyName: 'Site A', url: 'https://a.com', type: 1, status: 2, interval: 300, createDatetime: 0 },
+    ];
+    const curr = [
+      { id: 1, friendlyName: 'Site A', url: 'https://a.com', type: 1, status: 2, interval: 300, createDatetime: 0 },
+    ];
+    assert.strictEqual(detectResponseDegradation(curr, prev).length, 0);
   });
 });
