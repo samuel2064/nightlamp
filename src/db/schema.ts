@@ -175,6 +175,32 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
     )
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS x_tokens (
+      id TEXT PRIMARY KEY,
+      access_token TEXT NOT NULL,
+      refresh_token TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      expires_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS x_scheduled_posts (
+      id TEXT PRIMARY KEY,
+      tweet_text TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      in_reply_to_id TEXT,
+      tweet_id TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'posted', 'failed')),
+      error TEXT,
+      scheduled_at TEXT,
+      posted_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
   db.run('CREATE INDEX IF NOT EXISTS idx_remediation_runs_status ON remediation_runs(status)');
   db.run('CREATE INDEX IF NOT EXISTS idx_remediation_runs_action ON remediation_runs(action_name)');
   db.run('CREATE INDEX IF NOT EXISTS idx_remediation_actions_failure ON remediation_actions(failure_type)');

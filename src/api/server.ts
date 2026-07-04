@@ -9,6 +9,7 @@ import { matchPlaybookEntries, getCorrelatedPatterns } from '../playbook/matcher
 import { PerfApi } from '../performance/perf-api';
 import { handleClerkWebhook } from '../webhooks/clerk';
 import { v4 as uuidv4 } from 'uuid';
+import { buildAuthorizeUrl, exchangeCodeForToken, refreshAccessToken, postThread, verifyCredentials, XConfig } from '../connectors/x';
 
 export interface ApiConfig {
   port: number;
@@ -493,6 +494,193 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         return;
       }
 
+      if (path === '/api/x/auth' || path === '/api/x/auth/') {
+        const clientId = process.env.X_CLIENT_ID || '';
+        const clientSecret = process.env.X_CLIENT_SECRET || '';
+        const callbackUrl = process.env.X_CALLBACK_URL || 'http://localhost:3001/api/x/callback';
+
+        if (!clientId || !clientSecret) {
+          res.end(JSON.stringify({ error: 'X/Twitter not configured (set X_CLIENT_ID, X_CLIENT_SECRET)' }));
+          return;
+        }
+
+        const config: XConfig = { clientId, clientSecret, callbackUrl };
+        const { url, codeVerifier, state } = buildAuthorizeUrl(config);
+
+        db.run(
+          `INSERT INTO x_tokens (id, access_token, refresh_token, scope, expires_at) VALUES (?, ?, ?, ?, ?)`,
+          ['pkce_state', codeVerifier, state, 'pending', null]
+        );
+
+        res.end(JSON.stringify({ authorizeUrl: url, state }));
+        return;
+      }
+
+      if (path === '/api/x/callback' || path === '/api/x/callback/') {
+        const code = parsedUrl.searchParams.get('code') || '';
+        const state = parsedUrl.searchParams.get('state') || '';
+
+        if (!code || !state) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'Missing code or state parameter' }));
+          return;
+        }
+
+        const clientId = process.env.X_CLIENT_ID || '';
+        const clientSecret = process.env.X_CLIENT_SECRET || '';
+        const callbackUrl = process.env.X_CALLBACK_URL || 'http://localhost:3001/api/x/callback';
+        const config: XConfig = { clientId, clientSecret, callbackUrl };
+
+        (async () => {
+          try {
+            const stored = db.exec('SELECT access_token FROM x_tokens WHERE id = ?', ['pkce_state']);
+            const savedVerifier = stored.length > 0 ? stored[0].values[0]?.[0] as string : '';
+
+            const tokenResponse = await exchangeCodeForToken(config, code, savedVerifier);
+            const expiresAt = new Date(Date.now() + tokenResponse.expiresIn * 1000).toISOString();
+
+            db.run('DELETE FROM x_tokens WHERE id = ?', ['pkce_state']);
+            db.run(
+              `INSERT INTO x_tokens (id, access_token, refresh_token, scope, expires_at) VALUES (?, ?, ?, ?, ?)`,
+              ['active', tokenResponse.accessToken, tokenResponse.refreshToken, tokenResponse.scope, expiresAt]
+            );
+
+            res.end(JSON.stringify({ success: true, message: 'X/Twitter authenticated successfully', expiresAt }));
+          } catch (err: any) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: `OAuth callback failed: ${err.message}` }));
+          }
+        })();
+        return;
+      }
+
+      if (path === '/api/x/status' || path === '/api/x/status/') {
+        (async () => {
+          const tokenResult = db.exec('SELECT access_token, refresh_token, expires_at, created_at FROM x_tokens WHERE id = ?', ['active']);
+          if (tokenResult.length === 0 || tokenResult[0].values.length === 0) {
+            res.end(JSON.stringify({ authenticated: false }));
+            return;
+          }
+          const row = tokenResult[0].values[0];
+          const accessToken = row[0] as string;
+          const refreshToken = row[1] as string;
+          const expiresAt = row[2] as string;
+          const createdAt = row[3] as string;
+          const expired = expiresAt ? new Date(expiresAt) < new Date() : false;
+
+          let valid = false;
+          try {
+            valid = await verifyCredentials(accessToken);
+          } catch { }
+
+          res.end(JSON.stringify({
+            authenticated: valid,
+            hasRefreshToken: !!refreshToken,
+            expiresAt,
+            expired,
+            createdAt,
+            canRefresh: !valid && !!refreshToken,
+          }));
+        })();
+        return;
+      }
+
+      if (path === '/api/x/refresh' || path === '/api/x/refresh/') {
+        const clientId = process.env.X_CLIENT_ID || '';
+        const clientSecret = process.env.X_CLIENT_SECRET || '';
+        const callbackUrl = process.env.X_CALLBACK_URL || 'http://localhost:3001/api/x/callback';
+        const config: XConfig = { clientId, clientSecret, callbackUrl };
+
+        (async () => {
+          try {
+            const tokenResult = db.exec('SELECT refresh_token FROM x_tokens WHERE id = ?', ['active']);
+            if (tokenResult.length === 0 || tokenResult[0].values.length === 0) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: 'No tokens to refresh' }));
+              return;
+            }
+            const oldRefreshToken = tokenResult[0].values[0][0] as string;
+            const tokenResponse = await refreshAccessToken(config, oldRefreshToken);
+            const expiresAt = new Date(Date.now() + tokenResponse.expiresIn * 1000).toISOString();
+
+            db.run('DELETE FROM x_tokens WHERE id = ?', ['active']);
+            db.run(
+              `INSERT INTO x_tokens (id, access_token, refresh_token, scope, expires_at) VALUES (?, ?, ?, ?, ?)`,
+              ['active', tokenResponse.accessToken, tokenResponse.refreshToken, tokenResponse.scope, expiresAt]
+            );
+
+            res.end(JSON.stringify({ success: true, message: 'Token refreshed', expiresAt }));
+          } catch (err: any) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: `Token refresh failed: ${err.message}` }));
+          }
+        })();
+        return;
+      }
+
+      if (path === '/api/x/post' || path === '/api/x/post/') {
+        if (req.method !== 'POST') {
+          res.writeHead(405);
+          res.end(JSON.stringify({ error: 'Method not allowed' }));
+          return;
+        }
+
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', async () => {
+          try {
+            const { tweets } = JSON.parse(body);
+            if (!tweets || !Array.isArray(tweets) || tweets.length === 0) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: 'tweets array is required' }));
+              return;
+            }
+
+            const tokenResult = db.exec('SELECT access_token FROM x_tokens WHERE id = ?', ['active']);
+            if (tokenResult.length === 0 || tokenResult[0].values.length === 0) {
+              res.writeHead(401);
+              res.end(JSON.stringify({ error: 'Not authenticated. Visit /api/x/auth first.' }));
+              return;
+            }
+            const accessToken = tokenResult[0].values[0][0] as string;
+
+            const results = await postThread(accessToken, tweets);
+
+            for (let i = 0; i < results.length; i++) {
+              const postId = uuidv4();
+              db.run(
+                `INSERT INTO x_scheduled_posts (id, tweet_text, position, tweet_id, status, posted_at) VALUES (?, ?, ?, ?, 'posted', datetime('now'))`,
+                [postId, results[i].text, i + 1, results[i].tweetId]
+              );
+            }
+
+            res.end(JSON.stringify({ success: true, thread: results }));
+          } catch (err: any) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: `Post failed: ${err.message}` }));
+          }
+        });
+        return;
+      }
+
+      if (path === '/api/x/posts' || path === '/api/x/posts/') {
+        const result = db.exec(
+          'SELECT id, tweet_text, position, tweet_id, status, error, posted_at, created_at FROM x_scheduled_posts ORDER BY position ASC'
+        );
+        const posts = result.length > 0 ? result[0].values.map((row: any) => ({
+          id: row[0],
+          text: row[1],
+          position: row[2],
+          tweetId: row[3],
+          status: row[4],
+          error: row[5],
+          postedAt: row[6],
+          createdAt: row[7],
+        })) : [];
+        res.end(JSON.stringify({ posts, count: posts.length }));
+        return;
+      }
+
       if (path === '/api/health' || path === '/api/health/') {
         const checkCount = db.exec('SELECT COUNT(*) as count FROM checks');
         const eventCount = db.exec('SELECT COUNT(*) as count FROM failure_events');
@@ -511,7 +699,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       }
 
       res.writeHead(404);
-      res.end(JSON.stringify({ error: 'Not found', available: ['/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules', '/api/alerting/log', '/api/health'] }));
+      res.end(JSON.stringify({ error: 'Not found', available: ['/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules', '/api/alerting/log', '/api/x/auth', '/api/x/callback', '/api/x/status', '/api/x/refresh', '/api/x/post', '/api/x/posts', '/api/health'] }));
     } catch (err: any) {
       res.writeHead(500);
       res.end(JSON.stringify({ error: err.message }));
