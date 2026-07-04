@@ -5,6 +5,7 @@ import { UptimeRobotConfig, UptimeRobotMonitor, pollUptimeRobot, detectStatusCha
 import { classifyFailure, FailureType } from '../classifier';
 import { getOrCreatePlaybookEntry, writePlaybookFile } from '../playbook';
 import { runRemediation } from '../remediation/engine';
+import { evaluateAndNotify } from '../alerting';
 
 export interface HealthCheckConfig {
   sentry?: SentryConfig;
@@ -40,6 +41,11 @@ async function autoRemediateOnRecurrence(
       `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data) VALUES (?, ?, 'remediation_triggered', 'info', ?, ?, ?)`,
       [remEventId, checkId, `Auto-remediation for ${failureType}: ${remediationResult.status}`, remediationResult.output, JSON.stringify(remediationResult)]
     );
+
+    await evaluateAndNotify(db, 'remediation_triggered', 'info', `Auto-remediation for ${failureType}: ${remediationResult.status}`, remediationResult.output, new Date().toISOString(), checkId, remEventId).catch((err: any) => {
+      console.error(`[Alerting] Failed to send notification for remediation ${remEventId}: ${err.message}`);
+    });
+
     const remEntry = getOrCreatePlaybookEntry(db, 'remediation_triggered' as FailureType);
     const remFilePath = writePlaybookFile(playbookDir, remEntry);
     events.push(remFilePath);
@@ -82,6 +88,10 @@ export async function runSentryCheck(
         [event.id, checkId, event.failureType, event.severity, event.title, event.description, JSON.stringify(event.rawData)]
       );
 
+      await evaluateAndNotify(db, event.failureType, event.severity, event.title, event.description, event.detectedAt, checkId, event.id).catch((err: any) => {
+        console.error(`[Alerting] Failed to send notification for event ${event.id}: ${err.message}`);
+      });
+
       const entry = getOrCreatePlaybookEntry(db, event.failureType);
       const filePath = writePlaybookFile(playbookDir, entry);
       events.push(filePath);
@@ -103,6 +113,10 @@ export async function runSentryCheck(
         [eventId, checkId, `Error spike detected: ${issue.title} (${issue.count} occurrences)`, `Issue ${issue.permalink} spiked from previous count`, JSON.stringify(issue)]
       );
 
+      await evaluateAndNotify(db, 'error_spike', 'warning', `Error spike detected: ${issue.title}`, `Issue ${issue.permalink} spiked from previous count`, new Date().toISOString(), checkId, eventId).catch((err: any) => {
+        console.error(`[Alerting] Failed to send notification for spike ${eventId}: ${err.message}`);
+      });
+
       const entry = getOrCreatePlaybookEntry(db, 'error_spike' as FailureType);
       const filePath = writePlaybookFile(playbookDir, entry);
       events.push(filePath);
@@ -118,6 +132,10 @@ export async function runSentryCheck(
         `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data) VALUES (?, ?, 'new_error_pattern', 'info', ?, ?, ?)`,
         [eventId, checkId, `New error pattern: ${issue.title}`, `First occurrence of ${issue.title} at ${issue.permalink}`, JSON.stringify(issue)]
       );
+
+      await evaluateAndNotify(db, 'new_error_pattern', 'info', `New error pattern: ${issue.title}`, `First occurrence of ${issue.title} at ${issue.permalink}`, new Date().toISOString(), checkId, eventId).catch((err: any) => {
+        console.error(`[Alerting] Failed to send notification for new pattern ${eventId}: ${err.message}`);
+      });
 
       const entry = getOrCreatePlaybookEntry(db, 'new_error_pattern' as FailureType);
       const filePath = writePlaybookFile(playbookDir, entry);
@@ -178,6 +196,10 @@ export async function runUptimeRobotCheck(
         [event.id, checkId, event.failureType, event.severity, event.title, event.description, JSON.stringify(event.rawData)]
       );
 
+      await evaluateAndNotify(db, event.failureType, event.severity, event.title, event.description, event.detectedAt, checkId, event.id).catch((err: any) => {
+        console.error(`[Alerting] Failed to send notification for UptimeRobot event ${event.id}: ${err.message}`);
+      });
+
       const entry = getOrCreatePlaybookEntry(db, event.failureType);
       const filePath = writePlaybookFile(playbookDir, entry);
       events.push(filePath);
@@ -199,6 +221,10 @@ export async function runUptimeRobotCheck(
         [eventId, checkId, `Monitor down: ${monitor.friendlyName}`, `Monitor ${monitor.friendlyName} (${monitor.url}) is down`, JSON.stringify(monitor)]
       );
 
+      await evaluateAndNotify(db, 'broken_webhook', 'critical', `Monitor down: ${monitor.friendlyName}`, `Monitor ${monitor.friendlyName} (${monitor.url}) is down`, new Date().toISOString(), checkId, eventId).catch((err: any) => {
+        console.error(`[Alerting] Failed to send notification for down monitor ${eventId}: ${err.message}`);
+      });
+
       const entry = getOrCreatePlaybookEntry(db, 'broken_webhook' as FailureType);
       const filePath = writePlaybookFile(playbookDir, entry);
       events.push(filePath);
@@ -214,6 +240,10 @@ export async function runUptimeRobotCheck(
         `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data) VALUES (?, ?, 'broken_webhook', 'critical', ?, ?, ?)`,
         [eventId, checkId, `Status change: ${change.friendlyName} ${change.previousStatus} -> ${change.status}`, `Monitor ${change.friendlyName} changed status`, JSON.stringify(change)]
       );
+
+      await evaluateAndNotify(db, 'broken_webhook', 'critical', `Status change: ${change.friendlyName} ${change.previousStatus} -> ${change.status}`, `Monitor ${change.friendlyName} changed status`, new Date().toISOString(), checkId, eventId).catch((err: any) => {
+        console.error(`[Alerting] Failed to send notification for status change ${eventId}: ${err.message}`);
+      });
 
       const entry = getOrCreatePlaybookEntry(db, 'broken_webhook' as FailureType);
       const filePath = writePlaybookFile(playbookDir, entry);

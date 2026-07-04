@@ -7,6 +7,8 @@ import { getOrCreatePlaybookEntry } from '../playbook';
 import { FailureType } from '../classifier';
 import { matchPlaybookEntries, getCorrelatedPatterns } from '../playbook/matcher';
 import { PerfApi } from '../performance/perf-api';
+import { handleClerkWebhook } from '../webhooks/clerk';
+import { v4 as uuidv4 } from 'uuid';
 
 export interface ApiConfig {
   port: number;
@@ -317,6 +319,180 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         return;
       }
 
+      if (handleClerkWebhook(req, res)) {
+        return;
+      }
+
+      if (path === '/api/alerting/channels' || path === '/api/alerting/channels/') {
+        if (req.method === 'POST') {
+          let body = '';
+          req.on('data', (chunk) => { body += chunk; });
+          req.on('end', () => {
+            try {
+              const { name, type, config } = JSON.parse(body);
+              if (!name || !type || !config) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'name, type, and config are required' }));
+                return;
+              }
+              if (!['slack', 'email', 'pagerduty'].includes(type)) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'type must be slack, email, or pagerduty' }));
+                return;
+              }
+              const id = uuidv4();
+              db.run(
+                `INSERT INTO alert_channels (id, name, type, config) VALUES (?, ?, ?, ?)`,
+                [id, name, type, JSON.stringify(config)]
+              );
+              res.end(JSON.stringify({ success: true, id, name, type }));
+            } catch (err: any) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: err.message }));
+            }
+          });
+          return;
+        }
+        const result = db.exec('SELECT id, name, type, enabled, created_at FROM alert_channels ORDER BY created_at DESC');
+        const channels = result.length > 0 ? result[0].values.map((row: any) => ({
+          id: row[0], name: row[1], type: row[2], enabled: row[3] === 1, createdAt: row[4],
+        })) : [];
+        res.end(JSON.stringify({ channels, count: channels.length }));
+        return;
+      }
+
+      if (path.startsWith('/api/alerting/channels/') && req.method === 'DELETE') {
+        const channelId = path.split('/').pop();
+        if (!channelId) { res.writeHead(400); res.end(JSON.stringify({ error: 'Channel ID required' })); return; }
+        db.run('DELETE FROM alert_rules WHERE channel_id = ?', [channelId]);
+        db.run('DELETE FROM alert_channels WHERE id = ?', [channelId]);
+        res.end(JSON.stringify({ success: true }));
+        return;
+      }
+
+      if (path.startsWith('/api/alerting/channels/') && req.method === 'PUT') {
+        const channelId = path.split('/').pop();
+        if (!channelId) { res.writeHead(400); res.end(JSON.stringify({ error: 'Channel ID required' })); return; }
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { name, config, enabled } = JSON.parse(body);
+            const updates: string[] = [];
+            const params: any[] = [];
+            if (name !== undefined) { updates.push('name = ?'); params.push(name); }
+            if (config !== undefined) { updates.push('config = ?'); params.push(JSON.stringify(config)); }
+            if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
+            if (updates.length > 0) {
+              updates.push("updated_at = datetime('now')");
+              db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ?`, [...params, channelId]);
+            }
+            res.end(JSON.stringify({ success: true }));
+          } catch (err: any) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: err.message }));
+          }
+        });
+        return;
+      }
+
+      if (path === '/api/alerting/rules' || path === '/api/alerting/rules/') {
+        if (req.method === 'POST') {
+          let body = '';
+          req.on('data', (chunk) => { body += chunk; });
+          req.on('end', () => {
+            try {
+              const { name, channelId, failureTypes, minSeverity } = JSON.parse(body);
+              if (!name || !channelId || !failureTypes) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'name, channelId, and failureTypes are required' }));
+                return;
+              }
+              const id = uuidv4();
+              db.run(
+                `INSERT INTO alert_rules (id, name, channel_id, failure_types, min_severity) VALUES (?, ?, ?, ?, ?)`,
+                [id, name, channelId, JSON.stringify(failureTypes), minSeverity || 'info']
+              );
+              res.end(JSON.stringify({ success: true, id, name, channelId, failureTypes, minSeverity: minSeverity || 'info' }));
+            } catch (err: any) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: err.message }));
+            }
+          });
+          return;
+        }
+        const result = db.exec(
+          `SELECT ar.id, ar.name, ar.channel_id, ar.failure_types, ar.min_severity, ar.enabled, ac.name as channel_name, ac.type as channel_type
+           FROM alert_rules ar LEFT JOIN alert_channels ac ON ar.channel_id = ac.id
+           ORDER BY ar.created_at DESC`
+        );
+        const rules = result.length > 0 ? result[0].values.map((row: any) => ({
+          id: row[0], name: row[1], channelId: row[2],
+          failureTypes: JSON.parse(row[3] as string),
+          minSeverity: row[4], enabled: row[5] === 1,
+          channelName: row[6], channelType: row[7],
+        })) : [];
+        res.end(JSON.stringify({ rules, count: rules.length }));
+        return;
+      }
+
+      if (path.startsWith('/api/alerting/rules/') && req.method === 'DELETE') {
+        const ruleId = path.split('/').pop();
+        if (!ruleId) { res.writeHead(400); res.end(JSON.stringify({ error: 'Rule ID required' })); return; }
+        db.run('DELETE FROM alert_rules WHERE id = ?', [ruleId]);
+        res.end(JSON.stringify({ success: true }));
+        return;
+      }
+
+      if (path.startsWith('/api/alerting/rules/') && req.method === 'PUT') {
+        const ruleId = path.split('/').pop();
+        if (!ruleId) { res.writeHead(400); res.end(JSON.stringify({ error: 'Rule ID required' })); return; }
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { name, channelId, failureTypes, minSeverity, enabled } = JSON.parse(body);
+            const updates: string[] = [];
+            const params: any[] = [];
+            if (name !== undefined) { updates.push('name = ?'); params.push(name); }
+            if (channelId !== undefined) { updates.push('channel_id = ?'); params.push(channelId); }
+            if (failureTypes !== undefined) { updates.push('failure_types = ?'); params.push(JSON.stringify(failureTypes)); }
+            if (minSeverity !== undefined) { updates.push('min_severity = ?'); params.push(minSeverity); }
+            if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
+            if (updates.length > 0) {
+              updates.push("updated_at = datetime('now')");
+              db.run(`UPDATE alert_rules SET ${updates.join(', ')} WHERE id = ?`, [...params, ruleId]);
+            }
+            res.end(JSON.stringify({ success: true }));
+          } catch (err: any) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: err.message }));
+          }
+        });
+        return;
+      }
+
+      if (path === '/api/alerting/log' || path === '/api/alerting/log/') {
+        const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit') || '50', 10), 200);
+        const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
+        const result = db.exec(
+          `SELECT al.id, al.rule_id, al.channel_id, al.failure_event_id, al.failure_type, al.severity, al.channel_type, al.status, al.error_message, al.sent_at, ar.name as rule_name, ac.name as channel_name
+           FROM alert_log al
+           LEFT JOIN alert_rules ar ON al.rule_id = ar.id
+           LEFT JOIN alert_channels ac ON al.channel_id = ac.id
+           ORDER BY al.sent_at DESC LIMIT ? OFFSET ?`,
+          [limit, offset]
+        );
+        const logs = result.length > 0 ? result[0].values.map((row: any) => ({
+          id: row[0], ruleId: row[1], channelId: row[2], failureEventId: row[3],
+          failureType: row[4], severity: row[5], channelType: row[6],
+          status: row[7], errorMessage: row[8], sentAt: row[9],
+          ruleName: row[10], channelName: row[11],
+        })) : [];
+        res.end(JSON.stringify({ logs, count: logs.length, limit, offset }));
+        return;
+      }
+
       if (path === '/api/health' || path === '/api/health/') {
         const checkCount = db.exec('SELECT COUNT(*) as count FROM checks');
         const eventCount = db.exec('SELECT COUNT(*) as count FROM failure_events');
@@ -335,7 +511,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       }
 
       res.writeHead(404);
-      res.end(JSON.stringify({ error: 'Not found', available: ['/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/health'] }));
+      res.end(JSON.stringify({ error: 'Not found', available: ['/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules', '/api/alerting/log', '/api/health'] }));
     } catch (err: any) {
       res.writeHead(500);
       res.end(JSON.stringify({ error: err.message }));

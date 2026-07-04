@@ -22,7 +22,7 @@ dotenv.config();
 const POLL_INTERVAL_SEC = parseInt(process.env.POLL_INTERVAL_SEC || '60', 10);
 const DB_PATH = process.env.DB_PATH || './data/nightlamp.db';
 const PLAYBOOK_DIR = process.env.PLAYBOOK_DIR || './playbook';
-const API_PORT = parseInt(process.env.API_PORT || '3001', 10);
+const API_PORT = parseInt(process.env.PORT || process.env.API_PORT || '3001', 10);
 
 let db: Database;
 let sentryIssueCache: SentryIssue[] = [];
