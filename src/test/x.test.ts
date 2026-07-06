@@ -1,5 +1,5 @@
 import { createDatabase } from '../db/schema';
-import { buildAuthorizeUrl, postTweet, postThread, verifyCredentials } from '../connectors/x';
+import { buildAuthorizeUrl, postTweet, postThread, verifyCredentials, parseLaunchThread } from '../connectors/x';
 import { Database } from 'sql.js';
 import assert from 'assert';
 
@@ -155,6 +155,130 @@ describe('X/Twitter Connector', () => {
       assert.strictEqual(result[0].values[0][2], 1);
       assert.strictEqual(result[0].values[0][3], 'pending');
       db.run('DELETE FROM x_scheduled_posts WHERE id = ?', ['test-post']);
+    });
+
+    it('can schedule a post with future scheduled_at', () => {
+      const id = 'scheduled-test-1';
+      const futureDate = new Date(Date.now() + 86400000).toISOString();
+      db.run(
+        'INSERT INTO x_scheduled_posts (id, tweet_text, position, scheduled_at, status) VALUES (?, ?, ?, ?, ?)',
+        [id, 'Scheduled tweet', 1, futureDate, 'pending']
+      );
+      const result = db.exec('SELECT id, status, scheduled_at FROM x_scheduled_posts WHERE id = ?', [id]);
+      assert.ok(result.length > 0);
+      assert.strictEqual(result[0].values[0][1], 'pending');
+      db.run('DELETE FROM x_scheduled_posts WHERE id = ?', [id]);
+    });
+
+    it('pending post with past scheduled_at is picked up by scheduler query', () => {
+      const id = 'scheduler-test-past';
+      db.run(
+        'INSERT INTO x_scheduled_posts (id, tweet_text, position, scheduled_at, status) VALUES (?, ?, ?, ?, ?)',
+        [id, 'Past scheduled tweet', 1, '2020-01-01T00:00:00.000Z', 'pending']
+      );
+      const result = db.exec(
+        "SELECT id FROM x_scheduled_posts WHERE status = 'pending' AND scheduled_at <= datetime('now') ORDER BY scheduled_at ASC"
+      );
+      const found = result.length > 0 && result[0].values.some((row: any) => row[0] === id);
+      assert.ok(found, 'Past-due pending post should be returned by scheduler query');
+      db.run('DELETE FROM x_scheduled_posts WHERE id = ?', [id]);
+    });
+
+    it('future post is not picked up by scheduler query', () => {
+      const id = 'scheduler-test-future';
+      const futureDate = new Date(Date.now() + 86400000).toISOString();
+      db.run(
+        'INSERT INTO x_scheduled_posts (id, tweet_text, position, scheduled_at, status) VALUES (?, ?, ?, ?, ?)',
+        [id, 'Future tweet', 1, futureDate, 'pending']
+      );
+      const result = db.exec(
+        "SELECT id FROM x_scheduled_posts WHERE status = 'pending' AND scheduled_at <= datetime('now') ORDER BY scheduled_at ASC"
+      );
+      const found = result.length > 0 && result[0].values.some((row: any) => row[0] === id);
+      assert.ok(!found, 'Future pending post should NOT be returned by scheduler query');
+      db.run('DELETE FROM x_scheduled_posts WHERE id = ?', [id]);
+    });
+
+    it('posted posts are excluded from scheduler query', () => {
+      const id = 'scheduler-test-posted';
+      db.run(
+        'INSERT INTO x_scheduled_posts (id, tweet_text, position, scheduled_at, status) VALUES (?, ?, ?, ?, ?)',
+        [id, 'Already posted', 1, '2020-01-01T00:00:00.000Z', 'posted']
+      );
+      const result = db.exec(
+        "SELECT id FROM x_scheduled_posts WHERE status = 'pending' AND scheduled_at <= datetime('now') ORDER BY scheduled_at ASC"
+      );
+      const found = result.length > 0 && result[0].values.some((row: any) => row[0] === id);
+      assert.ok(!found, 'Posted posts should NOT be returned by scheduler query');
+      db.run('DELETE FROM x_scheduled_posts WHERE id = ?', [id]);
+    });
+  });
+
+  describe('Launch Thread Parser', () => {
+    const sampleContent = `# Build-in-Public Launch Thread
+
+## 7-Tweet Launch Thread
+
+### Tweet 1 — Hook
+\`\`\`
+Your AI-built app has an active failure right now and you don't know it.
+
+I run Nightlamp — we monitor AI/no-code apps 24/7.
+\`\`\`
+
+### Tweet 2 — The Problem
+\`\`\`
+Expired API keys. Rate limit shifts. Schema drift. Broken webhooks.
+
+Not "if" — "when." And the app never shows an error.
+\`\`\`
+
+### Tweet 3 — The Stats
+\`\`\`
+We monitored 50 AI apps for 3 months.
+
+Average findings per app: 2.3 active failures.
+\`\`\``;
+
+    it('extracts correct number of tweets', () => {
+      const tweets = parseLaunchThread(sampleContent);
+      assert.strictEqual(tweets.length, 3);
+    });
+
+    it('extracts tweet text correctly', () => {
+      const tweets = parseLaunchThread(sampleContent);
+      assert.ok(tweets[0].includes('Your AI-built app has an active failure'));
+      assert.ok(tweets[1].includes('Expired API keys. Rate limit shifts.'));
+      assert.ok(tweets[2].includes('We monitored 50 AI apps for 3 months'));
+    });
+
+    it('preserves multi-line content in each tweet', () => {
+      const tweets = parseLaunchThread(sampleContent);
+      assert.ok(tweets[0].includes('\n'), 'Multi-line tweet should contain newline');
+      assert.ok(tweets[0].includes('I run Nightlamp'));
+    });
+
+    it('returns single entry for content with no tweet markers', () => {
+      const result = parseLaunchThread('# Just a title\n\nSome paragraph text.');
+      assert.strictEqual(result.length, 1);
+      assert.ok(result[0].includes('Some paragraph text'));
+    });
+
+    it('returns empty array for empty content', () => {
+      assert.strictEqual(parseLaunchThread('').length, 0);
+    });
+
+    it('parses actual launch thread file correctly', () => {
+      const fs = require('fs');
+      const path = require('path');
+      const filePath = path.resolve('./docs/marketing/build-in-public-content.md');
+      if (fs.existsSync(filePath)) {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const tweets = parseLaunchThread(content);
+        assert.strictEqual(tweets.length, 7, 'Launch thread should have exactly 7 tweets');
+        assert.ok(tweets[0].includes('Your AI-built app'));
+        assert.ok(tweets[6].includes('Pricing'));
+      }
     });
   });
 });

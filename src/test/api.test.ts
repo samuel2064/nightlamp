@@ -130,4 +130,86 @@ describe('API Server', () => {
     const res = await (await fetch(`http://127.0.0.1:${port}/api/playbook/correlations`)).json() as any;
     assert.strictEqual(res.count, 0);
   });
+
+  describe('X/Twitter API', () => {
+    before(() => {
+      process.env.X_CLIENT_ID = 'test-client-id';
+      process.env.X_CLIENT_SECRET = 'test-client-secret';
+    });
+
+    after(() => {
+      delete process.env.X_CLIENT_ID;
+      delete process.env.X_CLIENT_SECRET;
+    });
+
+    it('GET /api/x/auth returns authorize URL', async () => {
+      const res = await (await fetch(`http://127.0.0.1:${port}/api/x/auth`)).json() as any;
+      assert.ok(res.authorizeUrl.startsWith('https://twitter.com/i/oauth2/authorize'));
+      assert.ok(res.state.length > 0);
+    });
+
+    it('POST /api/x/schedule creates pending posts', async () => {
+      const futureDate = new Date(Date.now() + 86400000).toISOString();
+      const res = await fetch(`http://127.0.0.1:${port}/api/x/schedule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tweets: ['First tweet', 'Second tweet'], scheduledAt: futureDate }),
+      });
+      const data = await res.json() as any;
+      assert.strictEqual(data.success, true);
+      assert.strictEqual(data.count, 2);
+      assert.ok(Array.isArray(data.postIds));
+      assert.strictEqual(data.postIds.length, 2);
+
+      for (const id of data.postIds) {
+        db.run('DELETE FROM x_scheduled_posts WHERE id = ?', [id]);
+      }
+    });
+
+    it('POST /api/x/schedule rejects missing tweets', async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/x/schedule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scheduledAt: new Date().toISOString() }),
+      });
+      assert.strictEqual(res.status, 400);
+    });
+
+    it('POST /api/x/schedule rejects empty tweets array', async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/x/schedule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tweets: [], scheduledAt: new Date().toISOString() }),
+      });
+      assert.strictEqual(res.status, 400);
+    });
+
+    it('POST /api/x/schedule rejects missing scheduledAt', async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/x/schedule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tweets: ['test'] }),
+      });
+      assert.strictEqual(res.status, 400);
+    });
+
+    it('POST /api/x/schedule rejects invalid scheduledAt', async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/x/schedule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tweets: ['test'], scheduledAt: 'not-a-date' }),
+      });
+      assert.strictEqual(res.status, 400);
+    });
+
+    it('GET /api/x/status returns authenticated false with no tokens', async () => {
+      const res = await (await fetch(`http://127.0.0.1:${port}/api/x/status`)).json() as any;
+      assert.strictEqual(res.authenticated, false);
+    });
+
+    it('GET /api/x/posts returns posts array', async () => {
+      const res = await (await fetch(`http://127.0.0.1:${port}/api/x/posts`)).json() as any;
+      assert.ok(Array.isArray(res.posts));
+    });
+  });
 });

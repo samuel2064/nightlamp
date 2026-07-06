@@ -221,3 +221,22 @@ export async function verifyCredentials(accessToken: string): Promise<boolean> {
     return false;
   }
 }
+
+export function parseLaunchThread(content: string): string[] {
+  const tweets: string[] = [];
+  let currentTweet = '';
+
+  for (const line of content.split('\n')) {
+    const tweetMatch = line.match(/^### Tweet (\d+)/);
+    if (tweetMatch) {
+      if (currentTweet) tweets.push(currentTweet.trim());
+      currentTweet = '';
+    } else if (line.trim() && !line.startsWith('#') && !line.startsWith('---') && !line.startsWith('`')) {
+      if (currentTweet) currentTweet += '\n' + line.trim();
+      else currentTweet = line.trim();
+    }
+  }
+  if (currentTweet) tweets.push(currentTweet.trim());
+
+  return tweets;
+}

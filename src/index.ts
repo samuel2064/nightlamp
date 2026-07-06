@@ -4,8 +4,9 @@ import * as path from 'path';
 import * as cron from 'node-cron';
 import { Database } from 'sql.js';
 import * as dotenv from 'dotenv';
+import { v4 as uuidv4 } from 'uuid';
 import { createDatabase, saveDatabase } from './db';
-import { SentryConfig, SentryIssue, UptimeRobotConfig, UptimeRobotMonitor, XConfig, buildAuthorizeUrl, postThread, verifyCredentials, refreshAccessToken, exchangeCodeForToken } from './connectors';
+import { SentryConfig, SentryIssue, UptimeRobotConfig, UptimeRobotMonitor, XConfig, buildAuthorizeUrl, postThread, verifyCredentials, refreshAccessToken, exchangeCodeForToken, parseLaunchThread } from './connectors';
 import { runSentryCheck, runUptimeRobotCheck } from './engine';
 import { createStripeClient } from './billing';
 import { startApiServer } from './api';
@@ -152,6 +153,64 @@ async function init(): Promise<void> {
       });
     }
 
+    const scheduledPostCronExpr = `*/${Math.min(POLL_INTERVAL_SEC, 60)} * * * * *`;
+    cron.schedule(scheduledPostCronExpr, async () => {
+      try {
+        const pendingResult = db.exec(
+          `SELECT id, tweet_text, position, scheduled_at FROM x_scheduled_posts WHERE status = 'pending' AND scheduled_at <= datetime('now') ORDER BY scheduled_at ASC, position ASC`
+        );
+        if (pendingResult.length === 0 || !pendingResult[0].values.length) return;
+
+        const tokenRow = db.exec('SELECT access_token FROM x_tokens WHERE id = ?', ['active']);
+        if (tokenRow.length === 0 || !tokenRow[0].values.length) return;
+        const accessToken = tokenRow[0].values[0][0] as string;
+
+        const pending = pendingResult[0].values.map((row: any) => ({
+          id: row[0] as string,
+          text: row[1] as string,
+          position: row[2] as number,
+          scheduledAt: row[3] as string,
+        }));
+
+        const groups = new Map<string, typeof pending>();
+        for (const p of pending) {
+          const key = p.scheduledAt;
+          const existing = groups.get(key) || [];
+          existing.push(p);
+          groups.set(key, existing);
+        }
+
+        for (const [, group] of groups) {
+          group.sort((a: any, b: any) => a.position - b.position);
+          const tweetTexts = group.map((p: any) => p.text);
+          try {
+            const results = await postThread(accessToken, tweetTexts);
+            for (let i = 0; i < results.length; i++) {
+              const postId = uuidv4();
+              db.run(
+                `UPDATE x_scheduled_posts SET tweet_id = ?, status = 'posted', posted_at = datetime('now') WHERE id = ?`,
+                [results[i].tweetId, group[i].id]
+              );
+            }
+            saveDatabase(db, DB_PATH);
+            console.log(`[Nightlamp] Scheduled thread posted: ${results.length} tweets`);
+          } catch (err: any) {
+            for (const p of group) {
+              db.run(
+                `UPDATE x_scheduled_posts SET status = 'failed', error = ? WHERE id = ?`,
+                [err.message, p.id]
+              );
+            }
+            saveDatabase(db, DB_PATH);
+            console.error(`[Nightlamp] Scheduled thread post failed: ${err.message}`);
+          }
+        }
+      } catch (err: any) {
+        console.error(`[Nightlamp] Scheduled post check error: ${err.message}`);
+      }
+    });
+    console.log(`[Nightlamp] Scheduled X post checker running (every ${Math.min(POLL_INTERVAL_SEC, 60)}s)`);
+
     if (xPostOnStartup) {
       const threadFile = process.env.X_LAUNCH_THREAD_FILE || './docs/marketing/build-in-public-content.md';
       const fullPath = path.resolve(threadFile);
@@ -159,41 +218,36 @@ async function init(): Promise<void> {
       if (fs.existsSync(fullPath)) {
         console.log(`[Nightlamp] Loading launch thread from ${fullPath}`);
         const content = fs.readFileSync(fullPath, 'utf-8');
-        const tweets: string[] = [];
-        let currentTweet = '';
-
-        for (const line of content.split('\n')) {
-          const tweetMatch = line.match(/^### Tweet (\d+)/);
-          if (tweetMatch) {
-            if (currentTweet) tweets.push(currentTweet.trim());
-            currentTweet = '';
-          } else if (line.trim() && !line.startsWith('#') && !line.startsWith('---') && !line.startsWith('`')) {
-            if (currentTweet) currentTweet += '\n' + line.trim();
-            else currentTweet = line.trim();
-          }
-        }
-        if (currentTweet) tweets.push(currentTweet.trim());
+        const tweets = parseLaunchThread(content);
 
         console.log(`[Nightlamp] Extracted ${tweets.length} tweets for launch thread`);
 
-        const tokenResult = db.exec('SELECT access_token FROM x_tokens WHERE id = ?', ['active']);
-        if (tokenResult.length > 0 && tokenResult[0].values.length > 0) {
-          const accessToken = tokenResult[0].values[0][0] as string;
-          postThread(accessToken, tweets).then((results) => {
-            console.log(`[Nightlamp] Launch thread posted: ${results.length} tweets`);
-            for (const r of results) {
-              const postId = require('uuid').v4();
-              db.run(
-                `INSERT INTO x_scheduled_posts (id, tweet_text, position, tweet_id, status, posted_at) VALUES (?, ?, ?, ?, 'posted', datetime('now'))`,
-                [postId, r.text, results.indexOf(r) + 1, r.tweetId]
-              );
-            }
-            saveDatabase(db, DB_PATH);
-          }).catch((err: any) => {
-            console.error(`[Nightlamp] Failed to post launch thread: ${err.message}`);
-          });
+        const alreadyPosted = db.exec(
+          `SELECT COUNT(*) as count FROM x_scheduled_posts WHERE status = 'posted'`
+        );
+        const postedCount = alreadyPosted.length > 0 && alreadyPosted[0].values.length > 0 ? Number(alreadyPosted[0].values[0][0]) : 0;
+        if (postedCount > 0) {
+          console.log('[Nightlamp] Launch thread already posted, skipping');
         } else {
-          console.log('[Nightlamp] X/Twitter not authenticated. Generate auth URL at /api/x/auth');
+          const tokenResult = db.exec('SELECT access_token FROM x_tokens WHERE id = ?', ['active']);
+          if (tokenResult.length > 0 && tokenResult[0].values.length > 0) {
+            const accessToken = tokenResult[0].values[0][0] as string;
+            postThread(accessToken, tweets).then((results) => {
+              console.log(`[Nightlamp] Launch thread posted: ${results.length} tweets`);
+              for (let i = 0; i < results.length; i++) {
+                const postId = uuidv4();
+                db.run(
+                  `INSERT INTO x_scheduled_posts (id, tweet_text, position, tweet_id, status, posted_at) VALUES (?, ?, ?, ?, 'posted', datetime('now'))`,
+                  [postId, results[i].text, i + 1, results[i].tweetId]
+                );
+              }
+              saveDatabase(db, DB_PATH);
+            }).catch((err: any) => {
+              console.error(`[Nightlamp] Failed to post launch thread: ${err.message}`);
+            });
+          } else {
+            console.log('[Nightlamp] X/Twitter not authenticated. Generate auth URL at /api/x/auth');
+          }
         }
       } else {
         console.log(`[Nightlamp] Launch thread file not found: ${fullPath}`);

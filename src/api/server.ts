@@ -8,8 +8,10 @@ import { FailureType } from '../classifier';
 import { matchPlaybookEntries, getCorrelatedPatterns } from '../playbook/matcher';
 import { PerfApi } from '../performance/perf-api';
 import { handleClerkWebhook } from '../webhooks/clerk';
+import * as fs from 'fs';
+import * as nodePath from 'path';
 import { v4 as uuidv4 } from 'uuid';
-import { buildAuthorizeUrl, exchangeCodeForToken, refreshAccessToken, postThread, verifyCredentials, XConfig } from '../connectors/x';
+import { buildAuthorizeUrl, exchangeCodeForToken, refreshAccessToken, postThread, verifyCredentials, parseLaunchThread, XConfig } from '../connectors/x';
 
 export interface ApiConfig {
   port: number;
@@ -663,6 +665,122 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         return;
       }
 
+      if (path === '/api/x/schedule' || path === '/api/x/schedule/') {
+        if (req.method !== 'POST') {
+          res.writeHead(405);
+          res.end(JSON.stringify({ error: 'Method not allowed' }));
+          return;
+        }
+
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { tweets, scheduledAt } = JSON.parse(body);
+            if (!tweets || !Array.isArray(tweets) || tweets.length === 0) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: 'tweets array is required' }));
+              return;
+            }
+            if (!scheduledAt) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: 'scheduledAt (ISO 8601) is required' }));
+              return;
+            }
+
+            const scheduled = new Date(scheduledAt);
+            if (isNaN(scheduled.getTime())) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: 'scheduledAt must be a valid ISO 8601 date' }));
+              return;
+            }
+
+            const ids: string[] = [];
+            for (let i = 0; i < tweets.length; i++) {
+              const postId = uuidv4();
+              db.run(
+                `INSERT INTO x_scheduled_posts (id, tweet_text, position, scheduled_at, status) VALUES (?, ?, ?, ?, 'pending')`,
+                [postId, tweets[i], i + 1, scheduled.toISOString()]
+              );
+              ids.push(postId);
+            }
+
+            res.end(JSON.stringify({ success: true, postIds: ids, scheduledAt: scheduled.toISOString(), count: tweets.length }));
+          } catch (err: any) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: err.message }));
+          }
+        });
+        return;
+      }
+
+      if (path === '/api/x/schedule-thread' || path === '/api/x/schedule-thread/') {
+        if (req.method !== 'POST') {
+          res.writeHead(405);
+          res.end(JSON.stringify({ error: 'Method not allowed' }));
+          return;
+        }
+
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { scheduledAt } = JSON.parse(body);
+            if (!scheduledAt) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: 'scheduledAt (ISO 8601) is required' }));
+              return;
+            }
+
+            const scheduled = new Date(scheduledAt);
+            if (isNaN(scheduled.getTime())) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: 'scheduledAt must be a valid ISO 8601 date' }));
+              return;
+            }
+
+            const threadFile = process.env.X_LAUNCH_THREAD_FILE || './docs/marketing/build-in-public-content.md';
+            const fullPath = nodePath.resolve(threadFile);
+            if (!fs.existsSync(fullPath)) {
+              res.writeHead(404);
+              res.end(JSON.stringify({ error: `Launch thread file not found: ${fullPath}` }));
+              return;
+            }
+
+            const content = fs.readFileSync(fullPath, 'utf-8');
+            const tweets = parseLaunchThread(content);
+
+            if (tweets.length === 0) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: 'No tweets found in launch thread file' }));
+              return;
+            }
+
+            const ids: string[] = [];
+            for (let i = 0; i < tweets.length; i++) {
+              const postId = uuidv4();
+              db.run(
+                `INSERT INTO x_scheduled_posts (id, tweet_text, position, scheduled_at, status) VALUES (?, ?, ?, ?, 'pending')`,
+                [postId, tweets[i], i + 1, scheduled.toISOString()]
+              );
+              ids.push(postId);
+            }
+
+            res.end(JSON.stringify({
+              success: true,
+              postIds: ids,
+              scheduledAt: scheduled.toISOString(),
+              count: tweets.length,
+              source: fullPath,
+            }));
+          } catch (err: any) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: err.message }));
+          }
+        });
+        return;
+      }
+
       if (path === '/api/x/posts' || path === '/api/x/posts/') {
         const result = db.exec(
           'SELECT id, tweet_text, position, tweet_id, status, error, posted_at, created_at FROM x_scheduled_posts ORDER BY position ASC'
@@ -699,7 +817,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       }
 
       res.writeHead(404);
-      res.end(JSON.stringify({ error: 'Not found', available: ['/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules', '/api/alerting/log', '/api/x/auth', '/api/x/callback', '/api/x/status', '/api/x/refresh', '/api/x/post', '/api/x/posts', '/api/health'] }));
+      res.end(JSON.stringify({ error: 'Not found', available: ['/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules', '/api/alerting/log', '/api/x/auth', '/api/x/callback', '/api/x/status', '/api/x/refresh', '/api/x/schedule', '/api/x/schedule-thread', '/api/x/post', '/api/x/posts', '/api/health'] }));
     } catch (err: any) {
       res.writeHead(500);
       res.end(JSON.stringify({ error: err.message }));
