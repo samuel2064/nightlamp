@@ -48,7 +48,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: NEXT_PUBLIC_BACKEND_URL
-        value: https://nightlamp-backend.onrender.com
+        value: https://nightlamp-api.onrender.com
       - key: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
         sync: false
       - key: CLERK_SECRET_KEY
