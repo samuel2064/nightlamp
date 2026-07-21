@@ -890,7 +890,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
                    COUNT(*) as total_count,
                    SUM(is_breaking) as breaking_count,
                    MAX(available_version) as latest_version,
-                   MAX(CASE WHEN detected_at = (SELECT MAX(detected_at) FROM dependency_updates WHERE dependency_id = du2.dependency_id) THEN change_type END) as latest_change_type,
+                   MAX(CASE WHEN detected_at = (SELECT MAX(detected_at) FROM dependency_updates du_inner WHERE du_inner.dependency_id = du.dependency_id) THEN change_type END) as latest_change_type,
                    MAX(detected_at) as latest_detected_at
             FROM dependency_updates
             GROUP BY dependency_id
