@@ -879,22 +879,27 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       if (path === '/api/dependency-health' || path === '/api/dependency-health/') {
         const result = db.exec(`
           SELECT d.id, d.name, d.current_version, d.specified_range, d.is_dev, d.created_at, d.updated_at,
-                 COALESCE(du.breaking_count, 0) as breaking_updates,
-                 COALESCE(du.total_count, 0) as total_updates,
-                 du.latest_version,
-                 du.latest_change_type,
-                 du.latest_detected_at
+                 COALESCE(du_stats.breaking_count, 0) as breaking_updates,
+                 COALESCE(du_stats.total_count, 0) as total_updates,
+                 du_stats.latest_version,
+                 du_latest.change_type as latest_change_type,
+                 du_stats.latest_detected_at
           FROM dependencies d
           LEFT JOIN (
             SELECT dependency_id,
                    COUNT(*) as total_count,
                    SUM(is_breaking) as breaking_count,
                    MAX(available_version) as latest_version,
-                   MAX(CASE WHEN detected_at = (SELECT MAX(detected_at) FROM dependency_updates du_inner WHERE du_inner.dependency_id = du.dependency_id) THEN change_type END) as latest_change_type,
                    MAX(detected_at) as latest_detected_at
             FROM dependency_updates
             GROUP BY dependency_id
-          ) du ON d.id = du.dependency_id
+          ) du_stats ON d.id = du_stats.dependency_id
+          LEFT JOIN (
+            SELECT du1.dependency_id, du1.change_type
+            FROM dependency_updates du1
+            WHERE du1.detected_at = (SELECT MAX(du2.detected_at) FROM dependency_updates du2 WHERE du2.dependency_id = du1.dependency_id)
+            GROUP BY du1.dependency_id, du1.change_type
+          ) du_latest ON d.id = du_latest.dependency_id
           ORDER BY breaking_updates DESC, total_updates DESC
         `);
 
