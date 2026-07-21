@@ -799,6 +799,213 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         return;
       }
 
+      if (path === '/api/monitors' || path === '/api/monitors/') {
+        const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit') || '50', 10), 200);
+        const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
+        const enabled = parsedUrl.searchParams.get('enabled');
+
+        let sql = 'SELECT id, source, name, config, enabled, created_at, updated_at FROM checks WHERE 1=1';
+        const params: any[] = [];
+
+        if (enabled !== null) {
+          sql += ' AND enabled = ?';
+          params.push(enabled === 'true' ? 1 : 0);
+        }
+
+        sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+        params.push(limit, offset);
+
+        const result = db.exec(sql, params);
+        const monitors = result.length > 0 ? result[0].values.map((row: any) => ({
+          id: row[0],
+          source: row[1],
+          name: row[2],
+          config: JSON.parse(row[3]),
+          enabled: row[4] === 1,
+          createdAt: row[5],
+          updatedAt: row[6],
+        })) : [];
+
+        res.end(JSON.stringify({ monitors, count: monitors.length, limit, offset }));
+        return;
+      }
+
+      if (path === '/api/incidents' || path === '/api/incidents/') {
+        const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit') || '50', 10), 200);
+        const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
+        const status = parsedUrl.searchParams.get('status');
+        const severity = parsedUrl.searchParams.get('severity');
+
+        let sql = `SELECT fe.id, fe.check_id, fe.failure_type, fe.severity, fe.title, fe.description, 
+                          fe.raw_data, fe.detected_at, fe.acknowledged,
+                          c.name as check_name, c.source as check_source
+                   FROM failure_events fe
+                   LEFT JOIN checks c ON fe.check_id = c.id
+                   WHERE 1=1`;
+        const params: any[] = [];
+
+        if (status === 'acknowledged') {
+          sql += ' AND fe.acknowledged = 1';
+        } else if (status === 'unacknowledged') {
+          sql += ' AND fe.acknowledged = 0';
+        }
+        if (severity) {
+          sql += ' AND fe.severity = ?';
+          params.push(severity);
+        }
+
+        sql += ' ORDER BY fe.detected_at DESC LIMIT ? OFFSET ?';
+        params.push(limit, offset);
+
+        const result = db.exec(sql, params);
+        const incidents = result.length > 0 ? result[0].values.map((row: any) => ({
+          id: row[0],
+          checkId: row[1],
+          failureType: row[2],
+          severity: row[3],
+          title: row[4],
+          description: row[5],
+          rawData: row[6] ? JSON.parse(row[6]) : null,
+          detectedAt: row[7],
+          acknowledged: row[8] === 1,
+          checkName: row[9],
+          checkSource: row[10],
+        })) : [];
+
+        res.end(JSON.stringify({ incidents, count: incidents.length, limit, offset }));
+        return;
+      }
+
+      if (path === '/api/dependency-health' || path === '/api/dependency-health/') {
+        const result = db.exec(`
+          SELECT d.id, d.name, d.current_version, d.specified_range, d.is_dev, d.created_at, d.updated_at,
+                 COALESCE(du.breaking_count, 0) as breaking_updates,
+                 COALESCE(du.total_count, 0) as total_updates,
+                 du.latest_version,
+                 du.latest_change_type,
+                 du.latest_detected_at
+          FROM dependencies d
+          LEFT JOIN (
+            SELECT dependency_id,
+                   COUNT(*) as total_count,
+                   SUM(is_breaking) as breaking_count,
+                   MAX(available_version) as latest_version,
+                   MAX(CASE WHEN detected_at = (SELECT MAX(detected_at) FROM dependency_updates WHERE dependency_id = du2.dependency_id) THEN change_type END) as latest_change_type,
+                   MAX(detected_at) as latest_detected_at
+            FROM dependency_updates
+            GROUP BY dependency_id
+          ) du ON d.id = du.dependency_id
+          ORDER BY breaking_updates DESC, total_updates DESC
+        `);
+
+        const dependencyHealth = result.length > 0 ? result[0].values.map((row: any) => ({
+          id: row[0],
+          name: row[1],
+          currentVersion: row[2],
+          specifiedRange: row[3],
+          isDev: row[4] === 1,
+          createdAt: row[5],
+          updatedAt: row[6],
+          breakingUpdates: row[7],
+          totalUpdates: row[8],
+          latestVersion: row[9],
+          latestChangeType: row[10],
+          latestDetectedAt: row[11],
+          status: row[7] > 0 ? 'breaking' : (row[8] > 0 ? 'updates_available' : 'up_to_date'),
+        })) : [];
+
+        res.end(JSON.stringify({ dependencies: dependencyHealth, count: dependencyHealth.length }));
+        return;
+      }
+
+      if (path === '/api/activity' || path === '/api/activity/') {
+        const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit') || '50', 10), 200);
+        const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
+        const type = parsedUrl.searchParams.get('type');
+
+        const activities: any[] = [];
+
+        if (!type || type === 'check_result') {
+          const crResult = db.exec(`
+            SELECT cr.id, cr.check_id, cr.status, cr.summary, cr.executed_at, c.name as check_name, c.source
+            FROM check_results cr
+            LEFT JOIN checks c ON cr.check_id = c.id
+            ORDER BY cr.executed_at DESC LIMIT ? OFFSET ?
+          `, [limit, offset]);
+
+          if (crResult.length > 0) {
+            crResult[0].values.forEach((row: any) => {
+              activities.push({
+                id: row[0],
+                type: 'check_result',
+                checkId: row[1],
+                status: row[2],
+                summary: row[3],
+                timestamp: row[4],
+                checkName: row[5],
+                checkSource: row[6],
+              });
+            });
+          }
+        }
+
+        if (!type || type === 'failure_event') {
+          const feResult = db.exec(`
+            SELECT fe.id, fe.check_id, fe.failure_type, fe.severity, fe.title, fe.detected_at, c.name as check_name, c.source
+            FROM failure_events fe
+            LEFT JOIN checks c ON fe.check_id = c.id
+            ORDER BY fe.detected_at DESC LIMIT ? OFFSET ?
+          `, [limit, offset]);
+
+          if (feResult.length > 0) {
+            feResult[0].values.forEach((row: any) => {
+              activities.push({
+                id: row[0],
+                type: 'failure_event',
+                checkId: row[1],
+                failureType: row[2],
+                severity: row[3],
+                title: row[4],
+                timestamp: row[5],
+                checkName: row[6],
+                checkSource: row[7],
+              });
+            });
+          }
+        }
+
+        if (!type || type === 'dependency_update') {
+          const duResult = db.exec(`
+            SELECT du.id, du.dependency_id, du.available_version, du.current_version, du.change_type, du.is_breaking, du.detected_at, d.name as dependency_name
+            FROM dependency_updates du
+            LEFT JOIN dependencies d ON du.dependency_id = d.id
+            ORDER BY du.detected_at DESC LIMIT ? OFFSET ?
+          `, [limit, offset]);
+
+          if (duResult.length > 0) {
+            duResult[0].values.forEach((row: any) => {
+              activities.push({
+                id: row[0],
+                type: 'dependency_update',
+                dependencyId: row[1],
+                availableVersion: row[2],
+                currentVersion: row[3],
+                changeType: row[4],
+                isBreaking: row[5] === 1,
+                timestamp: row[6],
+                dependencyName: row[7],
+              });
+            });
+          }
+        }
+
+        activities.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        const paginated = activities.slice(0, limit);
+
+        res.end(JSON.stringify({ activities: paginated, count: paginated.length, limit, offset }));
+        return;
+      }
+
       if (path === '/api/health' || path === '/api/health/') {
         const checkCount = db.exec('SELECT COUNT(*) as count FROM checks');
         const eventCount = db.exec('SELECT COUNT(*) as count FROM failure_events');
@@ -817,7 +1024,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       }
 
       res.writeHead(404);
-      res.end(JSON.stringify({ error: 'Not found', available: ['/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules', '/api/alerting/log', '/api/x/auth', '/api/x/callback', '/api/x/status', '/api/x/refresh', '/api/x/schedule', '/api/x/schedule-thread', '/api/x/post', '/api/x/posts', '/api/health'] }));
+      res.end(JSON.stringify({ error: 'Not found', available: ['/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules', '/api/alerting/log', '/api/x/auth', '/api/x/callback', '/api/x/status', '/api/x/refresh', '/api/x/schedule', '/api/x/schedule-thread', '/api/x/post', '/api/x/posts', '/api/health', '/api/monitors', '/api/incidents', '/api/dependency-health', '/api/activity', '/api/webhooks/clerk'] }));
     } catch (err: any) {
       res.writeHead(500);
       res.end(JSON.stringify({ error: err.message }));

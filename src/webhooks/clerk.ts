@@ -67,7 +67,9 @@ function handleClerkEvent(event: ClerkEvent): void {
 }
 
 export function handleClerkWebhook(req: IncomingMessage, res: ServerResponse): boolean {
-  if (req.url !== '/api/webhooks/clerk' || req.method !== 'POST') return false;
+  const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
+  const path = parsedUrl.pathname;
+  if ((path !== '/api/webhooks/clerk' && path !== '/api/webhooks/clerk/') || req.method !== 'POST') return false;
 
   let body = '';
   req.on('data', (chunk) => { body += chunk; });
