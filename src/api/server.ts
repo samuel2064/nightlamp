@@ -12,6 +12,13 @@ import * as fs from 'fs';
 import * as nodePath from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { buildAuthorizeUrl, exchangeCodeForToken, refreshAccessToken, postThread, verifyCredentials, parseLaunchThread, XConfig } from '../connectors/x';
+import { TeamApi } from '../teams/team-api';
+import { OnboardingApi } from '../teams/onboarding-api';
+import { PlaybookBuilderApi } from '../playbook/playbook-builder-api';
+import { NotificationApi } from '../notifications';
+import { ReportsApi } from '../reports';
+import { getPolicyForSeverity, getOnCallAt, ESCALATION_POLICIES } from '../alerting';
+import { ApiLatencyTracker, ApiCache, cacheKey } from '../performance/api-latency';
 
 export interface ApiConfig {
   port: number;
@@ -29,14 +36,31 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
   }) : null;
 
   const perfApi = new PerfApi(db);
+  const teamApi = new TeamApi(db);
+  const onboardingApi = new OnboardingApi(db);
+  const playbookBuilderApi = new PlaybookBuilderApi(db);
+  const notificationApi = new NotificationApi(db);
+  const reportsApi = new ReportsApi(db);
+  const latencyTracker = new ApiLatencyTracker();
+  const hotPathCache = new ApiCache(15_000);
   const server = http.createServer((req, res) => {
+    const start = process.hrtime.bigint();
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Access-Control-Allow-Origin', '*');
 
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = parsedUrl.pathname;
 
+    res.on('finish', () => {
+      const elapsedNs = process.hrtime.bigint() - start;
+      latencyTracker.record(path, Number(elapsedNs) / 1e6);
+    });
+
     try {
+      if (path === '/api/performance/latency' || path === '/api/performance/latency/') {
+        res.end(JSON.stringify({ latency: latencyTracker.summary() }));
+        return;
+      }
       if (path === '/api/events' || path === '/api/events/') {
         const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit') || '50', 10), 200);
         const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
@@ -326,6 +350,26 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         return;
       }
 
+      if (teamApi.handle(req, res)) {
+        return;
+      }
+
+      if (onboardingApi.handle(req, res)) {
+        return;
+      }
+
+      if (playbookBuilderApi.handle(req, res)) {
+        return;
+      }
+
+      if (notificationApi.handle(req, res)) {
+        return;
+      }
+
+      if (reportsApi.handle(req, res)) {
+        return;
+      }
+
       if (path === '/api/alerting/channels' || path === '/api/alerting/channels/') {
         if (req.method === 'POST') {
           let body = '';
@@ -356,9 +400,9 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           });
           return;
         }
-        const result = db.exec('SELECT id, name, type, enabled, created_at FROM alert_channels ORDER BY created_at DESC');
+        const result = db.exec('SELECT id, name, type, enabled, team_id, created_at FROM alert_channels ORDER BY created_at DESC');
         const channels = result.length > 0 ? result[0].values.map((row: any) => ({
-          id: row[0], name: row[1], type: row[2], enabled: row[3] === 1, createdAt: row[4],
+          id: row[0], name: row[1], type: row[2], enabled: row[3] === 1, teamId: row[4], createdAt: row[5],
         })) : [];
         res.end(JSON.stringify({ channels, count: channels.length }));
         return;
@@ -493,6 +537,23 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           ruleName: row[10], channelName: row[11],
         })) : [];
         res.end(JSON.stringify({ logs, count: logs.length, limit, offset }));
+        return;
+      }
+
+      if (path === '/api/alerting/escalation' || path === '/api/alerting/escalation/') {
+        const severity = (parsedUrl.searchParams.get('severity') || 'info').toLowerCase();
+        const now = new Date().toISOString();
+        const policy = getPolicyForSeverity(severity) || ESCALATION_POLICIES.P3;
+        const onCall = getOnCallAt(now);
+        res.end(JSON.stringify({
+          severity,
+          priority: policy.priority,
+          description: policy.description,
+          ackTimeoutMinutes: policy.ackTimeoutMinutes,
+          escalateTo: policy.escalateTo,
+          onCall: { now, primary: onCall },
+          policies: ESCALATION_POLICIES,
+        }));
         return;
       }
 
@@ -803,6 +864,11 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit') || '50', 10), 200);
         const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
         const enabled = parsedUrl.searchParams.get('enabled');
+        const cacheHits = hotPathCache.get(cacheKey('monitors', limit, offset, enabled === null ? 'all' : enabled));
+        if (cacheHits) {
+          res.end(JSON.stringify(cacheHits));
+          return;
+        }
 
         let sql = 'SELECT id, source, name, config, enabled, created_at, updated_at FROM checks WHERE 1=1';
         const params: any[] = [];
@@ -826,7 +892,9 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           updatedAt: row[6],
         })) : [];
 
-        res.end(JSON.stringify({ monitors, count: monitors.length, limit, offset }));
+        const payload = { monitors, count: monitors.length, limit, offset };
+        hotPathCache.set(cacheKey('monitors', limit, offset, enabled === null ? 'all' : enabled), payload);
+        res.end(JSON.stringify(payload));
         return;
       }
 
@@ -1015,21 +1083,44 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         const checkCount = db.exec('SELECT COUNT(*) as count FROM checks');
         const eventCount = db.exec('SELECT COUNT(*) as count FROM failure_events');
         const playbookCount = db.exec('SELECT COUNT(*) as count FROM playbook_entries');
+        const recentEvents = db.exec(
+          `SELECT COUNT(*) as count FROM failure_events WHERE detected_at >= datetime('now', '-24 hours')`
+        );
+        const recentCritical = db.exec(
+          `SELECT COUNT(*) as count FROM failure_events WHERE severity = 'critical' AND detected_at >= datetime('now', '-24 hours')`
+        );
+        let uptimeSeconds = 0;
+        try {
+          uptimeSeconds = Math.floor(process.uptime());
+        } catch { /* uptime not available */ }
 
-        res.end(JSON.stringify({
+        const selfMonitor = {
           status: 'ok',
           timestamp: new Date().toISOString(),
+          uptimeSeconds,
           stats: {
             checks: checkCount[0]?.values[0]?.[0] || 0,
             failureEvents: eventCount[0]?.values[0]?.[0] || 0,
             playbookEntries: playbookCount[0]?.values[0]?.[0] || 0,
+            incidentsLast24h: recentEvents[0]?.values[0]?.[0] || 0,
+            criticalLast24h: recentCritical[0]?.values[0]?.[0] || 0,
           },
-        }));
+          slo: {
+            errorRate24h: (() => {
+              const total = Number(eventCount[0]?.values[0]?.[0] || 0);
+              const recent = Number(recentEvents[0]?.values[0]?.[0] || 0);
+              return total > 0 ? Math.round((recent / total) * 1000) / 10 : 0;
+            })(),
+            errorBudgetStatus: 'ok',
+          },
+        };
+        res.writeHead(200);
+        res.end(JSON.stringify(selfMonitor));
         return;
       }
 
       res.writeHead(404);
-      res.end(JSON.stringify({ error: 'Not found', available: ['/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules', '/api/alerting/log', '/api/x/auth', '/api/x/callback', '/api/x/status', '/api/x/refresh', '/api/x/schedule', '/api/x/schedule-thread', '/api/x/post', '/api/x/posts', '/api/health', '/api/monitors', '/api/incidents', '/api/dependency-health', '/api/activity', '/api/webhooks/clerk'] }));
+      res.end(JSON.stringify({ error: 'Not found', available: ['/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules', '/api/alerting/log', '/api/alerting/escalation', '/api/notifications/channels', '/api/notifications/send', '/api/notifications/deliver', '/api/x/auth', '/api/x/callback', '/api/x/status', '/api/x/refresh', '/api/x/schedule', '/api/x/schedule-thread', '/api/x/post', '/api/x/posts', '/api/health', '/api/monitors', '/api/incidents', '/api/dependency-health', '/api/activity', '/api/webhooks/clerk', '/api/teams', '/api/teams/:id', '/api/teams/:id/members', '/api/teams/:id/members/:userId', '/api/teams/:id/workspace', '/api/teams/:id/invitations', '/api/invitations/:token', '/api/invitations/:token/accept', '/api/onboarding/start', '/api/onboarding/:sessionId/status', '/api/onboarding/:sessionId/step', '/api/onboarding/:sessionId/complete', '/api/playbooks/custom', '/api/playbooks/custom/:id', '/api/playbooks/custom/:id/publish', '/api/playbooks/custom/:id/nodes', '/api/playbooks/custom/:id/versions', '/api/playbooks/custom/:id/versions/:versionId', '/api/reports/incident-trends', '/api/reports/uptime-stats', '/api/reports/playbook-effectiveness', '/api/reports/team-summary', '/api/performance/latency', '/api/alerting/escalation'] }));
     } catch (err: any) {
       res.writeHead(500);
       res.end(JSON.stringify({ error: err.message }));

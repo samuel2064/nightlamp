@@ -27,7 +27,7 @@ export interface AlertLogEntry {
   failureType: string;
   severity: string;
   channelType: string;
-  status: 'sent' | 'failed';
+  status: 'sent' | 'failed' | 'pending' | 'delivered';
   errorMessage: string | null;
   sentAt: string;
 }

@@ -1,6 +1,6 @@
 import * as nodemailer from 'nodemailer';
 
-export type ChannelType = 'slack' | 'email' | 'pagerduty';
+export type ChannelType = 'slack' | 'email' | 'pagerduty' | 'in-app-websocket';
 
 export interface SlackConfig {
   webhookUrl: string;
@@ -19,7 +19,12 @@ export interface PagerDutyConfig {
   routingKey: string;
 }
 
-export type ChannelConfig = SlackConfig | EmailConfig | PagerDutyConfig;
+export interface InAppWebSocketConfig {
+  url: string;
+  reconnect: boolean;
+}
+
+export type ChannelConfig = SlackConfig | EmailConfig | PagerDutyConfig | InAppWebSocketConfig;
 
 export interface NotificationPayload {
   title: string;
@@ -142,6 +147,29 @@ async function sendPagerDuty(config: PagerDutyConfig, payload: NotificationPaylo
   }
 }
 
+async function sendInAppWebSocket(config: InAppWebSocketConfig, payload: NotificationPayload): Promise<void> {
+  const response = await fetch(config.url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      type: 'notification',
+      data: {
+        title: payload.title,
+        description: payload.description,
+        failureType: payload.failureType,
+        severity: payload.severity,
+        detectedAt: payload.detectedAt,
+        checkId: payload.checkId,
+        eventId: payload.eventId,
+      },
+    }),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`In-app WebSocket endpoint returned ${response.status}: ${text}`);
+  }
+}
+
 export async function sendNotification(
   channelType: ChannelType,
   config: ChannelConfig,
@@ -156,6 +184,9 @@ export async function sendNotification(
       break;
     case 'pagerduty':
       await sendPagerDuty(config as PagerDutyConfig, payload);
+      break;
+    case 'in-app-websocket':
+      await sendInAppWebSocket(config as InAppWebSocketConfig, payload);
       break;
   }
 }

@@ -201,6 +201,11 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
     );
   `);
 
+  db.run('CREATE INDEX IF NOT EXISTS idx_failure_events_detected ON failure_events(detected_at)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_failure_events_type_detected ON failure_events(failure_type, detected_at)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_failure_events_severity_detected ON failure_events(severity, detected_at)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_check_results_executed ON check_results(executed_at)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_check_results_check_executed ON check_results(check_id, executed_at)');
   db.run('CREATE INDEX IF NOT EXISTS idx_remediation_runs_status ON remediation_runs(status)');
   db.run('CREATE INDEX IF NOT EXISTS idx_remediation_runs_action ON remediation_runs(action_name)');
   db.run('CREATE INDEX IF NOT EXISTS idx_remediation_actions_failure ON remediation_actions(failure_type)');
@@ -266,14 +271,66 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS teams (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      owner_id TEXT NOT NULL,
+      plan TEXT NOT NULL DEFAULT 'free',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS memberships (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member')),
+      invited_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(team_id, user_id),
+      FOREIGN KEY (team_id) REFERENCES teams(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS invitations (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL,
+      email TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member' CHECK(role IN ('admin', 'member')),
+      token TEXT NOT NULL UNIQUE,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (team_id) REFERENCES teams(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS team_workspaces (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL UNIQUE,
+      monitors TEXT NOT NULL DEFAULT '[]',
+      playbooks TEXT NOT NULL DEFAULT '[]',
+      alerts TEXT NOT NULL DEFAULT '[]',
+      settings TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (team_id) REFERENCES teams(id)
+    );
+  `);
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS alert_channels (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      type TEXT NOT NULL CHECK(type IN ('slack', 'email', 'pagerduty')),
+      type TEXT NOT NULL CHECK(type IN ('slack', 'email', 'pagerduty', 'in-app-websocket')),
       config TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
+      team_id TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (team_id) REFERENCES teams(id)
     );
   `);
 
@@ -292,19 +349,123 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS onboarding_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      current_step TEXT NOT NULL DEFAULT 'app-detection' CHECK(current_step IN ('app-detection', 'monitor-selection', 'alert-config', 'team-invite')),
+      step_data TEXT NOT NULL DEFAULT '{}',
+      completed_at TEXT,
+      created_team_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS alert_log (
       id TEXT PRIMARY KEY,
-      rule_id TEXT NOT NULL,
+      rule_id TEXT,
       channel_id TEXT NOT NULL,
       failure_event_id TEXT,
       failure_type TEXT NOT NULL,
       severity TEXT NOT NULL,
       channel_type TEXT NOT NULL,
-      status TEXT NOT NULL CHECK(status IN ('sent', 'failed', 'skipped')),
+      status TEXT NOT NULL CHECK(status IN ('sent', 'failed', 'skipped', 'pending', 'delivered')),
       error_message TEXT,
       sent_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS custom_playbooks (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'published')),
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (team_id) REFERENCES teams(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS playbook_nodes (
+      id TEXT PRIMARY KEY,
+      playbook_id TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('trigger', 'condition', 'action', 'notification')),
+      subtype TEXT NOT NULL,
+      config TEXT NOT NULL DEFAULT '{}',
+      position_x REAL NOT NULL DEFAULT 0,
+      position_y REAL NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (playbook_id) REFERENCES custom_playbooks(id) ON DELETE CASCADE
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS playbook_edges (
+      id TEXT PRIMARY KEY,
+      playbook_id TEXT NOT NULL,
+      source_node_id TEXT NOT NULL,
+      target_node_id TEXT NOT NULL,
+      source_port TEXT NOT NULL DEFAULT 'out',
+      target_port TEXT NOT NULL DEFAULT 'in',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (playbook_id) REFERENCES custom_playbooks(id) ON DELETE CASCADE,
+      FOREIGN KEY (source_node_id) REFERENCES playbook_nodes(id) ON DELETE CASCADE,
+      FOREIGN KEY (target_node_id) REFERENCES playbook_nodes(id) ON DELETE CASCADE
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS playbook_versions (
+      id TEXT PRIMARY KEY,
+      playbook_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      node_snapshot TEXT NOT NULL DEFAULT '[]',
+      edge_snapshot TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (playbook_id) REFERENCES custom_playbooks(id) ON DELETE CASCADE
+    );
+  `);
+
+  db.run('CREATE INDEX IF NOT EXISTS idx_playbook_nodes_playbook ON playbook_nodes(playbook_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_playbook_edges_playbook ON playbook_edges(playbook_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_playbook_versions_playbook ON playbook_versions(playbook_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_custom_playbooks_team ON custom_playbooks(team_id)');
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS notification_rate_limits (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      max_per_minute INTEGER NOT NULL DEFAULT 10,
+      max_per_hour INTEGER NOT NULL DEFAULT 100,
+      window_start TEXT NOT NULL,
+      current_count INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (channel_id) REFERENCES alert_channels(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS notification_deduplication (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      suppress_until TEXT,
+      suppression_count INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (channel_id) REFERENCES alert_channels(id)
+    );
+  `);
+
+  db.run('CREATE INDEX IF NOT EXISTS idx_dedup_fingerprint ON notification_deduplication(channel_id, fingerprint)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_rate_limit_channel ON notification_rate_limits(channel_id, window_start)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_alert_channels_team ON alert_channels(team_id)');
 
   return db;
 }
