@@ -467,6 +467,19 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   db.run('CREATE INDEX IF NOT EXISTS idx_rate_limit_channel ON notification_rate_limits(channel_id, window_start)');
   db.run('CREATE INDEX IF NOT EXISTS idx_alert_channels_team ON alert_channels(team_id)');
 
+  // Hot-path indexes for performance optimization (NOC-164): perf queries,
+  // dependency updates, subscription/usage reads, failure events, playbooks.
+  db.run('CREATE INDEX IF NOT EXISTS idx_perf_runs_url_started ON perf_runs(url, started_at DESC)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_perf_metrics_run_name ON perf_metrics(run_id, name)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_perf_regressions_url_detected ON perf_regressions(url, detected_at DESC)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_perf_diagnoses_regression ON perf_diagnoses(regression_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_dep_updates_dep_detected ON dependency_updates(dependency_id, detected_at DESC)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_usage_customer_recorded ON usage_records(customer_id, recorded_at DESC)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_subscriptions_customer ON subscriptions(customer_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_failure_check_detected ON failure_events(check_id, detected_at DESC)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_playbook_failure_type ON playbook_entries(failure_type)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_x_posts_schedule ON x_scheduled_posts(status, scheduled_at)');
+
   return db;
 }
 

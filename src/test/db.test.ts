@@ -18,7 +18,7 @@ describe('Database', () => {
   it('should create all tables', () => {
     const tables = db.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
     const names = tables[0].values.map((r: any) => r[0]).sort();
-    assert.deepStrictEqual(names, ['alert_channels', 'alert_log', 'alert_rules', 'check_results', 'checks', 'customers', 'dependencies', 'dependency_updates', 'failure_events', 'perf_diagnoses', 'perf_metrics', 'perf_regressions', 'perf_runs', 'playbook_entries', 'remediation_actions', 'remediation_log', 'remediation_policies', 'remediation_runs', 'subscriptions', 'usage_records', 'x_scheduled_posts', 'x_tokens']);
+    assert.deepStrictEqual(names, ['alert_channels', 'alert_log', 'alert_rules', 'check_results', 'checks', 'custom_playbooks', 'customers', 'dependencies', 'dependency_updates', 'failure_events', 'invitations', 'memberships', 'notification_deduplication', 'notification_rate_limits', 'onboarding_sessions', 'perf_diagnoses', 'perf_metrics', 'perf_regressions', 'perf_runs', 'playbook_edges', 'playbook_entries', 'playbook_nodes', 'playbook_versions', 'remediation_actions', 'remediation_log', 'remediation_policies', 'remediation_runs', 'subscriptions', 'team_workspaces', 'teams', 'usage_records', 'x_scheduled_posts', 'x_tokens']);
   });
 
   it('should insert and query a check', () => {
@@ -47,6 +47,25 @@ describe('Database', () => {
       ['p1', 'expired_token', 'Expired Token', '## Diagnostic steps']);
     const result = db.exec('SELECT title FROM playbook_entries WHERE id = ?', ['p1']);
     assert.strictEqual(result[0].values[0][0], 'Expired Token');
+  });
+
+  it('should create hot-path performance indexes', () => {
+    const indexes = db.exec("SELECT name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL ORDER BY name");
+    const names = indexes[0].values.map((r: any) => r[0]);
+    for (const idx of [
+      'idx_perf_runs_url_started',
+      'idx_perf_metrics_run_name',
+      'idx_perf_regressions_url_detected',
+      'idx_perf_diagnoses_regression',
+      'idx_dep_updates_dep_detected',
+      'idx_usage_customer_recorded',
+      'idx_subscriptions_customer',
+      'idx_failure_check_detected',
+      'idx_playbook_failure_type',
+      'idx_x_posts_schedule',
+    ]) {
+      assert.ok(names.includes(idx), `expected index ${idx} to exist`);
+    }
   });
 
   it('should save and reload database', () => {
