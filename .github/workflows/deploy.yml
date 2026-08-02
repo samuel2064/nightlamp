@@ -1,0 +1,91 @@
+name: Deploy to Render
+
+on:
+  push:
+    branches: [main]
+
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: Verify and test before deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install backend deps
+        run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Run backend tests
+        run: npm test
+      - name: Build backend
+        run: npm run build
+
+  deploy-backend:
+    name: Deploy backend to Render
+    if: ${{ github.ref == 'refs/heads/main' }}
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Trigger Render backend deploy
+        run: |
+          curl -X POST \
+            "https://api.render.com/v1/services/${{ secrets.RENDER_BACKEND_SERVICE_ID }}/deploys" \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{}'
+
+  deploy-frontend:
+    name: Deploy frontend service
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Trigger Render frontend deploy
+        run: |
+          curl -fsS \
+            -X POST \
+            "https://api.render.com/v1/services/${{ secrets.RENDER_FRONTEND_SERVICE_ID }}/deploys" \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{}'
+
+  smoke:
+    name: Post-deploy smoke test
+    needs: [deploy-backend, deploy-frontend]
+    runs-on: ubuntu-latest
+    if: ${{ github.ref == 'refs/heads/main' }}
+    steps:
+      - name: Wait for deployment to stabilize
+        run: sleep 60
+      - name: Check backend health
+        run: |
+          for i in $(seq 1 6); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://nightlamp-api.onrender.com/api/health" || true)
+            echo "Attempt $i: HTTP $STATUS"
+            if [ "$STATUS" = "200" ]; then break; fi
+            sleep 20
+          done
+          test "$STATUS" = "200" && echo "Backend healthy" || { echo "Backend smoke failed"; exit 1; }
+      - name: Check frontend
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://nightlamp-frontend.onrender.com/" || true)
+          echo "Frontend HTTP $STATUS"
+          test "$STATUS" = "200" && echo "Frontend healthy" || { echo "Frontend smoke failed"; exit 1; }
+
+  notify:
+    name: Deployment notification
+    needs: [smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post status to webhook
+        if: ${{ always() && secrets.DEPLOY_WEBHOOK_URL != '' }}
+        run: |
+          curl -fsS -X POST "${{ secrets.DEPLOY_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{"text":"Nightlamp deploy finished on main. Job status: '"${{ job.status }}"'. Commit: '"${{ github.sha }}"'."}'
