@@ -48,6 +48,7 @@ const SCRIPT_MAP: Record<FailureType, string> = {
   error_spike: 'webhook-restart',
   new_error_pattern: 'webhook-restart',
   remediation_triggered: 'webhook-restart',
+  slo_breach: 'webhook-restart',
 };
 
 export function getScriptForFailureType(failureType: FailureType): string {

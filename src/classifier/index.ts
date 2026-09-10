@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { Database } from 'sql.js';
 
-export type FailureType = 'broken_webhook' | 'expired_token' | 'schema_drift' | 'rate_limit_shift' | 'error_spike' | 'new_error_pattern' | 'remediation_triggered';
+export type FailureType = 'broken_webhook' | 'expired_token' | 'schema_drift' | 'rate_limit_shift' | 'error_spike' | 'new_error_pattern' | 'remediation_triggered' | 'slo_breach';
 
 export interface FailureEvent {
   id: string;

@@ -17,7 +17,7 @@ import { OnboardingApi } from '../teams/onboarding-api';
 import { PlaybookBuilderApi } from '../playbook/playbook-builder-api';
 import { NotificationApi } from '../notifications';
 import { ReportsApi } from '../reports';
-import { getPolicyForSeverity, getOnCallAt, ESCALATION_POLICIES } from '../alerting';
+import { getPolicyForSeverity, getOnCallAt, ESCALATION_POLICIES, buildSelfMonitorDashboard } from '../alerting';
 import { ApiLatencyTracker, ApiCache, cacheKey } from '../performance/api-latency';
 
 export interface ApiConfig {
@@ -537,6 +537,18 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           ruleName: row[10], channelName: row[11],
         })) : [];
         res.end(JSON.stringify({ logs, count: logs.length, limit, offset }));
+        return;
+      }
+
+      if (path === '/api/alerting/self-monitor' || path === '/api/alerting/self-monitor/') {
+        const dashboard = buildSelfMonitorDashboard(db, latencyTracker.summary());
+        res.end(JSON.stringify({
+          status: dashboard.result.overall,
+          anyBreached: dashboard.result.anyBreached,
+          slos: dashboard.result.slos,
+          windowHours: dashboard.result.windowHours,
+          thresholds: dashboard.thresholds,
+        }));
         return;
       }
 
@@ -1120,7 +1132,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       }
 
       res.writeHead(404);
-      res.end(JSON.stringify({ error: 'Not found', available: ['/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules', '/api/alerting/log', '/api/alerting/escalation', '/api/notifications/channels', '/api/notifications/send', '/api/notifications/deliver', '/api/x/auth', '/api/x/callback', '/api/x/status', '/api/x/refresh', '/api/x/schedule', '/api/x/schedule-thread', '/api/x/post', '/api/x/posts', '/api/health', '/api/monitors', '/api/incidents', '/api/dependency-health', '/api/activity', '/api/webhooks/clerk', '/api/teams', '/api/teams/:id', '/api/teams/:id/members', '/api/teams/:id/members/:userId', '/api/teams/:id/workspace', '/api/teams/:id/invitations', '/api/invitations/:token', '/api/invitations/:token/accept', '/api/onboarding/start', '/api/onboarding/:sessionId/status', '/api/onboarding/:sessionId/step', '/api/onboarding/:sessionId/complete', '/api/playbooks/custom', '/api/playbooks/custom/:id', '/api/playbooks/custom/:id/publish', '/api/playbooks/custom/:id/nodes', '/api/playbooks/custom/:id/versions', '/api/playbooks/custom/:id/versions/:versionId', '/api/reports/incident-trends', '/api/reports/uptime-stats', '/api/reports/playbook-effectiveness', '/api/reports/team-summary', '/api/performance/latency', '/api/alerting/escalation'] }));
+      res.end(JSON.stringify({ error: 'Not found', available: ['/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules', '/api/alerting/log', '/api/alerting/escalation', '/api/notifications/channels', '/api/notifications/send', '/api/notifications/deliver', '/api/x/auth', '/api/x/callback', '/api/x/status', '/api/x/refresh', '/api/x/schedule', '/api/x/schedule-thread', '/api/x/post', '/api/x/posts', '/api/health', '/api/monitors', '/api/incidents', '/api/dependency-health', '/api/activity', '/api/webhooks/clerk', '/api/teams', '/api/teams/:id', '/api/teams/:id/members', '/api/teams/:id/members/:userId', '/api/teams/:id/workspace', '/api/teams/:id/invitations', '/api/invitations/:token', '/api/invitations/:token/accept', '/api/onboarding/start', '/api/onboarding/:sessionId/status', '/api/onboarding/:sessionId/step', '/api/onboarding/:sessionId/complete', '/api/playbooks/custom', '/api/playbooks/custom/:id', '/api/playbooks/custom/:id/publish', '/api/playbooks/custom/:id/nodes', '/api/playbooks/custom/:id/versions', '/api/playbooks/custom/:id/versions/:versionId', '/api/reports/incident-trends', '/api/reports/uptime-stats', '/api/reports/playbook-effectiveness', '/api/reports/team-summary', '/api/performance/latency', '/api/alerting/escalation', '/api/alerting/self-monitor'] }));
     } catch (err: any) {
       res.writeHead(500);
       res.end(JSON.stringify({ error: err.message }));

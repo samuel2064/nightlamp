@@ -212,4 +212,37 @@ describe('API Server', () => {
       assert.ok(Array.isArray(res.posts));
     });
   });
+
+  describe('Performance & Escalation endpoints', () => {
+    it('GET /api/performance/latency returns latency summary', async () => {
+      await fetch(`http://127.0.0.1:${port}/api/health`);
+      const res = await (await fetch(`http://127.0.0.1:${port}/api/performance/latency`)).json() as any;
+      assert.ok(res.latency.global);
+      assert.ok(res.latency.perPath);
+      assert.ok(res.latency.global.count >= 1);
+      assert.ok(res.latency.global.p50 >= 0);
+    });
+
+    it('GET /api/alerting/escalation returns policy and on-call', async () => {
+      const res = await (await fetch(`http://127.0.0.1:${port}/api/alerting/escalation?severity=critical`)).json() as any;
+      assert.strictEqual(res.priority, 'P1');
+      assert.ok(res.escalateTo.length > 0);
+      assert.strictEqual(res.escalateTo[0].channelType, 'pagerduty');
+      assert.ok(res.onCall.primary);
+      assert.ok(res.policies.P1);
+      assert.ok(res.policies.P3);
+    });
+
+    it('GET /api/alerting/escalation with warning returns P2', async () => {
+      const res = await (await fetch(`http://127.0.0.1:${port}/api/alerting/escalation?severity=warning`)).json() as any;
+      assert.strictEqual(res.priority, 'P2');
+    });
+
+    it('GET /api/health includes self-monitoring SLO fields', async () => {
+      const res = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json() as any;
+      assert.ok(typeof res.slo.errorRate24h === 'number');
+      assert.ok(res.slo.errorBudgetStatus);
+      assert.ok(typeof res.stats.incidentsLast24h === 'number');
+    });
+  });
 });

@@ -43,6 +43,10 @@ const PLAYBOOK_TEMPLATES: Record<FailureType, { title: string; body: string }> =
     title: 'Auto-Remediation Triggered Investigation',
     body: `## Auto-Remediation Triggered\n\n### Symptoms\n- Repeated occurrence of a known failure pattern (2+ times)\n- Auto-remediation script was executed automatically\n\n### Diagnostic Steps\n1. Check remediation log for script output and status\n2. Verify remediation resolved the issue on next check cycle\n3. If remediation failed, review script output for errors\n\n### Resolution\n- If remediation succeeded: no action needed, monitor next cycle\n- If remediation failed: manually investigate using the primary playbook entry\n- Consider updating remediation script parameters\n`,
   },
+  slo_breach: {
+    title: 'SLO Breach Investigation',
+    body: `## SLO Breach\n\n### Symptoms\n- Performance metric exceeds defined SLO target\n- Lighthouse audit indicates degradation\n- Statistical regression detected (p < 0.05)\n\n### Diagnostic Steps\n1. Identify which SLO was breached (LCP, TBT, CLS, FCP, score)\n2. Compare current value against baseline\n3. Check recent deployments that may have introduced the regression\n4. Review Lighthouse report for specific opportunities\n5. Check error budget remaining\n\n### Resolution\n- If code change caused regression: roll back or hotfix\n- If dependency update caused regression: pin version\n- If infrastructure caused regression: scale resources\n- If budget exhausted: initiate performance improvement sprint\n`,
+  },
 };
 
 export function getOrCreatePlaybookEntry(db: Database, failureType: FailureType): PlaybookEntry {
