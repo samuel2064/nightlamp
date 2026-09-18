@@ -1,54 +1,12 @@
 services:
   - type: web
-    name: nightlamp-backend
-    runtime: docker
-    repo: https://github.com/samuel2064/nightlamp
-    plan: free
-    region: oregon
-    envVars:
-      - key: NODE_ENV
-        value: staging
-      - key: API_PORT
-        value: "10000"
-      - key: DB_PATH
-        value: /data/nightlamp.db
-      - key: PLAYBOOK_DIR
-        value: /app/playbook
-      - key: STRIPE_SECRET_KEY
-        sync: false
-      - key: STRIPE_WEBHOOK_SECRET
-        sync: false
-      - key: SENTRY_AUTH_TOKEN
-        sync: false
-      - key: SENTRY_ORG_SLUG
-        sync: false
-      - key: SENTRY_PROJECT_SLUG
-        sync: false
-      - key: UPTIMEROBOT_API_KEY
-        sync: false
-      - key: CLERK_WEBHOOK_SECRET
-        sync: false
-    disk:
-      name: data
-      mountPath: /data
-      sizeGB: 1
-    healthCheckPath: /api/health
-
-  - type: web
     name: nightlamp-frontend
     runtime: node
-    repo: https://github.com/samuel2064/nightlamp
-    branch: main
     plan: free
-    region: oregon
-    buildCommand: cd frontend && npm install && npm run build
-    startCommand: cd frontend && npm start
-    healthCheckPath: /
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
     envVars:
-      - key: NODE_ENV
-        value: production
-      - key: NEXT_PUBLIC_BACKEND_URL
-        value: https://nightlamp-api.onrender.com
       - key: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
         sync: false
       - key: CLERK_SECRET_KEY
@@ -61,3 +19,7 @@ services:
         value: /dashboard
       - key: NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL
         value: /dashboard
+      - key: NEXT_PUBLIC_BACKEND_URL
+        value: https://nightlamp-api.onrender.com
+    healthCheckPath: /
+    autoDeploy: true
