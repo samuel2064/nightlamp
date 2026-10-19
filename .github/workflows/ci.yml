@@ -33,7 +33,9 @@ jobs:
         run: npx tsc --noEmit --pretty
 
       - name: Run tests
-        run: npm test 2>&1 | tee ci-test-output.txt
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee ci-test-output.txt
 
       - name: Upload test log
         if: always()
