@@ -480,6 +480,20 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   db.run('CREATE INDEX IF NOT EXISTS idx_playbook_failure_type ON playbook_entries(failure_type)');
   db.run('CREATE INDEX IF NOT EXISTS idx_x_posts_schedule ON x_scheduled_posts(status, scheduled_at)');
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS leads (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'webinar',
+      name TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email ON leads(email)');
+
+  db.run('CREATE INDEX IF NOT EXISTS idx_failure_events_severity ON failure_events(severity)');
+
   return db;
 }
 

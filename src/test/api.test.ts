@@ -131,6 +131,121 @@ describe('API Server', () => {
     assert.strictEqual(res.count, 0);
   });
 
+  describe('Leads API', () => {
+    const testEmails: string[] = [];
+
+    after(() => {
+      for (const id of testEmails) {
+        db.run('DELETE FROM leads WHERE email = ?', [id]);
+      }
+    });
+
+    it('POST /api/leads creates a lead with default source', async () => {
+      const email = `lead-test-${Date.now()}@example.com`;
+      testEmails.push(email);
+      const res = await fetch(`http://127.0.0.1:${port}/api/leads`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      const data = await res.json() as any;
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(data.success, true);
+      assert.strictEqual(data.email, email.toLowerCase());
+      assert.strictEqual(data.source, 'webinar');
+      assert.ok(data.id);
+    });
+
+    it('POST /api/leads captures custom source and name', async () => {
+      const email = `lead-custom-${Date.now()}@example.com`;
+      testEmails.push(email);
+      const res = await fetch(`http://127.0.0.1:${port}/api/leads`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, source: 'landing', name: 'Test User' }),
+      });
+      const data = await res.json() as any;
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(data.success, true);
+      assert.strictEqual(data.source, 'landing');
+    });
+
+    it('POST /api/leads rejects missing email', async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/leads`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      assert.strictEqual(res.status, 400);
+      const data = await res.json() as any;
+      assert.ok(data.error.includes('email'));
+    });
+
+    it('POST /api/leads rejects invalid email', async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/leads`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'not-an-email' }),
+      });
+      assert.strictEqual(res.status, 400);
+      const data = await res.json() as any;
+      assert.ok(data.error.includes('valid'));
+    });
+
+    it('POST /api/leads rejects duplicate email', async () => {
+      const email = `lead-dup-${Date.now()}@example.com`;
+      testEmails.push(email);
+      const first = await fetch(`http://127.0.0.1:${port}/api/leads`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      assert.strictEqual(first.status, 200);
+
+      const second = await fetch(`http://127.0.0.1:${port}/api/leads`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      assert.strictEqual(second.status, 409);
+    });
+
+    it('GET /api/leads returns created leads', async () => {
+      const email = `lead-list-${Date.now()}@example.com`;
+      testEmails.push(email);
+      await fetch(`http://127.0.0.1:${port}/api/leads`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+
+      const res = await (await fetch(`http://127.0.0.1:${port}/api/leads`)).json() as any;
+      assert.ok(Array.isArray(res.leads));
+      assert.ok(res.leads.some((l: any) => l.email === email.toLowerCase()));
+    });
+
+    it('GET /api/leads filters by source', async () => {
+      const res = await (await fetch(`http://127.0.0.1:${port}/api/leads?source=landing`)).json() as any;
+      assert.ok(Array.isArray(res.leads));
+      assert.ok(res.leads.every((l: any) => l.source === 'landing'));
+    });
+  });
+
+  describe('Escalation API', () => {
+    it('GET /api/alerting/escalation returns P1 for critical severity', async () => {
+      const res = await (await fetch(`http://127.0.0.1:${port}/api/alerting/escalation?severity=critical`)).json() as any;
+      assert.strictEqual(res.priority, 'P1');
+      assert.ok(res.onCall);
+      assert.ok(res.policies);
+    });
+
+    it('GET /api/alerting/escalation defaults to info (P3)', async () => {
+      const res = await (await fetch(`http://127.0.0.1:${port}/api/alerting/escalation`)).json() as any;
+      assert.strictEqual(res.priority, 'P3');
+      assert.strictEqual(res.severity, 'info');
+    });
+  });
+
   describe('X/Twitter API', () => {
     before(() => {
       process.env.X_CLIENT_ID = 'test-client-id';
