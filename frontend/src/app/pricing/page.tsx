@@ -107,7 +107,7 @@ export default function PricingPage() {
             The price of a single unnoticed failure is higher than any plan.
           </h1>
           <p className="text-xl text-muted-foreground mb-8 max-w-2xl mx-auto">
-            Nightlamp starts at $99/mo. The average customer finds and fixes $3,000+ in hidden issues in their first month.
+            Nightlamp starts at $99/mo.
           </p>
         </div>
       </section>
@@ -154,16 +154,9 @@ export default function PricingPage() {
       {/* Social Proof */}
       <section className="border-t py-16 bg-muted/30">
         <div className="container mx-auto px-4 max-w-4xl">
-          <div className="grid md:grid-cols-2 gap-8">
-            <blockquote className="border-l-2 border-primary/30 pl-4">
-              <p className="text-muted-foreground italic">&ldquo;Nightlamp caught an expired API token within seconds. Fixed in 12 minutes. Zero customer impact.&rdquo;</p>
-              <footer className="mt-2 font-medium text-sm">— Founder, AI Support Co.</footer>
-            </blockquote>
-            <blockquote className="border-l-2 border-primary/30 pl-4">
-              <p className="text-muted-foreground italic">&ldquo;We run 15 no-code apps for clients. Nightlamp is our insurance policy.&rdquo;</p>
-              <footer className="mt-2 font-medium text-sm">— Agency Partner</footer>
-            </blockquote>
-          </div>
+          <p className="text-muted-foreground">
+            Beta founders get 30 days of monitoring and a full app health report. No card.
+          </p>
         </div>
       </section>
 

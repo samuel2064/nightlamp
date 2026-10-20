@@ -81,10 +81,9 @@ export default function LandingPage() {
               </Link>
               <Link href="/webinar" className={cn(buttonVariants({ size: 'lg', variant: 'outline' }))}>Watch the Webinar</Link>
             </div>
-            <blockquote className="mt-12 text-sm text-muted-foreground italic border-l-2 border-primary/30 pl-4 text-left max-w-lg mx-auto">
-              &ldquo;Found 3 expired API keys we didn&apos;t know about in the first 5 minutes.&rdquo;
-              <footer className="mt-1 not-italic font-medium">— Beta user</footer>
-            </blockquote>
+            <p className="mt-12 text-sm text-muted-foreground border-l-2 border-primary/30 pl-4 text-left max-w-lg mx-auto">
+              Built for founders shipping with Cursor, Lovable, Bolt and Bubble. Connect your app in ~2 minutes.
+            </p>
           </div>
         </div>
       </section>
@@ -208,7 +207,7 @@ export default function LandingPage() {
         <div className="container mx-auto px-4 text-center">
           <h2 className="text-3xl font-bold mb-4">Ready to stop silent failures?</h2>
           <p className="text-lg text-primary-foreground/80 mb-8 max-w-xl mx-auto">
-            Join hundreds of founders who sleep better knowing Nightlamp has their back.
+            Join the beta - free 30-day monitoring and a full app health report.
           </p>
           <Link href="/sign-up" className={cn(buttonVariants({ size: 'lg', variant: 'secondary' }))}>
             Get Your Free App Health Audit

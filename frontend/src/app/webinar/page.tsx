@@ -74,11 +74,6 @@ export default function WebinarPage() {
                   </li>
                 ))}
               </ul>
-
-              <blockquote className="text-sm text-muted-foreground italic border-l-2 border-primary/30 pl-4">
-                &ldquo;I didn&apos;t know my API key had expired until they showed me. 12 minutes later it was fixed.&rdquo;
-                <footer className="mt-1 not-italic font-medium">— Beta customer</footer>
-              </blockquote>
             </div>
 
             {/* Right: Registration Form */}
