@@ -52,6 +52,9 @@ export default function WebinarPage() {
                 <Calendar className="h-4 w-4" />
                 Free Live Webinar
               </div>
+              <p className="text-sm text-muted-foreground mb-6">
+                Next live session: Thursday, October 29 - 16:00 UTC (9am PT / 12pm ET / 5pm CET)
+              </p>
               <h1 className="text-3xl md:text-5xl font-bold tracking-tight mb-6">
                 Most AI app failures are invisible.
                 <br />
@@ -113,7 +116,7 @@ export default function WebinarPage() {
                         {!loading && <ArrowRight className="ml-2 h-4 w-4" />}
                       </Button>
                       <p className="text-xs text-muted-foreground text-center">
-                        No spam. Unsubscribe anytime.
+                        No spam. We will email the join link before the session.
                       </p>
                     </form>
                   )}
