@@ -82,10 +82,12 @@ jobs:
     name: Deployment notification
     needs: [smoke]
     runs-on: ubuntu-latest
+    env:
+      WEBHOOK: ${{ secrets.DEPLOY_WEBHOOK_URL }}
     steps:
       - name: Post status to webhook
-        if: ${{ always() && secrets.DEPLOY_WEBHOOK_URL != '' }}
+        if: ${{ always() && env.WEBHOOK != '' }}
         run: |
-          curl -fsS -X POST "${{ secrets.DEPLOY_WEBHOOK_URL }}" \
+          curl -fsS -X POST "$WEBHOOK" \
             -H "Content-Type: application/json" \
             -d '{"text":"Nightlamp deploy finished on main. Job status: '"${{ job.status }}"'. Commit: '"${{ github.sha }}"'."}'
