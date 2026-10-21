@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 const failures = [
-  { icon: AlertTriangle, name: 'Expired API keys', problem: '401 errors. Feature stops working.', solution: 'Detects + fixes in 12 min' },
+  { icon: AlertTriangle, name: 'Expired API keys', problem: '401 errors. Feature stops working.', solution: 'Detects, then applies the known fix' },
   { icon: Activity, name: 'Rate limit shifts', problem: '429 errors. Degraded UX.', solution: 'Alerts before users notice' },
   { icon: Database, name: 'Schema drift', problem: 'Data pipeline breaks silently', solution: 'Detects mismatch in real-time' },
   { icon: Webhook, name: 'Broken webhooks', problem: 'Data loss. No one checks.', solution: 'Verifies endpoints daily' },
@@ -96,7 +96,7 @@ export default function LandingPage() {
             {[
               { step: '1', icon: Plug, title: 'Connect', time: '2 min', desc: 'Link your app. We scan every API key, webhook, and integration.' },
               { step: '2', icon: Activity, title: 'We find what\'s broken', time: '90 seconds', desc: 'Our engine detects expired keys, broken webhooks, rate limit shifts, and schema drift.' },
-              { step: '3', icon: Shield, title: 'We fix it', time: 'or tell you how', desc: 'Auto-fix for 80% of failures. For the rest, step-by-step playbooks.' },
+              { step: '3', icon: Shield, title: 'We fix it', time: 'or tell you how', desc: 'Automated fixes for common failures. For the rest, step-by-step playbooks.' },
             ].map((item) => (
               <Card key={item.step} className="relative">
                 <CardHeader>

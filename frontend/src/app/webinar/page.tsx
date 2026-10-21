@@ -63,7 +63,7 @@ export default function WebinarPage() {
               <ul className="space-y-4 mb-8">
                 {[
                   'Why your app could be broken right now (and you\'d never know)',
-                  'The 12-minute fix that saved a founder 15+ hours of debugging',
+                  'The failure that stayed invisible for 11 weeks - a live post-mortem from our own stack',
                   'A live demo: watch us catch and fix a real failure',
                   'Your 30-day plan to bulletproof your AI app',
                   'Exclusive offer for attendees: free app health audit',
