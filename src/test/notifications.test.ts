@@ -1,4 +1,5 @@
 import assert from 'assert';
+import * as http from 'http';
 import { createDatabase } from '../db/schema';
 import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -153,12 +154,55 @@ describe('Notification Service', function () {
   });
 
   describe('Delivery Retry', function () {
+    let server: http.Server;
+    let webhookUrl: string;
+    let responseStatus = 200;
+    let requestCount = 0;
+
+    before(async function () {
+      server = http.createServer((_req, res) => {
+        requestCount++;
+        res.writeHead(responseStatus, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: responseStatus < 400 }));
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address() as any;
+      webhookUrl = `http://127.0.0.1:${address.port}/webhook`;
+    });
+
+    after(async function () {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+
+    beforeEach(function () {
+      responseStatus = 200;
+      requestCount = 0;
+    });
+
     it('should succeed on first attempt for valid channel', async function () {
       const { deliverWithRetry } = await import('../notifications/service');
       const channelId = uuidv4();
-      const config = { webhookUrl: 'https://hooks.slack.com/services/test' };
+      const config = { webhookUrl };
       db.run(
         `INSERT INTO alert_channels (id, name, type, config) VALUES (?, 'Retry Test', 'slack', ?)`,
+        [channelId, JSON.stringify(config)]
+      );
+      const result = await deliverWithRetry(db, 'slack', config, {
+        title: 'Test', description: '', failureType: 'test', severity: 'info', detectedAt: new Date().toISOString(),
+      }, 1);
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.errorMessage, null);
+      assert.strictEqual(result.attempts, 1);
+      assert.strictEqual(requestCount, 1);
+    });
+
+    it('should report failure after exhausting retries', async function () {
+      responseStatus = 500;
+      const { deliverWithRetry } = await import('../notifications/service');
+      const channelId = uuidv4();
+      const config = { webhookUrl };
+      db.run(
+        `INSERT INTO alert_channels (id, name, type, config) VALUES (?, 'Retry Fail Test', 'slack', ?)`,
         [channelId, JSON.stringify(config)]
       );
       const result = await deliverWithRetry(db, 'slack', config, {
@@ -167,6 +211,7 @@ describe('Notification Service', function () {
       assert.strictEqual(result.success, false);
       assert.ok(result.errorMessage);
       assert.strictEqual(result.attempts, 1);
+      assert.strictEqual(requestCount, 1);
     });
   });
 
