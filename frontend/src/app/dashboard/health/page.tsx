@@ -60,7 +60,7 @@ export default function HealthPage() {
       key: 'Error Rate (24h)',
       value:
         typeof health?.slo?.errorRate24h === 'number'
-          ? `${(health.slo.errorRate24h * 100).toFixed(2)}%`
+          ? `${(health.slo.errorRate24h > 1 ? health.slo.errorRate24h : health.slo.errorRate24h * 100).toFixed(2)}%`
           : '-',
     },
   ]
