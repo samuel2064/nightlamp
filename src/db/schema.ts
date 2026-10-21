@@ -72,6 +72,17 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      clerk_user_id TEXT UNIQUE,
+      email TEXT NOT NULL,
+      name TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS subscriptions (
       id TEXT PRIMARY KEY,
       customer_id TEXT NOT NULL,
@@ -384,6 +395,7 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
       description TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'published')),
       version INTEGER NOT NULL DEFAULT 1,
+      variables TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (team_id) REFERENCES teams(id)
@@ -412,6 +424,7 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
       target_node_id TEXT NOT NULL,
       source_port TEXT NOT NULL DEFAULT 'out',
       target_port TEXT NOT NULL DEFAULT 'in',
+      edge_type TEXT NOT NULL DEFAULT 'next' CHECK(edge_type IN ('next', 'failure')),
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (playbook_id) REFERENCES custom_playbooks(id) ON DELETE CASCADE,
       FOREIGN KEY (source_node_id) REFERENCES playbook_nodes(id) ON DELETE CASCADE,
@@ -429,6 +442,22 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
       node_snapshot TEXT NOT NULL DEFAULT '[]',
       edge_snapshot TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (playbook_id) REFERENCES custom_playbooks(id) ON DELETE CASCADE
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS playbook_executions (
+      id TEXT PRIMARY KEY,
+      playbook_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'running', 'waiting_decision', 'completed', 'failed', 'cancelled')),
+      current_step_id TEXT,
+      context TEXT NOT NULL DEFAULT '{}',
+      step_results TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at TEXT,
+      error TEXT,
       FOREIGN KEY (playbook_id) REFERENCES custom_playbooks(id) ON DELETE CASCADE
     );
   `);
@@ -493,6 +522,25 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email ON leads(email)');
 
   db.run('CREATE INDEX IF NOT EXISTS idx_failure_events_severity ON failure_events(severity)');
+
+  // Webhook audit trail + idempotency store (NOC-183). The `id` column is the
+  // provider event id (e.g. Stripe `evt_...`), so the primary key enforces
+  // exactly-once processing for duplicate deliveries.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS webhook_events (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL DEFAULT 'stripe',
+      event_type TEXT NOT NULL,
+      livemode INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'received' CHECK(status IN ('received', 'processed', 'failed', 'skipped')),
+      error TEXT,
+      payload TEXT,
+      received_at TEXT NOT NULL DEFAULT (datetime('now')),
+      processed_at TEXT
+    );
+  `);
+  db.run('CREATE INDEX IF NOT EXISTS idx_webhook_events_type ON webhook_events(event_type)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_webhook_events_received ON webhook_events(received_at DESC)');
 
   return db;
 }

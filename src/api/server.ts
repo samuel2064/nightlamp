@@ -19,6 +19,10 @@ import { PlaybookBuilderApi } from '../playbook/playbook-builder-api';
 import { NotificationApi } from '../notifications';
 import { ReportsApi } from '../reports';
 import { getPolicyForSeverity, getOnCallAt, ESCALATION_POLICIES, buildSelfMonitorDashboard } from '../alerting';
+import { nodeHTTPRequestHandler } from '@trpc/server/adapters/node-http';
+import { handleSSERequest } from './sse';
+import { createPlaybookEngine } from '../playbook/engine';
+import { appRouter, createTRPCContext } from './trpc';
 
 export interface ApiConfig {
   port: number;
@@ -106,6 +110,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
   const playbookBuilderApi = new PlaybookBuilderApi(db);
   const notificationApi = new NotificationApi(db);
   const reportsApi = new ReportsApi(db);
+  const playbookEngine = createPlaybookEngine(db);
   const latencyTracker = new ApiLatencyTracker();
   const hotCache = new ApiCache(15_000);
   const server = http.createServer((req, res) => {
@@ -1212,6 +1217,125 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           createdAt: row[4],
         })) : [];
         res.end(JSON.stringify({ leads, count: leads.length, limit, offset }));
+        return;
+      }
+
+      if (handleSSERequest(req, res, db)) {
+        return;
+      }
+
+      if (path === '/api/playbook/executions' || path === '/api/playbook/executions/') {
+        if (req.method === 'GET') {
+          const playbookId = parsedUrl.searchParams.get('playbookId') || undefined;
+          const executions = playbookEngine.listExecutions(playbookId);
+          res.end(JSON.stringify({ executions, count: executions.length }));
+          return;
+        }
+        if (req.method === 'POST') {
+          let body = '';
+          req.on('data', (chunk) => { body += chunk; });
+          req.on('end', () => {
+            (async () => {
+              try {
+                const { playbookId, context } = body ? JSON.parse(body) : {};
+                if (!playbookId) {
+                  res.writeHead(400);
+                  res.end(JSON.stringify({ error: 'playbookId is required' }));
+                  return;
+                }
+                const playbook = playbookEngine.getPlaybookDefinition(playbookId);
+                if (!playbook) {
+                  res.writeHead(404);
+                  res.end(JSON.stringify({ error: 'Playbook not found' }));
+                  return;
+                }
+                const execution = await playbookEngine.createExecution(playbook, context || {});
+                await playbookEngine.startExecution(execution.id);
+                res.end(JSON.stringify({ execution: playbookEngine.getExecution(execution.id) }));
+              } catch (err: any) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: err.message }));
+              }
+            })();
+          });
+          return;
+        }
+        res.writeHead(405);
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+      }
+
+      const executionMatch = path.match(/^\/api\/playbook\/executions\/([a-zA-Z0-9-]+)(\/[a-z-]+)?\/?$/);
+      if (executionMatch) {
+        const executionId = executionMatch[1];
+        const action = executionMatch[2] || '';
+
+        if (!action && req.method === 'GET') {
+          const execution = playbookEngine.getExecution(executionId);
+          if (!execution) {
+            res.writeHead(404);
+            res.end(JSON.stringify({ error: 'Execution not found' }));
+            return;
+          }
+          res.end(JSON.stringify({ execution }));
+          return;
+        }
+
+        if (action === '/decision' && req.method === 'POST') {
+          let body = '';
+          req.on('data', (chunk) => { body += chunk; });
+          req.on('end', () => {
+            (async () => {
+              try {
+                const { decision } = JSON.parse(body) as { decision?: string };
+                if (!decision) {
+                  res.writeHead(400);
+                  res.end(JSON.stringify({ error: 'decision is required' }));
+                  return;
+                }
+                const execution = await playbookEngine.provideDecision(executionId, decision);
+                res.end(JSON.stringify({ execution }));
+              } catch (err: any) {
+                res.writeHead(err.message.includes('not found') ? 404 : 400);
+                res.end(JSON.stringify({ error: err.message }));
+              }
+            })();
+          });
+          return;
+        }
+
+        if (action === '/cancel' && req.method === 'POST') {
+          (async () => {
+            try {
+              const execution = await playbookEngine.cancelExecution(executionId);
+              res.end(JSON.stringify({ execution }));
+            } catch (err: any) {
+              res.writeHead(err.message.includes('not found') ? 404 : 400);
+              res.end(JSON.stringify({ error: err.message }));
+            }
+          })();
+          return;
+        }
+
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: 'Not found' }));
+        return;
+      }
+
+      if (path === '/api/trpc' || path.startsWith('/api/trpc/')) {
+        const trpcPath = path.replace(/^\/api\/trpc\/?/, '');
+        void nodeHTTPRequestHandler({
+          router: appRouter,
+          req,
+          res,
+          path: trpcPath,
+          createContext: () => createTRPCContext(db, playbookEngine),
+        }).catch((err: any) => {
+          if (!res.headersSent) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: err.message }));
+          }
+        });
         return;
       }
 

@@ -1,5 +1,6 @@
 import { Database } from 'sql.js';
 import { IncomingMessage, ServerResponse } from 'http';
+import { v4 as uuid } from 'uuid';
 import { StripeClient, createCheckoutSession, createCustomerPortalSession, constructWebhookEvent } from './stripe-client';
 import { SubscriptionModel, PlanTier, Subscription, PLAN_TIERS } from './subscription';
 import { TierEnforcer } from './tier-enforcer';
@@ -39,6 +40,12 @@ export class BillingApi {
 
     if (path === '/api/billing/webhook' && req.method === 'POST') {
       this.handleWebhook(req, res);
+      return true;
+    }
+
+    if (path === '/api/billing/webhook-events' && req.method === 'GET') {
+      const limit = parseInt(parsedUrl.searchParams.get('limit') || '50', 10);
+      res.end(JSON.stringify({ events: this.getWebhookEvents(limit) }));
       return true;
     }
 
@@ -188,64 +195,156 @@ export class BillingApi {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', async () => {
-      try {
-        const signature = req.headers['stripe-signature'] as string;
-        if (!signature) {
-          res.writeHead(400);
-          res.end(JSON.stringify({ error: 'Missing stripe-signature header' }));
-          return;
-        }
+      const signature = req.headers['stripe-signature'] as string;
+      if (!signature) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Missing stripe-signature header' }));
+        return;
+      }
 
-        const event = await constructWebhookEvent(
+      let event: any;
+      try {
+        event = await constructWebhookEvent(
           this.deps.stripeClient,
           body,
           signature,
           this.deps.webhookSecret,
         );
-
-        switch (event.type) {
-          case 'checkout.session.completed': {
-            const session = event.data.object as any;
-            if (session.mode === 'subscription') {
-              this.subscriptions.updateSubscriptionStatus(
-                session.id,
-                'active',
-                new Date(session.created * 1000).toISOString(),
-              );
-            }
-            break;
-          }
-          case 'customer.subscription.updated':
-          case 'customer.subscription.created': {
-            const sub = event.data.object as any;
-            this.subscriptions.updateSubscriptionStatus(
-              sub.id,
-              sub.status,
-              new Date(sub.current_period_start * 1000).toISOString(),
-              new Date(sub.current_period_end * 1000).toISOString(),
-            );
-            break;
-          }
-          case 'customer.subscription.deleted': {
-            const deletedSub = event.data.object as any;
-            this.subscriptions.updateSubscriptionStatus(deletedSub.id, 'canceled');
-            break;
-          }
-          case 'invoice.payment_failed': {
-            const invoice = event.data.object as any;
-            if (invoice.subscription) {
-              this.subscriptions.updateSubscriptionStatus(invoice.subscription as string, 'past_due');
-            }
-            break;
-          }
-        }
-
-        res.end(JSON.stringify({ received: true }));
       } catch (err: any) {
         res.writeHead(400);
         res.end(JSON.stringify({ error: err.message }));
+        return;
       }
+
+      const eventId: string = event.id || `evt_${uuid()}`;
+      const livemode: boolean = event.livemode === true;
+
+      // Idempotency: a previously processed event id is acknowledged without
+      // re-running side effects (Stripe retries deliveries at-least-once).
+      const existing = this.deps.db.exec(
+        'SELECT status FROM webhook_events WHERE id = ?',
+        [eventId],
+      );
+      if (existing.length > 0 && existing[0].values.length > 0) {
+        const priorStatus = existing[0].values[0][0] as string;
+        if (priorStatus === 'processed' || priorStatus === 'skipped') {
+          res.end(JSON.stringify({ received: true, duplicate: true, mode: livemode ? 'live' : 'test' }));
+          return;
+        }
+      } else {
+        this.deps.db.run(
+          `INSERT INTO webhook_events (id, provider, event_type, livemode, status, payload, received_at)
+           VALUES (?, 'stripe', ?, ?, 'received', ?, datetime('now'))`,
+          [eventId, event.type, livemode ? 1 : 0, body],
+        );
+      }
+
+      try {
+        this.applyWebhookEvent(event);
+        this.deps.db.run(
+          `UPDATE webhook_events SET status = 'processed', processed_at = datetime('now'), error = NULL WHERE id = ?`,
+          [eventId],
+        );
+      } catch (err: any) {
+        this.deps.db.run(
+          `UPDATE webhook_events SET status = 'failed', error = ?, processed_at = datetime('now') WHERE id = ?`,
+          [err.message, eventId],
+        );
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: err.message }));
+        return;
+      }
+
+      res.end(JSON.stringify({ received: true, mode: livemode ? 'live' : 'test' }));
     });
+  }
+
+  private applyWebhookEvent(event: any): void {
+    switch (event.type) {
+      case 'checkout.session.completed': {
+        const session = event.data.object as any;
+        if (session.mode === 'subscription') {
+          this.subscriptions.updateSubscriptionStatus(
+            session.id,
+            'active',
+            session.created ? new Date(session.created * 1000).toISOString() : undefined,
+          );
+        }
+        break;
+      }
+      case 'customer.subscription.created':
+      case 'customer.subscription.updated': {
+        const sub = event.data.object as any;
+        this.subscriptions.updateSubscriptionStatus(
+          sub.id,
+          sub.status,
+          sub.current_period_start ? new Date(sub.current_period_start * 1000).toISOString() : undefined,
+          sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : undefined,
+        );
+        break;
+      }
+      case 'customer.subscription.deleted': {
+        const deletedSub = event.data.object as any;
+        this.subscriptions.updateSubscriptionStatus(deletedSub.id, 'canceled');
+        break;
+      }
+      case 'customer.subscription.trial_will_end': {
+        // Trial is ending in ~3 days: refresh period and surface a notice.
+        const trialSub = event.data.object as any;
+        if (trialSub.id) {
+          this.subscriptions.updateSubscriptionStatus(
+            trialSub.id,
+            trialSub.status || 'trialing',
+            trialSub.current_period_start ? new Date(trialSub.current_period_start * 1000).toISOString() : undefined,
+            trialSub.current_period_end ? new Date(trialSub.current_period_end * 1000).toISOString() : undefined,
+          );
+        }
+        console.warn(`[Billing] Trial ending soon for subscription ${trialSub.id}`);
+        break;
+      }
+      case 'invoice.payment_succeeded': {
+        const invoice = event.data.object as any;
+        if (invoice.subscription) {
+          this.subscriptions.updateSubscriptionStatus(
+            invoice.subscription as string,
+            'active',
+            invoice.period_start ? new Date(invoice.period_start * 1000).toISOString() : undefined,
+            invoice.period_end ? new Date(invoice.period_end * 1000).toISOString() : undefined,
+          );
+        }
+        break;
+      }
+      case 'invoice.payment_failed': {
+        const invoice = event.data.object as any;
+        if (invoice.subscription) {
+          this.subscriptions.updateSubscriptionStatus(invoice.subscription as string, 'past_due');
+        }
+        break;
+      }
+      default:
+        // Unhandled event types are acknowledged so Stripe stops retrying.
+        break;
+    }
+  }
+
+  getWebhookEvents(limit: number = 50): any[] {
+    const result = this.deps.db.exec(
+      `SELECT id, provider, event_type, livemode, status, error, received_at, processed_at
+       FROM webhook_events ORDER BY received_at DESC LIMIT ?`,
+      [limit],
+    );
+    if (result.length === 0) return [];
+    return result[0].values.map((row: any) => ({
+      id: row[0],
+      provider: row[1],
+      eventType: row[2],
+      livemode: row[3] === 1,
+      mode: row[3] === 1 ? 'live' : 'test',
+      status: row[4],
+      error: row[5],
+      receivedAt: row[6],
+      processedAt: row[7],
+    }));
   }
 
   private handleGetSubscription(req: IncomingMessage, res: ServerResponse): void {

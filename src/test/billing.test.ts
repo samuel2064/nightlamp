@@ -545,6 +545,145 @@ describe('Billing - Webhook Processing', () => {
   });
 });
 
+describe('Billing - Webhook Idempotency, Audit & Lifecycle (NOC-183)', () => {
+  let db: Database;
+  let api: BillingApi;
+  let subs: SubscriptionModel;
+
+  beforeEach(async () => {
+    db = await createDatabase();
+    const mockStripe: any = {
+      stripe: {
+        webhooks: { constructEvent: (payload: string) => JSON.parse(payload) },
+      },
+      priceIds: { basic: 'price_basic' },
+    };
+    api = new BillingApi({ db, stripeClient: mockStripe, webhookSecret: 'whsec_test', baseUrl: 'http://localhost:3001' });
+    subs = new SubscriptionModel(db);
+  });
+
+  let seq = 0;
+  function evt(type: string, object: any, opts: { id?: string; livemode?: boolean } = {}): string {
+    seq += 1;
+    return JSON.stringify({
+      id: opts.id || `evt_test_${Date.now()}_${seq}`,
+      type,
+      livemode: opts.livemode ?? false,
+      data: { object },
+    });
+  }
+
+  it('records an audit row for every webhook event', async () => {
+    const cust = subs.createCustomer('audit@test.com');
+    const sub = subs.createSubscription(cust.id, 'basic');
+    subs.updateStripeSubscriptionId(sub.id, 'sub_audit_1', 'incomplete');
+
+    const res = await handleRequest(api, 'POST', '/api/billing/webhook', evt('customer.subscription.created', {
+      id: 'sub_audit_1', status: 'active',
+    }), { 'stripe-signature': 'sig' });
+    expect(res.statusCode).to.equal(200);
+
+    const events = api.getWebhookEvents();
+    expect(events).to.have.lengthOf(1);
+    expect(events[0].eventType).to.equal('customer.subscription.created');
+    expect(events[0].status).to.equal('processed');
+    expect(events[0].mode).to.equal('test');
+  });
+
+  it('records livemode events with live mode', async () => {
+    const cust = subs.createCustomer('live@test.com');
+    const sub = subs.createSubscription(cust.id, 'basic');
+    subs.updateStripeSubscriptionId(sub.id, 'sub_live_1', 'incomplete');
+
+    await handleRequest(api, 'POST', '/api/billing/webhook', evt('customer.subscription.created', {
+      id: 'sub_live_1', status: 'active',
+    }, { livemode: true }), { 'stripe-signature': 'sig' });
+
+    const events = api.getWebhookEvents();
+    expect(events[0].mode).to.equal('live');
+    expect(events[0].livemode).to.equal(true);
+  });
+
+  it('is idempotent for duplicate event ids', async () => {
+    const cust = subs.createCustomer('dupe@test.com');
+    const sub = subs.createSubscription(cust.id, 'basic');
+    subs.updateStripeSubscriptionId(sub.id, 'sub_dupe_1', 'incomplete');
+
+    const payload = evt('customer.subscription.created', { id: 'sub_dupe_1', status: 'active' }, { id: 'evt_fixed_dupe' });
+
+    const first = await handleRequest(api, 'POST', '/api/billing/webhook', payload, { 'stripe-signature': 'sig' });
+    expect(JSON.parse(first.body).duplicate).to.not.equal(true);
+
+    const second = await handleRequest(api, 'POST', '/api/billing/webhook', payload, { 'stripe-signature': 'sig' });
+    expect(second.statusCode).to.equal(200);
+    expect(JSON.parse(second.body).duplicate).to.equal(true);
+
+    expect(api.getWebhookEvents()).to.have.lengthOf(1);
+  });
+
+  it('processes invoice.payment_succeeded - marks active and sets period', async () => {
+    const cust = subs.createCustomer('paid@test.com');
+    const sub = subs.createSubscription(cust.id, 'advanced');
+    subs.updateStripeSubscriptionId(sub.id, 'sub_paid_1', 'past_due');
+    subs.updateSubscriptionStatus('sub_paid_1', 'past_due');
+
+    const now = Math.floor(Date.now() / 1000);
+    await handleRequest(api, 'POST', '/api/billing/webhook', evt('invoice.payment_succeeded', {
+      subscription: 'sub_paid_1', period_start: now, period_end: now + 2592000,
+    }), { 'stripe-signature': 'sig' });
+
+    const updated = subs.getSubscription(sub.id);
+    expect(updated!.status).to.equal('active');
+    expect(updated!.currentPeriodStart).to.exist;
+    expect(updated!.currentPeriodEnd).to.exist;
+  });
+
+  it('processes customer.subscription.trial_will_end and audits the notice', async () => {
+    const cust = subs.createCustomer('trial@test.com');
+    const sub = subs.createSubscription(cust.id, 'basic');
+    subs.updateStripeSubscriptionId(sub.id, 'sub_trial_1', 'trialing');
+    subs.updateSubscriptionStatus('sub_trial_1', 'trialing');
+
+    const now = Math.floor(Date.now() / 1000);
+    await handleRequest(api, 'POST', '/api/billing/webhook', evt('customer.subscription.trial_will_end', {
+      id: 'sub_trial_1', status: 'trialing', current_period_start: now, current_period_end: now + 259200,
+    }), { 'stripe-signature': 'sig' });
+
+    const updated = subs.getSubscription(sub.id);
+    expect(updated!.status).to.equal('trialing');
+
+    const events = api.getWebhookEvents();
+    expect(events[0].eventType).to.equal('customer.subscription.trial_will_end');
+    expect(events[0].status).to.equal('processed');
+  });
+
+  it('GET /api/billing/webhook-events exposes the audit trail', async () => {
+    const cust = subs.createCustomer('audit-endpoint@test.com');
+    const sub = subs.createSubscription(cust.id, 'basic');
+    subs.updateStripeSubscriptionId(sub.id, 'sub_audit_ep', 'incomplete');
+
+    await handleRequest(api, 'POST', '/api/billing/webhook', evt('customer.subscription.created', {
+      id: 'sub_audit_ep', status: 'active',
+    }), { 'stripe-signature': 'sig' });
+
+    const res = await handleRequest(api, 'GET', '/api/billing/webhook-events');
+    expect(res.statusCode).to.equal(200);
+    const data = JSON.parse(res.body);
+    expect(data.events).to.have.lengthOf(1);
+    expect(data.events[0].eventType).to.equal('customer.subscription.created');
+  });
+
+  it('marks the audit row failed when a handler throws', async () => {
+    const res = await handleRequest(api, 'POST', '/api/billing/webhook', evt('customer.subscription.updated', null), { 'stripe-signature': 'sig' });
+    expect(res.statusCode).to.equal(500);
+
+    const events = api.getWebhookEvents();
+    expect(events).to.have.lengthOf(1);
+    expect(events[0].status).to.equal('failed');
+    expect(events[0].error).to.be.a('string');
+  });
+});
+
 function handleRequest(api: BillingApi, method: string, url: string, body?: string, headers?: Record<string, string>): Promise<{ statusCode: number; body: string }> {
   return new Promise((resolve) => {
     let responseBody = '';
