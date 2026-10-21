@@ -99,7 +99,15 @@ export default function DashboardOverview() {
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <div className={`size-2 rounded-full ${health?.status === 'healthy' ? 'bg-green-500' : 'bg-yellow-500'}`} />
+          <div
+            className={`size-2 rounded-full ${
+              health?.status === 'healthy'
+                ? 'bg-success'
+                : health?.status === 'degraded'
+                  ? 'bg-warning'
+                  : 'bg-destructive'
+            }`}
+          />
           {health?.status ?? 'unknown'}
         </div>
       </div>

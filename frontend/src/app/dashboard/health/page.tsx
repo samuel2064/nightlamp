@@ -50,12 +50,27 @@ export default function HealthPage() {
   }
 
   const items = [
-    { key: 'Status', value: health?.status },
     { key: 'Timestamp', value: health?.timestamp ? new Date(health.timestamp).toLocaleString() : '-' },
     { key: 'Total Checks', value: health?.stats.checks },
     { key: 'Failure Events', value: health?.stats.failureEvents },
+    { key: 'Incidents (24h)', value: health?.stats.incidentsLast24h },
+    { key: 'Critical (24h)', value: health?.stats.criticalLast24h },
     { key: 'Playbook Entries', value: health?.stats.playbookEntries },
+    {
+      key: 'Error Rate (24h)',
+      value:
+        typeof health?.slo?.errorRate24h === 'number'
+          ? `${(health.slo.errorRate24h * 100).toFixed(2)}%`
+          : '-',
+    },
   ]
+
+  const statusVariant =
+    health?.status === 'healthy'
+      ? 'success'
+      : health?.status === 'degraded'
+        ? 'warning'
+        : 'destructive'
 
   return (
     <div className="space-y-6">
@@ -79,6 +94,16 @@ export default function HealthPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
+              <TableRow>
+                <TableCell className="font-medium">Status</TableCell>
+                <TableCell>
+                  {health?.status ? (
+                    <Badge variant={statusVariant}>{health.status}</Badge>
+                  ) : (
+                    '-'
+                  )}
+                </TableCell>
+              </TableRow>
               {items.map((item) => (
                 <TableRow key={item.key}>
                   <TableCell className="font-medium">{item.key}</TableCell>

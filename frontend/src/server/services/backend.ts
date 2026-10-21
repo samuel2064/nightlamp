@@ -89,13 +89,35 @@ export interface MonitorData {
   lastRun: string
 }
 
+export type HealthStatus = 'healthy' | 'degraded' | 'critical'
+
 export interface HealthStats {
-  status: string
+  status: HealthStatus
   timestamp: string
   stats: {
     checks: number
     failureEvents: number
     playbookEntries: number
+    incidentsLast24h?: number
+    criticalLast24h?: number
+  }
+  slo?: {
+    errorRate24h?: number
+  }
+}
+
+function normalizeHealthStatus(raw: string | undefined): HealthStatus {
+  switch ((raw || '').toLowerCase()) {
+    case 'ok':
+    case 'healthy':
+    case 'up':
+      return 'healthy'
+    case 'degraded':
+    case 'warn':
+    case 'warning':
+      return 'degraded'
+    default:
+      return 'critical'
   }
 }
 
@@ -129,8 +151,10 @@ export const backend = {
     },
   },
   health: {
-    get: () =>
-      apiFetch<HealthStats>('/api/health'),
+    get: async () => {
+      const health = await apiFetch<HealthStats>('/api/health')
+      return { ...health, status: normalizeHealthStatus(health.status) }
+    },
   },
   billing: {
     summary: () =>
