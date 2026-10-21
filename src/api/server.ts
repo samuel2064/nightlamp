@@ -1329,6 +1329,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           req,
           res,
           path: trpcPath,
+          allowMethodOverride: true,
           createContext: () => createTRPCContext(db, playbookEngine),
         }).catch((err: any) => {
           if (!res.headersSent) {
