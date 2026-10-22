@@ -12,6 +12,7 @@ import {
   BookOpen,
   CreditCard,
   CheckCircle2,
+  Settings,
   X,
 } from 'lucide-react'
 import { UserButton, OrganizationSwitcher, useUser } from '@clerk/nextjs'
@@ -26,6 +27,7 @@ export const navItems = [
   { href: '/dashboard/playbooks', label: 'Playbooks', icon: BookOpen },
   { href: '/dashboard/billing', label: 'Billing', icon: CreditCard },
   { href: '/dashboard/approvals', label: 'Approvals', icon: CheckCircle2 },
+  { href: '/dashboard/settings', label: 'Settings', icon: Settings },
 ]
 
 interface SidebarProps {
