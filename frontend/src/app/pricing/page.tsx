@@ -1,199 +1,346 @@
 'use client'
 
+import { useState } from 'react'
 import Link from 'next/link'
-import { CheckCircle, ArrowRight, HelpCircle } from 'lucide-react'
+import { Check, ArrowRight, HelpCircle } from 'lucide-react'
 import { buttonVariants } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
 
-const tiers = [
+type Tier = {
+  name: string
+  tagline: string
+  description: string
+  features: string[]
+  cta: string
+  href: string
+  popular?: boolean
+  price: { monthly: number | null; annual: number | null }
+}
+
+const tiers: Tier[] = [
   {
-    name: 'Indie',
-    price: '$99',
-    tagline: 'Ship without the fear',
-    description: 'For solo founders who ship fast.',
+    name: 'Free',
+    price: { monthly: 0, annual: null },
+    tagline: 'Catch the obvious break.',
+    description: 'For founders who want one app watched before paying anything.',
     features: [
-      { included: true, label: '10 app monitors' },
-      { included: true, label: '< 30 min detection SLA' },
-      { included: true, label: '5 active playbooks' },
-      { included: true, label: 'Email + Slack alerts' },
-      { included: true, label: 'Auto-fix (manual approval)' },
-      { included: true, label: 'One-time app health audit' },
-      { included: false, label: 'SMS & PagerDuty alerts' },
-      { included: false, label: 'Playbook analytics' },
-      { included: false, label: 'White-label mode' },
+      '1 app',
+      '100 checks/day',
+      'Basic action + uptime checks',
+      'Email alerts',
+      'Community support',
     ],
-    cta: 'Start Free Trial',
-    popular: false,
+    cta: 'Start free',
+    href: '/sign-up',
   },
   {
-    name: 'Growth',
-    price: '$299',
-    tagline: 'Your app got traction. Your monitoring should too.',
-    description: 'For teams that need sleep.',
+    name: 'Pro',
+    price: { monthly: 99, annual: 999 },
+    tagline: 'Ship without the fear.',
+    description: 'For solo founders with one product and real users.',
     features: [
-      { included: true, label: '30 app monitors' },
-      { included: true, label: '< 5 min detection SLA' },
-      { included: true, label: '25 active playbooks' },
-      { included: true, label: 'Email + Slack alerts' },
-      { included: true, label: 'Auto-fix (automated)' },
-      { included: true, label: 'Monthly health audit' },
-      { included: true, label: 'SMS & PagerDuty alerts' },
-      { included: true, label: 'Playbook analytics' },
-      { included: true, label: 'Priority support (2h)' },
-      { included: false, label: 'White-label mode' },
+      '5 apps',
+      '10,000 checks/day',
+      'Checks for auth, billing, and core actions',
+      'Webhook and API-key validation',
+      'Email + Slack alerts',
+      'Playbooks for known failures',
+      'Priority email support',
     ],
-    cta: 'Start Free Trial',
+    cta: 'Start free (30 days, no card)',
+    href: '/sign-up',
     popular: true,
   },
   {
-    name: 'Scale',
-    price: '$499',
-    tagline: 'Enterprise reliability without the enterprise headache',
-    description: 'For companies that cannot fail.',
+    name: 'Team',
+    price: { monthly: 299, annual: 2990 },
+    tagline: 'Your app got traction. Your monitoring should too.',
+    description: 'For small teams and agencies running several apps.',
     features: [
-      { included: true, label: 'Unlimited monitors' },
-      { included: true, label: '< 1 min detection SLA' },
-      { included: true, label: 'Unlimited playbooks' },
-      { included: true, label: 'All channels + custom webhook' },
-      { included: true, label: 'Full automation' },
-      { included: true, label: 'Weekly health audit' },
-      { included: true, label: 'SMS & PagerDuty alerts' },
-      { included: true, label: 'Full analytics & reports' },
-      { included: true, label: 'White-label mode' },
-      { included: true, label: 'Custom playbook dev' },
-      { included: true, label: '30-min support, 24/7' },
+      'Everything in Pro',
+      '20 apps',
+      'Unlimited checks',
+      '5 team seats',
+      'Custom playbooks',
+      'Priority support with a 2-hour response target',
     ],
-    cta: 'Talk to Sales',
-    popular: false,
+    cta: 'Start free (30 days, no card)',
+    href: '/sign-up',
+  },
+  {
+    name: 'Enterprise',
+    price: { monthly: null, annual: null },
+    tagline: 'Run monitoring under your own brand.',
+    description: 'For accelerators, agencies, and companies with an SLA.',
+    features: [
+      'Unlimited apps',
+      'Custom SLA',
+      'Dedicated engineer',
+      'White-label reports and alerts',
+      'Custom playbook development',
+      'Invoicing',
+    ],
+    cta: 'Contact sales',
+    href: '/sign-up?plan=enterprise',
   },
 ]
 
-const faqs = [
-  { q: 'How is this different from Sentry/Datadog?', a: 'Sentry gives you error logs. Datadog gives you dashboards. Nightlamp gives you a fix. We\'re not a monitoring tool — we\'re an automated mechanic.' },
-  { q: 'Do I need to know how to code?', a: 'No. Nightlamp was built for AI and no-code app builders. If you can connect an API, you can use Nightlamp.' },
-  { q: 'What apps does it work with?', a: 'Any app that uses external APIs, webhooks, or integrations. Cursor, Bolt, Bubble, Webflow, FlutterFlow — if it has dependencies, we cover it.' },
-  { q: 'Can I try before I buy?', a: 'Yes. 14-day free trial on all plans. No credit card required for Indie tier.' },
-  { q: 'What if I just want to monitor one app?', a: 'Indie tier is perfect. 10 monitors cover auth, billing, core flows, and integrations.' },
-  { q: 'Can I cancel anytime?', a: 'Yes. No contracts. No lock-in.' },
-  { q: 'Is there an annual discount?', a: 'Yes. Save 20% with annual billing on any plan.' },
+const planLimits = [
+  { label: 'Apps', free: '1', pro: '5', team: '20', enterprise: 'Unlimited' },
+  { label: 'Checks/day', free: '100', pro: '10,000', team: 'Unlimited', enterprise: 'Unlimited' },
+  { label: 'Team seats', free: '1', pro: '1', team: '5', enterprise: 'Unlimited' },
+  { label: 'Alerts', free: 'Email', pro: 'Email + Slack', team: 'Email + Slack', enterprise: 'Email + Slack + custom webhook' },
+  { label: 'Playbooks', free: '—', pro: 'Standard', team: 'Custom', enterprise: 'Custom development' },
+  { label: 'Support', free: 'Community', pro: 'Priority email', team: 'Priority, 2h target', enterprise: 'Dedicated engineer' },
 ]
 
+const comparisonRows = [
+  { label: 'Price (monthly)', free: '$0/mo', pro: '$99/mo', team: '$299/mo', enterprise: 'Custom' },
+  { label: 'Price (annual)', free: '—', pro: '$999/yr', team: '$2,990/yr', enterprise: 'Custom' },
+  { label: 'Apps', free: '1', pro: '5', team: '20', enterprise: 'Unlimited' },
+  { label: 'Checks/day', free: '100', pro: '10,000', team: 'Unlimited', enterprise: 'Unlimited' },
+  { label: 'Alerts', free: 'Email', pro: 'Email + Slack', team: 'Email + Slack', enterprise: 'Email + Slack + custom webhook' },
+  { label: 'Playbooks', free: '—', pro: 'Standard', team: 'Custom', enterprise: 'Custom development' },
+  { label: 'Team seats', free: '1', pro: '1', team: '5', enterprise: 'Unlimited' },
+  { label: 'Support', free: 'Community', pro: 'Priority email', team: 'Priority, 2h target', enterprise: 'Dedicated engineer' },
+  { label: 'White-label', free: '—', pro: '—', team: '—', enterprise: 'Yes' },
+]
+
+const faqs = [
+  {
+    q: 'Is there really a free plan?',
+    a: 'Yes — one app, 100 checks a day, email alerts. No card, no expiry date.',
+  },
+  {
+    q: 'What happens after 30 days of beta?',
+    a: 'You choose a plan or you stop. No auto-charge, no card on file.',
+  },
+  {
+    q: 'How is this different from Sentry or UptimeRobot?',
+    a: 'They report that a page is down or an exception fired. Nightlamp checks whether the actions still work — signup, checkout, webhooks — and tells you what broke.',
+  },
+  {
+    q: 'Do I need to know how to code?',
+    a: 'No. If you can paste a URL and create a test account, we can monitor the app.',
+  },
+  {
+    q: 'What apps does it work with?',
+    a: 'Anything that calls an external API, receives webhooks, or depends on a key: Bubble, Bolt, Lovable, Cursor-built apps, plain Next.js. If it has a dependency, it can break silently.',
+  },
+  {
+    q: 'Why is Pro $99?',
+    a: 'Because one missed failure usually costs more than a year of Pro. We are not competing with cheap uptime pings.',
+  },
+  {
+    q: 'Can I cancel?',
+    a: 'Yes, anytime. Monthly has no contract; annual is refunded pro-rata if we failed the SLA we agreed to.',
+  },
+  {
+    q: 'Do you offer annual billing?',
+    a: 'Yes — $999/yr for Pro and $2,990/yr for Team, about 17% less than monthly.',
+  },
+  {
+    q: 'What does white-label include?',
+    a: 'Reports and alerts under your brand, one invoice, and a named engineer. Dashboard-level multi-tenancy is not available yet — tell us what you need and we will scope it.',
+  },
+]
+
+function annualEquivalent(annual: number) {
+  return Math.round(annual / 12)
+}
+
 export default function PricingPage() {
+  const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>('monthly')
+  const annual = billingCycle === 'annual'
+
   return (
-    <div className="flex flex-col min-h-screen">
+    <div className="flex min-h-screen flex-col">
       {/* Navigation */}
       <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="container mx-auto flex h-16 items-center justify-between px-4">
           <Link href="/" className="flex items-center gap-2">
-            <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center">
-              <span className="text-primary-foreground font-bold text-sm">N</span>
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary">
+              <span className="text-sm font-bold text-primary-foreground">N</span>
             </div>
-            <span className="font-bold text-xl">Nightlamp</span>
+            <span className="text-xl font-bold">Nightlamp</span>
           </Link>
-          <nav className="hidden md:flex items-center gap-6">
-            <Link href="/pricing" className="text-sm font-medium text-foreground">Pricing</Link>
-            <Link href="/webinar" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">Webinar</Link>
-            <Link href="/sign-in" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">Sign in</Link>
-            <Link href="/sign-up" className={cn(buttonVariants())}>Start Free Trial</Link>
+          <nav className="hidden items-center gap-6 md:flex">
+            <Link href="/pricing" className="text-sm font-medium text-foreground">
+              Pricing
+            </Link>
+            <Link href="/webinar" className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground">
+              Webinar
+            </Link>
+            <Link href="/sign-in" className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground">
+              Sign in
+            </Link>
+            <Link href="/sign-up" className={cn(buttonVariants())}>
+              Start free
+            </Link>
           </nav>
         </div>
       </header>
 
       {/* Hero */}
-      <section className="py-20 md:py-28">
+      <section className="py-16 md:py-24">
         <div className="container mx-auto px-4 text-center">
-          <h1 className="text-4xl md:text-5xl font-bold tracking-tight mb-6 max-w-3xl mx-auto">
+          <h1 className="mx-auto mb-6 max-w-3xl text-4xl font-bold tracking-tight md:text-5xl">
             The price of a single unnoticed failure is higher than any plan.
           </h1>
-          <p className="text-xl text-muted-foreground mb-8 max-w-2xl mx-auto">
-            Nightlamp starts at $99/mo.
+          <p className="mx-auto max-w-2xl text-lg text-muted-foreground md:text-xl">
+            Start free. Pro is $99/mo, Team $299/mo, and Enterprise is custom. Every plan checks
+            the actions that uptime tools never see.
           </p>
+        </div>
+      </section>
+
+      {/* Beta banner + billing toggle */}
+      <section className="pb-8">
+        <div className="container mx-auto max-w-3xl px-4">
+          <div className="mb-8 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3 text-center text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">Beta:</span> 30 days free on Pro and
+            Team, no card. We are not charging anyone yet.
+          </div>
+          <div className="flex items-center justify-center gap-4 sm:gap-6">
+            <span
+              className={cn(
+                'text-sm font-medium transition-colors',
+                !annual ? 'text-foreground' : 'text-muted-foreground'
+              )}
+            >
+              Monthly
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={annual}
+              aria-label="Toggle annual billing"
+              onClick={() => setBillingCycle(annual ? 'monthly' : 'annual')}
+              className={cn(
+                'relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+                annual ? 'bg-primary' : 'bg-input'
+              )}
+            >
+              <span
+                className={cn(
+                  'pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform',
+                  annual ? 'translate-x-5' : 'translate-x-0'
+                )}
+              />
+            </button>
+            <span
+              className={cn(
+                'flex items-center gap-2 text-sm font-medium transition-colors',
+                annual ? 'text-foreground' : 'text-muted-foreground'
+              )}
+            >
+              Annual
+              <Badge variant="secondary" className="text-xs">
+                Save 17%
+              </Badge>
+            </span>
+          </div>
         </div>
       </section>
 
       {/* Tier Cards */}
       <section className="pb-20">
         <div className="container mx-auto px-4">
-          <div className="grid md:grid-cols-3 gap-8 max-w-6xl mx-auto">
-            {tiers.map((tier) => (
-              <Card key={tier.name} className={`relative flex flex-col ${tier.popular ? 'border-primary shadow-lg ring-1 ring-primary scale-105 md:scale-110' : ''}`}>
-                {tier.popular && (
-                  <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-primary text-primary-foreground text-xs font-semibold px-4 py-1 rounded-full">
-                    Most Popular
-                  </div>
-                )}
-                <CardHeader>
-                  <CardTitle className="text-lg">{tier.name}</CardTitle>
-                  <div className="mt-2">
-                    <span className="text-4xl font-bold">{tier.price}</span>
-                    <span className="text-muted-foreground">/mo</span>
-                  </div>
-                  <p className="text-sm text-muted-foreground mt-1">{tier.tagline}</p>
-                </CardHeader>
-                <CardContent className="flex-1 flex flex-col">
-                  <ul className="space-y-2.5 mb-8 flex-1">
-                    {tier.features.map((f) => (
-                      <li key={f.label} className={`flex items-start gap-2 text-sm ${f.included ? '' : 'text-muted-foreground/50'}`}>
-                        <CheckCircle className={`h-4 w-4 mt-0.5 shrink-0 ${f.included ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground/30'}`} />
-                        <span className={f.included ? '' : 'line-through'}>{f.label}</span>
-                      </li>
-                    ))}
-                  </ul>
-                  <Link href={tier.name === 'Scale' ? '/webinar' : '/sign-up'} className={cn(buttonVariants({ variant: tier.popular ? 'default' : 'outline' }), 'w-full block text-center')}>
-                    {tier.cta}
-                    <ArrowRight className="ml-2 h-4 w-4" />
-                  </Link>
-                </CardContent>
-              </Card>
-            ))}
+          <div className="mx-auto grid max-w-6xl grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
+            {tiers.map((tier) => {
+              const showAnnual = annual && tier.price.annual !== null
+              return (
+                <Card
+                  key={tier.name}
+                  className={cn(
+                    'relative flex flex-col',
+                    tier.popular && 'border-primary shadow-lg ring-1 ring-primary'
+                  )}
+                >
+                  {tier.popular && (
+                    <div className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-primary px-4 py-1 text-xs font-semibold text-primary-foreground">
+                      Most popular
+                    </div>
+                  )}
+                  <CardHeader>
+                    <CardTitle className="text-lg">{tier.name}</CardTitle>
+                    <div className="mt-2 flex min-h-[3.5rem] flex-col justify-end">
+                      {tier.price.monthly === null ? (
+                        <span className="text-4xl font-bold">Custom</span>
+                      ) : showAnnual && tier.price.annual !== null ? (
+                        <>
+                          <div className="flex items-baseline gap-1">
+                            <span className="text-4xl font-bold">
+                              ${tier.price.annual.toLocaleString('en-US')}
+                            </span>
+                            <span className="text-muted-foreground">/yr</span>
+                          </div>
+                          <span className="text-xs text-muted-foreground">
+                            ${annualEquivalent(tier.price.annual)}/mo equivalent
+                          </span>
+                        </>
+                      ) : (
+                        <div className="flex items-baseline gap-1">
+                          <span className="text-4xl font-bold">${tier.price.monthly}</span>
+                          <span className="text-muted-foreground">/mo</span>
+                        </div>
+                      )}
+                    </div>
+                    <p className="mt-2 text-sm font-medium text-foreground">{tier.tagline}</p>
+                    <p className="mt-1 text-sm text-muted-foreground">{tier.description}</p>
+                  </CardHeader>
+                  <CardContent className="flex flex-1 flex-col">
+                    <ul className="mb-8 flex-1 space-y-2.5">
+                      {tier.features.map((feature) => (
+                        <li key={feature} className="flex items-start gap-2 text-sm">
+                          <Check className="mt-0.5 h-4 w-4 shrink-0 text-green-600 dark:text-green-400" />
+                          <span>{feature}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <Link
+                      href={tier.href}
+                      className={cn(
+                        buttonVariants({ variant: tier.popular ? 'default' : 'outline' }),
+                        'block w-full text-center'
+                      )}
+                    >
+                      {tier.cta}
+                      <ArrowRight className="ml-2 h-4 w-4" />
+                    </Link>
+                  </CardContent>
+                </Card>
+              )
+            })}
           </div>
         </div>
       </section>
 
-      {/* Social Proof */}
-      <section className="border-t py-16 bg-muted/30">
-        <div className="container mx-auto px-4 max-w-4xl">
-          <p className="text-muted-foreground">
-            Beta founders get 30 days of monitoring and a full app health report. No card.
-          </p>
-        </div>
-      </section>
-
-      {/* Comparison Table */}
-      <section className="border-t py-20">
-        <div className="container mx-auto px-4">
-          <h2 className="text-3xl font-bold text-center mb-12">Compare Plans</h2>
-          <div className="max-w-5xl mx-auto overflow-x-auto">
-            <table className="w-full text-left">
+      {/* Limits Summary */}
+      <section className="border-t bg-muted/30 py-16">
+        <div className="container mx-auto max-w-5xl px-4">
+          <h2 className="mb-8 text-center text-2xl font-bold">Plan limits at a glance</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] text-left">
               <thead>
                 <tr className="border-b">
-                  <th className="py-4 pr-8 font-semibold">Feature</th>
-                  <th className="py-4 px-4 font-semibold text-center">Indie</th>
-                  <th className="py-4 px-4 font-semibold text-center text-primary">Growth</th>
-                  <th className="py-4 px-4 font-semibold text-center">Scale</th>
+                  <th className="py-4 pr-6 font-semibold">Limit</th>
+                  <th className="px-3 py-4 text-center font-semibold">Free</th>
+                  <th className="px-3 py-4 text-center font-semibold text-primary">Pro</th>
+                  <th className="px-3 py-4 text-center font-semibold">Team</th>
+                  <th className="px-3 py-4 text-center font-semibold">Enterprise</th>
                 </tr>
               </thead>
               <tbody>
-                <tr className="border-b">
-                  <td className="py-3 pr-8 text-muted-foreground">Price</td>
-                  <td className="py-3 px-4 text-center font-medium">$99/mo</td>
-                  <td className="py-3 px-4 text-center font-medium text-primary">$299/mo</td>
-                  <td className="py-3 px-4 text-center font-medium">$499/mo</td>
-                </tr>
-                {[
-                  { label: 'Detection speed', indie: 'Within 30 min', growth: 'Within 5 min', scale: 'Within 1 min' },
-                  { label: 'Auto-fix', indie: 'Manual', growth: 'Automated', scale: 'Fully autonomous' },
-                  { label: 'Playbooks', indie: '5', growth: '25', scale: 'Unlimited' },
-                  { label: 'White-label', indie: '\u2014', growth: '\u2014', scale: '\u2713' },
-                  { label: 'Monitors', indie: '10', growth: '30', scale: 'Unlimited' },
-                  { label: 'Support', indie: 'Email', growth: 'Priority (2h)', scale: '24/7 (30 min)' },
-                ].map((row) => (
+                {planLimits.map((row) => (
                   <tr key={row.label} className="border-b last:border-0">
-                    <td className="py-3 pr-8 text-muted-foreground">{row.label}</td>
-                    <td className="py-3 px-4 text-center">{row.indie}</td>
-                    <td className="py-3 px-4 text-center">{row.growth}</td>
-                    <td className="py-3 px-4 text-center">{row.scale}</td>
+                    <td className="py-3 pr-6 text-muted-foreground">{row.label}</td>
+                    <td className="px-3 py-3 text-center font-medium">{row.free}</td>
+                    <td className="px-3 py-3 text-center font-medium text-primary">{row.pro}</td>
+                    <td className="px-3 py-3 text-center font-medium">{row.team}</td>
+                    <td className="px-3 py-3 text-center font-medium">{row.enterprise}</td>
                   </tr>
                 ))}
               </tbody>
@@ -202,16 +349,71 @@ export default function PricingPage() {
         </div>
       </section>
 
+      {/* Comparison Table */}
+      <section className="border-t py-20">
+        <div className="container mx-auto px-4">
+          <h2 className="mb-12 text-center text-3xl font-bold">Compare plans</h2>
+          <div className="mx-auto max-w-5xl overflow-x-auto">
+            <table className="w-full min-w-[640px] text-left">
+              <thead>
+                <tr className="border-b">
+                  <th className="py-4 pr-6 font-semibold">Feature</th>
+                  <th className="px-3 py-4 text-center font-semibold">Free</th>
+                  <th className="px-3 py-4 text-center font-semibold text-primary">Pro</th>
+                  <th className="px-3 py-4 text-center font-semibold">Team</th>
+                  <th className="px-3 py-4 text-center font-semibold">Enterprise</th>
+                </tr>
+              </thead>
+              <tbody>
+                {comparisonRows.map((row) => (
+                  <tr key={row.label} className="border-b last:border-0">
+                    <td className="py-3 pr-6 text-muted-foreground">{row.label}</td>
+                    <td className="px-3 py-3 text-center">{row.free}</td>
+                    <td className="px-3 py-3 text-center">{row.pro}</td>
+                    <td className="px-3 py-3 text-center">{row.team}</td>
+                    <td className="px-3 py-3 text-center">{row.enterprise}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      {/* Trust */}
+      <section className="border-t py-16">
+        <div className="container mx-auto max-w-3xl px-4">
+          <div className="space-y-4 text-center text-muted-foreground">
+            <p>
+              We run Nightlamp on our own app. In October our production build was 11 weeks stale
+              and uptime monitoring never flagged it. We found it by testing our own signup form.
+            </p>
+            <p className="font-medium text-foreground">
+              Every claim on this page is something we can show you. If we cannot, we remove it.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {/* Beta CTA */}
+      <section className="border-t bg-muted/30 py-16">
+        <div className="container mx-auto max-w-4xl px-4 text-center">
+          <p className="text-lg text-muted-foreground">
+            Beta founders get 30 days of monitoring and a full app health report. No card.
+          </p>
+        </div>
+      </section>
+
       {/* FAQ */}
-      <section className="border-t py-20 bg-muted/30">
-        <div className="container mx-auto px-4 max-w-3xl">
-          <h2 className="text-3xl font-bold text-center mb-12">Frequently Asked Questions</h2>
+      <section className="border-t py-20">
+        <div className="container mx-auto max-w-3xl px-4">
+          <h2 className="mb-12 text-center text-3xl font-bold">Frequently asked questions</h2>
           <div className="space-y-6">
             {faqs.map((faq) => (
               <details key={faq.q} className="group">
-                <summary className="flex items-center justify-between cursor-pointer py-3 border-b group-open:border-primary/30">
+                <summary className="flex cursor-pointer items-center justify-between border-b py-3 group-open:border-primary/30">
                   <span className="font-medium">{faq.q}</span>
-                  <HelpCircle className="h-4 w-4 text-muted-foreground group-open:rotate-180 transition-transform" />
+                  <HelpCircle className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
                 </summary>
                 <p className="py-4 text-muted-foreground">{faq.a}</p>
               </details>
@@ -221,14 +423,17 @@ export default function PricingPage() {
       </section>
 
       {/* CTA */}
-      <section className="py-20 bg-primary text-primary-foreground">
+      <section className="bg-primary py-20 text-primary-foreground">
         <div className="container mx-auto px-4 text-center">
-          <h2 className="text-3xl font-bold mb-4">Start your free trial today</h2>
-          <p className="text-lg text-primary-foreground/80 mb-8 max-w-xl mx-auto">
-            No credit card required. Full access to all Indie features for 14 days.
+          <h2 className="mb-4 text-3xl font-bold">Start free today</h2>
+          <p className="mx-auto mb-8 max-w-xl text-lg text-primary-foreground/80">
+            30 days free on Pro and Team. No card, no auto-charge.
           </p>
-          <Link href="/sign-up" className={cn(buttonVariants({ size: 'lg', variant: 'secondary' }))}>
-            Get Your Free App Health Audit
+          <Link
+            href="/sign-up"
+            className={cn(buttonVariants({ size: 'lg', variant: 'secondary' }))}
+          >
+            Get your free app health audit
             <ArrowRight className="ml-2 h-5 w-5" />
           </Link>
         </div>
@@ -237,19 +442,27 @@ export default function PricingPage() {
       {/* Footer */}
       <footer className="border-t py-12">
         <div className="container mx-auto px-4">
-          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+          <div className="flex flex-col items-center justify-between gap-4 md:flex-row">
             <div className="flex items-center gap-2">
-              <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center">
-                <span className="text-primary-foreground font-bold text-xs">N</span>
+              <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary">
+                <span className="text-xs font-bold text-primary-foreground">N</span>
               </div>
               <span className="font-bold">Nightlamp</span>
             </div>
             <nav className="flex items-center gap-6 text-sm text-muted-foreground">
-              <Link href="/" className="hover:text-foreground transition-colors">Home</Link>
-              <Link href="/webinar" className="hover:text-foreground transition-colors">Webinar</Link>
-              <Link href="/sign-in" className="hover:text-foreground transition-colors">Sign in</Link>
+              <Link href="/" className="transition-colors hover:text-foreground">
+                Home
+              </Link>
+              <Link href="/webinar" className="transition-colors hover:text-foreground">
+                Webinar
+              </Link>
+              <Link href="/sign-in" className="transition-colors hover:text-foreground">
+                Sign in
+              </Link>
             </nav>
-            <p className="text-sm text-muted-foreground">&copy; {new Date().getFullYear()} Nightlamp. All rights reserved.</p>
+            <p className="text-sm text-muted-foreground">
+              &copy; {new Date().getFullYear()} Nightlamp. All rights reserved.
+            </p>
           </div>
         </div>
       </footer>
