@@ -31,12 +31,19 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     environment: production
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      SERVICE_ID: ${{ secrets.RENDER_BACKEND_SERVICE_ID }}
     steps:
+      - name: Validate Render configuration
+        run: |
+          test -n "$RENDER_API_KEY" || { echo "::error::RENDER_API_KEY secret is missing or empty"; exit 1; }
+          [[ "$SERVICE_ID" =~ ^srv-[a-z0-9]+$ ]] || { echo "::error::RENDER_BACKEND_SERVICE_ID is missing or malformed"; exit 1; }
       - name: Trigger Render backend deploy
         run: |
-          curl -X POST \
-            "https://api.render.com/v1/services/${{ secrets.RENDER_BACKEND_SERVICE_ID }}/deploys" \
-            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+          curl -fsS -X POST \
+            "https://api.render.com/v1/services/$SERVICE_ID/deploys" \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
             -H "Content-Type: application/json" \
             -d '{}'
 
@@ -45,13 +52,19 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     environment: production
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      SERVICE_ID: ${{ secrets.RENDER_FRONTEND_SERVICE_ID }}
     steps:
+      - name: Validate Render configuration
+        run: |
+          test -n "$RENDER_API_KEY" || { echo "::error::RENDER_API_KEY secret is missing or empty"; exit 1; }
+          [[ "$SERVICE_ID" =~ ^srv-[a-z0-9]+$ ]] || { echo "::error::RENDER_FRONTEND_SERVICE_ID is missing or malformed"; exit 1; }
       - name: Trigger Render frontend deploy
         run: |
-          curl -fsS \
-            -X POST \
-            "https://api.render.com/v1/services/${{ secrets.RENDER_FRONTEND_SERVICE_ID }}/deploys" \
-            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+          curl -fsS -X POST \
+            "https://api.render.com/v1/services/$SERVICE_ID/deploys" \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
             -H "Content-Type: application/json" \
             -d '{}'
 
