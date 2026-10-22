@@ -26,13 +26,13 @@ const tiers: Tier[] = [
     tagline: 'Catch the obvious break.',
     description: 'For founders who want one app watched before paying anything.',
     features: [
-      '1 app',
+      '1 app monitored',
       '100 checks/day',
       'Basic action + uptime checks',
       'Email alerts',
       'Community support',
     ],
-    cta: 'Start free',
+    cta: 'Start for free',
     href: '/sign-up',
   },
   {
@@ -49,7 +49,7 @@ const tiers: Tier[] = [
       'Playbooks for known failures',
       'Priority email support',
     ],
-    cta: 'Start free (30 days, no card)',
+    cta: 'Start 30-day beta',
     href: '/sign-up',
     popular: true,
   },
@@ -64,9 +64,9 @@ const tiers: Tier[] = [
       'Unlimited checks',
       '5 team seats',
       'Custom playbooks',
-      'Priority support with a 2-hour response target',
+      'Priority support, 2-hour response target',
     ],
-    cta: 'Start free (30 days, no card)',
+    cta: 'Start 30-day beta',
     href: '/sign-up',
   },
   {
@@ -87,18 +87,7 @@ const tiers: Tier[] = [
   },
 ]
 
-const planLimits = [
-  { label: 'Apps', free: '1', pro: '5', team: '20', enterprise: 'Unlimited' },
-  { label: 'Checks/day', free: '100', pro: '10,000', team: 'Unlimited', enterprise: 'Unlimited' },
-  { label: 'Team seats', free: '1', pro: '1', team: '5', enterprise: 'Unlimited' },
-  { label: 'Alerts', free: 'Email', pro: 'Email + Slack', team: 'Email + Slack', enterprise: 'Email + Slack + custom webhook' },
-  { label: 'Playbooks', free: '—', pro: 'Standard', team: 'Custom', enterprise: 'Custom development' },
-  { label: 'Support', free: 'Community', pro: 'Priority email', team: 'Priority, 2h target', enterprise: 'Dedicated engineer' },
-]
-
 const comparisonRows = [
-  { label: 'Price (monthly)', free: '$0/mo', pro: '$99/mo', team: '$299/mo', enterprise: 'Custom' },
-  { label: 'Price (annual)', free: '—', pro: '$999/yr', team: '$2,990/yr', enterprise: 'Custom' },
   { label: 'Apps', free: '1', pro: '5', team: '20', enterprise: 'Unlimited' },
   { label: 'Checks/day', free: '100', pro: '10,000', team: 'Unlimited', enterprise: 'Unlimited' },
   { label: 'Alerts', free: 'Email', pro: 'Email + Slack', team: 'Email + Slack', enterprise: 'Email + Slack + custom webhook' },
@@ -106,6 +95,7 @@ const comparisonRows = [
   { label: 'Team seats', free: '1', pro: '1', team: '5', enterprise: 'Unlimited' },
   { label: 'Support', free: 'Community', pro: 'Priority email', team: 'Priority, 2h target', enterprise: 'Dedicated engineer' },
   { label: 'White-label', free: '—', pro: '—', team: '—', enterprise: 'Yes' },
+  { label: 'Annual', free: '—', pro: '$999/yr', team: '$2,990/yr', enterprise: 'Custom' },
 ]
 
 const faqs = [
@@ -126,20 +116,8 @@ const faqs = [
     a: 'No. If you can paste a URL and create a test account, we can monitor the app.',
   },
   {
-    q: 'What apps does it work with?',
-    a: 'Anything that calls an external API, receives webhooks, or depends on a key: Bubble, Bolt, Lovable, Cursor-built apps, plain Next.js. If it has a dependency, it can break silently.',
-  },
-  {
-    q: 'Why is Pro $99?',
-    a: 'Because one missed failure usually costs more than a year of Pro. We are not competing with cheap uptime pings.',
-  },
-  {
-    q: 'Can I cancel?',
-    a: 'Yes, anytime. Monthly has no contract; annual is refunded pro-rata if we failed the SLA we agreed to.',
-  },
-  {
     q: 'Do you offer annual billing?',
-    a: 'Yes — $999/yr for Pro and $2,990/yr for Team, about 17% less than monthly.',
+    a: 'Yes — $999/yr for Pro and $2,990/yr for Team. That saves $189/yr and $598/yr versus monthly, up to 17%.',
   },
   {
     q: 'What does white-label include?',
@@ -186,6 +164,9 @@ export default function PricingPage() {
       {/* Hero */}
       <section className="py-16 md:py-24">
         <div className="container mx-auto px-4 text-center">
+          <p className="mb-4 text-sm font-medium uppercase tracking-wider text-primary">
+            Simple, transparent pricing
+          </p>
           <h1 className="mx-auto mb-6 max-w-3xl text-4xl font-bold tracking-tight md:text-5xl">
             The price of a single unnoticed failure is higher than any plan.
           </h1>
@@ -201,7 +182,7 @@ export default function PricingPage() {
         <div className="container mx-auto max-w-3xl px-4">
           <div className="mb-8 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3 text-center text-sm text-muted-foreground">
             <span className="font-medium text-foreground">Beta:</span> 30 days free on Pro and
-            Team, no card. We are not charging anyone yet.
+            Team. No card, no auto-charge.
           </div>
           <div className="flex items-center justify-center gap-4 sm:gap-6">
             <span
@@ -238,7 +219,7 @@ export default function PricingPage() {
             >
               Annual
               <Badge variant="secondary" className="text-xs">
-                Save 17%
+                Save up to 17%
               </Badge>
             </span>
           </div>
@@ -278,7 +259,8 @@ export default function PricingPage() {
                             <span className="text-muted-foreground">/yr</span>
                           </div>
                           <span className="text-xs text-muted-foreground">
-                            ${annualEquivalent(tier.price.annual)}/mo equivalent
+                            ${annualEquivalent(tier.price.annual)}/mo · save $
+                            {(tier.price.monthly! * 12 - tier.price.annual).toLocaleString('en-US')}/yr
                           </span>
                         </>
                       ) : (
@@ -314,37 +296,6 @@ export default function PricingPage() {
                 </Card>
               )
             })}
-          </div>
-        </div>
-      </section>
-
-      {/* Limits Summary */}
-      <section className="border-t bg-muted/30 py-16">
-        <div className="container mx-auto max-w-5xl px-4">
-          <h2 className="mb-8 text-center text-2xl font-bold">Plan limits at a glance</h2>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[640px] text-left">
-              <thead>
-                <tr className="border-b">
-                  <th className="py-4 pr-6 font-semibold">Limit</th>
-                  <th className="px-3 py-4 text-center font-semibold">Free</th>
-                  <th className="px-3 py-4 text-center font-semibold text-primary">Pro</th>
-                  <th className="px-3 py-4 text-center font-semibold">Team</th>
-                  <th className="px-3 py-4 text-center font-semibold">Enterprise</th>
-                </tr>
-              </thead>
-              <tbody>
-                {planLimits.map((row) => (
-                  <tr key={row.label} className="border-b last:border-0">
-                    <td className="py-3 pr-6 text-muted-foreground">{row.label}</td>
-                    <td className="px-3 py-3 text-center font-medium">{row.free}</td>
-                    <td className="px-3 py-3 text-center font-medium text-primary">{row.pro}</td>
-                    <td className="px-3 py-3 text-center font-medium">{row.team}</td>
-                    <td className="px-3 py-3 text-center font-medium">{row.enterprise}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
           </div>
         </div>
       </section>
