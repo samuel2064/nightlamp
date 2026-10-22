@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
-import { Menu } from 'lucide-react'
+import { Menu, ChevronRight } from 'lucide-react'
 import { Sidebar, navItems } from '@/components/dashboard/sidebar'
 import { ConnectionIndicator } from '@/components/dashboard/connection-indicator'
 import { Button } from '@/components/ui/button'
@@ -68,9 +68,9 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             <span className="truncate text-sm font-semibold md:hidden">
               {currentLabel(pathname)}
             </span>
-            <span className="hidden text-xs text-muted-foreground md:inline">
-              Dashboard
-              <span className="mx-1.5 text-border">/</span>
+            <span className="hidden items-center gap-1.5 text-xs text-muted-foreground md:inline-flex">
+              <span>Dashboard</span>
+              <ChevronRight className="size-3 text-muted-foreground/60" aria-hidden />
               <span className="text-foreground">{currentLabel(pathname)}</span>
             </span>
           </div>

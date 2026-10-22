@@ -49,6 +49,11 @@ const config: Config = {
           900: '#102a43',
           950: '#0c1e35',
         },
+        brand: {
+          DEFAULT: '#6C5CE7',      // design-system brand primary
+          hover: '#7F71EA',
+          muted: '#3D3490',
+        },
         glow: {
           50: '#fffbeb',
           100: '#fef3c7',

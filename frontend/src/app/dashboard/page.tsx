@@ -7,6 +7,7 @@ import { RefreshCw, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
+import { deriveHealthStatus } from '@/lib/health-status'
 
 export default function DashboardOverview() {
   const { data: health, isLoading: healthLoading, isError: healthError, refetch: refetchHealth } = trpc.health.status.useQuery()
@@ -89,6 +90,10 @@ export default function DashboardOverview() {
     { label: 'Playbooks', value: playbook?.count ?? 0 },
   ]
 
+  // Status is derived worst-of from the live counters (no green with a
+  // non-zero critical counter — see lib/health-status.ts).
+  const derivedHealth = deriveHealthStatus(health)
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -101,14 +106,14 @@ export default function DashboardOverview() {
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <div
             className={`size-2 rounded-full ${
-              health?.status === 'healthy'
+              derivedHealth.status === 'healthy'
                 ? 'bg-success'
-                : health?.status === 'degraded'
+                : derivedHealth.status === 'degraded'
                   ? 'bg-warning'
                   : 'bg-destructive'
             }`}
           />
-          {health?.status ?? 'unknown'}
+          {derivedHealth.status}
         </div>
       </div>
 

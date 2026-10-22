@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
+import { formatLatency } from '@/lib/format'
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'disconnected'
 
@@ -125,10 +126,11 @@ export function ConnectionIndicator({ className }: { className?: string }) {
   }, [])
 
   const meta = STATUS_META[status]
+  const latencyLabel = formatLatency(latencyMs)
   const detail =
     status === 'connected'
       ? `Live updates active · Last update: ${relativeTime(lastUpdate)}${
-          latencyMs !== null ? ` · Latency: ${latencyMs}ms` : ''
+          latencyLabel ? ` · Latency: ${latencyLabel}` : ''
         }`
       : status === 'reconnecting'
         ? 'Reconnecting to live updates…'
@@ -156,8 +158,8 @@ export function ConnectionIndicator({ className }: { className?: string }) {
     >
       <span className={cn('size-2 rounded-full', meta.dot)} aria-hidden />
       <span>{meta.label}</span>
-      {status === 'connected' && latencyMs !== null && (
-        <span className="text-muted-foreground tabular-nums">{latencyMs}ms</span>
+      {status === 'connected' && latencyLabel && (
+        <span className="text-muted-foreground tabular-nums">{latencyLabel}</span>
       )}
     </button>
   )
