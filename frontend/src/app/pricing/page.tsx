@@ -11,7 +11,6 @@ import { Badge } from '@/components/ui/badge'
 type Tier = {
   name: string
   tagline: string
-  description: string
   features: string[]
   cta: string
   href: string
@@ -24,7 +23,6 @@ const tiers: Tier[] = [
     name: 'Free',
     price: { monthly: 0, annual: null },
     tagline: 'Catch the obvious break.',
-    description: 'For founders who want one app watched before paying anything.',
     features: [
       '1 app monitored',
       '100 checks/day',
@@ -39,7 +37,6 @@ const tiers: Tier[] = [
     name: 'Pro',
     price: { monthly: 99, annual: 999 },
     tagline: 'Ship without the fear.',
-    description: 'For solo founders with one product and real users.',
     features: [
       '5 apps',
       '10,000 checks/day',
@@ -57,7 +54,6 @@ const tiers: Tier[] = [
     name: 'Team',
     price: { monthly: 299, annual: 2990 },
     tagline: 'Your app got traction. Your monitoring should too.',
-    description: 'For small teams and agencies running several apps.',
     features: [
       'Everything in Pro',
       '20 apps',
@@ -73,7 +69,6 @@ const tiers: Tier[] = [
     name: 'Enterprise',
     price: { monthly: null, annual: null },
     tagline: 'Run monitoring under your own brand.',
-    description: 'For accelerators, agencies, and companies with an SLA.',
     features: [
       'Unlimited apps',
       'Custom SLA',
@@ -85,6 +80,15 @@ const tiers: Tier[] = [
     cta: 'Contact sales',
     href: '/sign-up?plan=enterprise',
   },
+]
+
+const planLimits = [
+  { label: 'Apps', free: '1', pro: '5', team: '20', enterprise: 'Unlimited' },
+  { label: 'Checks/day', free: '100', pro: '10,000', team: 'Unlimited', enterprise: 'Unlimited' },
+  { label: 'Team seats', free: '1', pro: '1', team: '5', enterprise: 'Unlimited' },
+  { label: 'Alerts', free: 'Email', pro: 'Email + Slack', team: 'Email + Slack', enterprise: 'Email + Slack + custom webhook' },
+  { label: 'Playbooks', free: '—', pro: 'Standard', team: 'Custom', enterprise: 'Custom development' },
+  { label: 'Support', free: 'Community', pro: 'Priority email', team: 'Priority, 2h target', enterprise: 'Dedicated engineer' },
 ]
 
 const comparisonRows = [
@@ -125,10 +129,6 @@ const faqs = [
   },
 ]
 
-function annualEquivalent(annual: number) {
-  return Math.round(annual / 12)
-}
-
 export default function PricingPage() {
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>('monthly')
   const annual = billingCycle === 'annual'
@@ -155,7 +155,7 @@ export default function PricingPage() {
               Sign in
             </Link>
             <Link href="/sign-up" className={cn(buttonVariants())}>
-              Start free
+              Start for free
             </Link>
           </nav>
         </div>
@@ -164,7 +164,7 @@ export default function PricingPage() {
       {/* Hero */}
       <section className="py-16 md:py-24">
         <div className="container mx-auto px-4 text-center">
-          <p className="mb-4 text-sm font-medium uppercase tracking-wider text-primary">
+          <p className="mb-4 text-sm font-semibold uppercase tracking-wider text-primary">
             Simple, transparent pricing
           </p>
           <h1 className="mx-auto mb-6 max-w-3xl text-4xl font-bold tracking-tight md:text-5xl">
@@ -232,6 +232,8 @@ export default function PricingPage() {
           <div className="mx-auto grid max-w-6xl grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
             {tiers.map((tier) => {
               const showAnnual = annual && tier.price.annual !== null
+              const monthlyTotal = tier.price.monthly !== null ? tier.price.monthly * 12 : 0
+              const annualSaving = tier.price.annual !== null ? monthlyTotal - tier.price.annual : 0
               return (
                 <Card
                   key={tier.name}
@@ -259,8 +261,8 @@ export default function PricingPage() {
                             <span className="text-muted-foreground">/yr</span>
                           </div>
                           <span className="text-xs text-muted-foreground">
-                            ${annualEquivalent(tier.price.annual)}/mo · save $
-                            {(tier.price.monthly! * 12 - tier.price.annual).toLocaleString('en-US')}/yr
+                            ${Math.round(tier.price.annual / 12)}/mo · save $
+                            {annualSaving.toLocaleString('en-US')}/yr
                           </span>
                         </>
                       ) : (
@@ -271,7 +273,6 @@ export default function PricingPage() {
                       )}
                     </div>
                     <p className="mt-2 text-sm font-medium text-foreground">{tier.tagline}</p>
-                    <p className="mt-1 text-sm text-muted-foreground">{tier.description}</p>
                   </CardHeader>
                   <CardContent className="flex flex-1 flex-col">
                     <ul className="mb-8 flex-1 space-y-2.5">
@@ -296,6 +297,37 @@ export default function PricingPage() {
                 </Card>
               )
             })}
+          </div>
+        </div>
+      </section>
+
+      {/* Limits Summary */}
+      <section className="border-t bg-muted/30 py-16">
+        <div className="container mx-auto max-w-5xl px-4">
+          <h2 className="mb-8 text-center text-2xl font-bold">Plan limits at a glance</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] text-left">
+              <thead>
+                <tr className="border-b">
+                  <th className="py-4 pr-6 font-semibold">Limit</th>
+                  <th className="px-3 py-4 text-center font-semibold">Free</th>
+                  <th className="px-3 py-4 text-center font-semibold text-primary">Pro</th>
+                  <th className="px-3 py-4 text-center font-semibold">Team</th>
+                  <th className="px-3 py-4 text-center font-semibold">Enterprise</th>
+                </tr>
+              </thead>
+              <tbody>
+                {planLimits.map((row) => (
+                  <tr key={row.label} className="border-b last:border-0">
+                    <td className="py-3 pr-6 text-muted-foreground">{row.label}</td>
+                    <td className="px-3 py-3 text-center font-medium">{row.free}</td>
+                    <td className="px-3 py-3 text-center font-medium text-primary">{row.pro}</td>
+                    <td className="px-3 py-3 text-center font-medium">{row.team}</td>
+                    <td className="px-3 py-3 text-center font-medium">{row.enterprise}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       </section>
