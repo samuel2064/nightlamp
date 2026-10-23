@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 const failures = [
-  { icon: AlertTriangle, name: 'Expired API keys', problem: '401 errors. Feature stops working.', solution: 'Detects, then applies the known fix' },
+  { icon: AlertTriangle, name: 'Expired API keys', problem: '401 errors. Feature stops working.', solution: 'Detects + fixes in 12 min' },
   { icon: Activity, name: 'Rate limit shifts', problem: '429 errors. Degraded UX.', solution: 'Alerts before users notice' },
   { icon: Database, name: 'Schema drift', problem: 'Data pipeline breaks silently', solution: 'Detects mismatch in real-time' },
   { icon: Webhook, name: 'Broken webhooks', problem: 'Data loss. No one checks.', solution: 'Verifies endpoints daily' },
@@ -16,27 +16,43 @@ const failures = [
 
 const tiers = [
   {
-    name: 'Indie',
-    price: '$99',
-    tagline: 'For solo founders who ship fast.',
-    features: ['10 app monitors', '5 active playbooks', 'Email + Slack alerts', '30-min detection SLA', '14-day free trial'],
-    cta: 'Start Free Trial',
+    name: 'Free',
+    price: '$0',
+    period: '',
+    tagline: 'Catch the obvious break.',
+    features: ['1 app', '100 checks/day', 'Email alerts'],
+    cta: 'Start for free',
+    href: '/sign-up',
     popular: false,
   },
   {
-    name: 'Growth',
-    price: '$299',
-    tagline: 'For teams that need sleep.',
-    features: ['30 app monitors', '25 active playbooks', 'All channels (Slack, SMS, PagerDuty)', 'Auto-fix enabled', '5-min detection SLA', 'Monthly health audit', '14-day free trial'],
-    cta: 'Start Free Trial',
+    name: 'Pro',
+    price: '$99',
+    period: '/mo',
+    tagline: 'Ship without the fear.',
+    features: ['5 apps', '10,000 checks/day', 'Email + Slack', 'Playbooks'],
+    cta: 'Start 30-day beta',
+    href: '/sign-up',
     popular: true,
   },
   {
-    name: 'Scale',
-    price: '$499',
-    tagline: 'For companies that cannot fail.',
-    features: ['Unlimited monitors', 'Unlimited playbooks', 'White-label available', 'Full automation', '30-min priority support', 'Weekly health audit', 'Custom playbook dev', '14-day free trial'],
-    cta: 'Talk to Sales',
+    name: 'Team',
+    price: '$299',
+    period: '/mo',
+    tagline: 'For teams and agencies.',
+    features: ['20 apps', '5 team seats', '2h support target'],
+    cta: 'Start 30-day beta',
+    href: '/sign-up',
+    popular: false,
+  },
+  {
+    name: 'Enterprise',
+    price: 'Custom',
+    period: '',
+    tagline: 'White-label and custom SLA.',
+    features: ['Unlimited apps', 'Dedicated engineer'],
+    cta: 'Contact sales',
+    href: '/sign-up?plan=enterprise',
     popular: false,
   },
 ]
@@ -81,7 +97,7 @@ export default function LandingPage() {
               </Link>
               <Link href="/webinar" className={cn(buttonVariants({ size: 'lg', variant: 'outline' }))}>Watch the Webinar</Link>
             </div>
-            <p className="mt-12 text-sm text-muted-foreground border-l-2 border-primary/30 pl-4 text-left max-w-lg mx-auto">
+            <p className="mt-12 text-sm text-muted-foreground text-center max-w-lg mx-auto">
               Built for founders shipping with Cursor, Lovable, Bolt and Bubble. Connect your app in ~2 minutes.
             </p>
           </div>
@@ -96,7 +112,7 @@ export default function LandingPage() {
             {[
               { step: '1', icon: Plug, title: 'Connect', time: '2 min', desc: 'Link your app. We scan every API key, webhook, and integration.' },
               { step: '2', icon: Activity, title: 'We find what\'s broken', time: '90 seconds', desc: 'Our engine detects expired keys, broken webhooks, rate limit shifts, and schema drift.' },
-              { step: '3', icon: Shield, title: 'We fix it', time: 'or tell you how', desc: 'Automated fixes for common failures. For the rest, step-by-step playbooks.' },
+              { step: '3', icon: Shield, title: 'We fix it', time: 'or tell you how', desc: 'Auto-fix for 80% of failures. For the rest, step-by-step playbooks.' },
             ].map((item) => (
               <Card key={item.step} className="relative">
                 <CardHeader>
@@ -166,7 +182,7 @@ export default function LandingPage() {
           <p className="text-lg text-muted-foreground text-center mb-12 max-w-2xl mx-auto">
             Start free. Upgrade when you need more.
           </p>
-          <div className="grid md:grid-cols-3 gap-8 max-w-5xl mx-auto">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 max-w-6xl mx-auto">
             {tiers.map((tier) => (
               <Card key={tier.name} className={`relative flex flex-col ${tier.popular ? 'border-primary shadow-lg ring-1 ring-primary' : ''}`}>
                 {tier.popular && (
@@ -178,7 +194,7 @@ export default function LandingPage() {
                   <CardTitle>{tier.name}</CardTitle>
                   <div className="mt-2">
                     <span className="text-4xl font-bold">{tier.price}</span>
-                    <span className="text-muted-foreground">/mo</span>
+                    {tier.period && <span className="text-muted-foreground">{tier.period}</span>}
                   </div>
                   <p className="text-sm text-muted-foreground mt-1">{tier.tagline}</p>
                 </CardHeader>
@@ -191,13 +207,18 @@ export default function LandingPage() {
                       </li>
                     ))}
                   </ul>
-                  <Link href="/sign-up" className={cn(buttonVariants({ variant: tier.popular ? 'default' : 'outline' }), 'w-full block text-center')}>{tier.cta}</Link>
+                  <Link href={tier.href} className={cn(buttonVariants({ variant: tier.popular ? 'default' : 'outline' }), 'w-full block text-center')}>{tier.cta}</Link>
                 </CardContent>
               </Card>
             ))}
           </div>
           <p className="text-center text-sm text-muted-foreground mt-6">
-            All plans include a 14-day free trial. No credit card required for Indie.
+            30 days free during beta, no card.
+          </p>
+          <p className="text-center mt-2">
+            <Link href="/pricing" className="text-sm font-medium text-primary hover:underline">
+              See full pricing →
+            </Link>
           </p>
         </div>
       </section>
@@ -207,7 +228,7 @@ export default function LandingPage() {
         <div className="container mx-auto px-4 text-center">
           <h2 className="text-3xl font-bold mb-4">Ready to stop silent failures?</h2>
           <p className="text-lg text-primary-foreground/80 mb-8 max-w-xl mx-auto">
-            Join the beta - free 30-day monitoring and a full app health report.
+            Join the beta — free 30-day monitoring and a full app health report.
           </p>
           <Link href="/sign-up" className={cn(buttonVariants({ size: 'lg', variant: 'secondary' }))}>
             Get Your Free App Health Audit
