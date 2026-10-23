@@ -164,7 +164,7 @@ export default function PricingPage() {
       {/* Hero */}
       <section className="py-16 md:py-24">
         <div className="container mx-auto px-4 text-center">
-          <p className="mb-4 text-sm font-semibold uppercase tracking-wider text-primary">
+          <p className="mb-4 text-sm font-semibold tracking-wider text-primary">
             Simple, transparent pricing
           </p>
           <h1 className="mx-auto mb-6 max-w-3xl text-4xl font-bold tracking-tight md:text-5xl">
