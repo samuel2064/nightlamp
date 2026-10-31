@@ -11,15 +11,36 @@ export default function WebinarPage() {
   const [email, setEmail] = useState('')
   const [submitted, setSubmitted] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    if (!email) return
+    if (!email || loading) return
     setLoading(true)
-    // Simulate registration — in production this would call an API
-    await new Promise((r) => setTimeout(r, 1000))
-    setSubmitted(true)
-    setLoading(false)
+    setError(null)
+    try {
+      const res = await fetch('/api/leads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, source: 'webinar' }),
+      })
+      if (!res.ok) {
+        let message = 'Something went wrong. Please try again.'
+        try {
+          const data = await res.json()
+          if (data && typeof data.error === 'string' && data.error) message = data.error
+        } catch {
+          // Non-JSON error body — keep the generic message.
+        }
+        setError(message)
+        return
+      }
+      setSubmitted(true)
+    } catch {
+      setError('Network error. Please check your connection and try again.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -111,6 +132,11 @@ export default function WebinarPage() {
                           className="w-full px-3 py-2 border border-input rounded-md bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                         />
                       </div>
+                      {error && (
+                        <p role="alert" className="text-sm text-destructive">
+                          {error}
+                        </p>
+                      )}
                       <Button type="submit" className="w-full" disabled={loading}>
                         {loading ? 'Registering...' : 'Save My Spot'}
                         {!loading && <ArrowRight className="ml-2 h-4 w-4" />}
