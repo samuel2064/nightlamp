@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { Check, ArrowRight, HelpCircle } from 'lucide-react'
+import { Check, ArrowRight, HelpCircle, Menu, X } from 'lucide-react'
 import { buttonVariants } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -131,6 +131,7 @@ const faqs = [
 
 export default function PricingPage() {
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>('monthly')
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const annual = billingCycle === 'annual'
 
   return (
@@ -144,6 +145,8 @@ export default function PricingPage() {
             </div>
             <span className="text-xl font-bold">Nightlamp</span>
           </Link>
+
+          {/* Desktop nav */}
           <nav className="hidden items-center gap-6 md:flex">
             <Link href="/pricing" className="text-sm font-medium text-foreground">
               Pricing
@@ -158,7 +161,48 @@ export default function PricingPage() {
               Start for free
             </Link>
           </nav>
+
+          {/* Mobile nav */}
+          <div className="flex items-center gap-2 md:hidden">
+            <Link href="/sign-in" className="text-sm font-medium text-muted-foreground">
+              Sign in
+            </Link>
+            <Link href="/sign-up" className={cn(buttonVariants({ size: 'sm' }))}>
+              Start for free
+            </Link>
+            <button
+              type="button"
+              aria-label={mobileMenuOpen ? 'Close menu' : 'Open menu'}
+              aria-expanded={mobileMenuOpen}
+              onClick={() => setMobileMenuOpen((open) => !open)}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-md text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+            </button>
+          </div>
         </div>
+
+        {/* Mobile menu panel */}
+        {mobileMenuOpen && (
+          <nav className="border-t bg-background px-4 py-3 md:hidden" aria-label="Mobile">
+            <div className="flex flex-col gap-1">
+              <Link
+                href="/pricing"
+                onClick={() => setMobileMenuOpen(false)}
+                className="rounded-md px-3 py-2 text-sm font-medium hover:bg-muted"
+              >
+                Pricing
+              </Link>
+              <Link
+                href="/webinar"
+                onClick={() => setMobileMenuOpen(false)}
+                className="rounded-md px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted"
+              >
+                Webinar
+              </Link>
+            </div>
+          </nav>
+        )}
       </header>
 
       {/* Hero */}
@@ -378,15 +422,6 @@ export default function PricingPage() {
         </div>
       </section>
 
-      {/* Beta CTA */}
-      <section className="border-t bg-muted/30 py-16">
-        <div className="container mx-auto max-w-4xl px-4 text-center">
-          <p className="text-lg text-muted-foreground">
-            Beta founders get 30 days of monitoring and a full app health report. No card.
-          </p>
-        </div>
-      </section>
-
       {/* FAQ */}
       <section className="border-t py-20">
         <div className="container mx-auto max-w-3xl px-4">
@@ -416,9 +451,17 @@ export default function PricingPage() {
             href="/sign-up"
             className={cn(buttonVariants({ size: 'lg', variant: 'secondary' }))}
           >
-            Get your free app health audit
+            Start 30-day beta
             <ArrowRight className="ml-2 h-5 w-5" />
           </Link>
+          <p className="mt-4">
+            <Link
+              href="/sign-up"
+              className="text-sm font-medium underline underline-offset-4 hover:no-underline"
+            >
+              Or get a free app health audit
+            </Link>
+          </p>
         </div>
       </section>
 
