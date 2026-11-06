@@ -6,6 +6,7 @@ import {
   evaluateSelfMonitorSlo,
   readSelfMonitorMetrics,
   severityForResult,
+  computeErrorBudgetStatus,
 } from '../alerting';
 
 describe('Alerting Self-Monitor SLO', function () {
@@ -99,5 +100,26 @@ describe('Alerting Self-Monitor SLO', function () {
     assert.strictEqual(SELF_MONITOR_DEFAULTS.maxErrorRate, 0.01);
     assert.strictEqual(SELF_MONITOR_DEFAULTS.maxP95LatencyMs, 500);
     assert.strictEqual(SELF_MONITOR_DEFAULTS.maxDowntimeSeconds, 60);
+  });
+});
+
+describe('Error budget status', function () {
+  it('is ok only at or below the configured objective', function () {
+    assert.strictEqual(computeErrorBudgetStatus(0), 'ok');
+    assert.strictEqual(computeErrorBudgetStatus(1), 'ok');
+    assert.strictEqual(computeErrorBudgetStatus(1.5), 'warning');
+  });
+
+  it('can never report ok once the 24h error rate exceeds the objective', function () {
+    // Regression: prod returned errorRate24h: 100 with status "ok".
+    for (const rate of [1.1, 2, 5, 25, 100]) {
+      assert.notStrictEqual(computeErrorBudgetStatus(rate), 'ok', `rate ${rate}% must not be ok`);
+    }
+    assert.strictEqual(computeErrorBudgetStatus(100), 'exhausted');
+  });
+
+  it('fails closed on invalid input', function () {
+    assert.strictEqual(computeErrorBudgetStatus(Number.NaN), 'exhausted');
+    assert.strictEqual(computeErrorBudgetStatus(Number.POSITIVE_INFINITY), 'exhausted');
   });
 });

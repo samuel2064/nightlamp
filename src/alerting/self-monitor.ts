@@ -50,6 +50,28 @@ export const SELF_MONITOR_DEFAULTS = {
   windowHours: 24,
 };
 
+export type ErrorBudgetStatus = 'ok' | 'warning' | 'exhausted';
+
+/**
+ * Error-budget status for a 24h error rate, expressed as a percentage.
+ *
+ * The budget is `ok` only while the observed rate is at or below the
+ * configured objective. Once the objective is exceeded the status can never be
+ * `ok` again for that window: `warning` up to 2x the objective, `exhausted`
+ * beyond. Invalid input fails closed.
+ */
+export function computeErrorBudgetStatus(
+  errorRatePct: number,
+  objectivePct: number = SELF_MONITOR_DEFAULTS.maxErrorRate * 100
+): ErrorBudgetStatus {
+  if (!Number.isFinite(errorRatePct) || !Number.isFinite(objectivePct)) return 'exhausted';
+  const rate = Math.max(0, errorRatePct);
+  if (objectivePct <= 0) return rate > 0 ? 'exhausted' : 'ok';
+  if (rate <= objectivePct) return 'ok';
+  if (rate <= objectivePct * 2) return 'warning';
+  return 'exhausted';
+}
+
 export const SELF_SOURCE = 'self-monitor';
 
 export interface SelfMonitorResult {

@@ -6,8 +6,8 @@ import { Database } from 'sql.js';
 import * as dotenv from 'dotenv';
 import { v4 as uuidv4 } from 'uuid';
 import { createDatabase, saveDatabase } from './db';
-import { SentryConfig, SentryIssue, UptimeRobotConfig, UptimeRobotMonitor, XConfig, buildAuthorizeUrl, postThread, verifyCredentials, refreshAccessToken, exchangeCodeForToken, parseLaunchThread } from './connectors';
-import { runSentryCheck, runUptimeRobotCheck } from './engine';
+import { SentryConfig, SentryIssue, UptimeRobotConfig, UptimeRobotMonitor, XConfig, buildAuthorizeUrl, postThread, verifyCredentials, refreshAccessToken, exchangeCodeForToken, parseLaunchThread, isSentryConfigPlaceholder, isUptimeRobotConfigPlaceholder } from './connectors';
+import { runSentryCheck, runUptimeRobotCheck, sanitizeChecks } from './engine';
 import { createStripeClient } from './billing';
 import { startApiServer } from './api';
 import { initEngine, setDb } from './remediation/engine';
@@ -37,17 +37,25 @@ async function init(): Promise<void> {
   setDb(db);
   initEngine();
 
+  // Repair monitor rows left behind by older deployments: collapsed duplicate
+  // monitor rows and disabled any still holding placeholder credentials.
+  const sanitized = sanitizeChecks(db);
+  if (sanitized.duplicatesDisabled > 0 || sanitized.placeholdersDisabled > 0) {
+    console.log(
+      `[Nightlamp] Monitor hygiene: ${sanitized.duplicatesDisabled} duplicate(s) disabled, ` +
+      `${sanitized.placeholdersDisabled} placeholder monitor(s) disabled`
+    );
+    saveDatabase(db, DB_PATH);
+  }
+
   const sentryToken = process.env.SENTRY_AUTH_TOKEN;
   const sentryOrg = process.env.SENTRY_ORG_SLUG;
   const sentryProject = process.env.SENTRY_PROJECT_SLUG;
+  const sentryConfig: SentryConfig | null = sentryToken && sentryOrg && sentryProject
+    ? { authToken: sentryToken, orgSlug: sentryOrg, projectSlug: sentryProject }
+    : null;
 
-  if (sentryToken && sentryOrg && sentryProject) {
-    const sentryConfig: SentryConfig = {
-      authToken: sentryToken,
-      orgSlug: sentryOrg,
-      projectSlug: sentryProject,
-    };
-
+  if (sentryConfig && !isSentryConfigPlaceholder(sentryConfig)) {
     const cronExpr = `*/${POLL_INTERVAL_SEC} * * * * *`;
     cron.schedule(cronExpr, async () => {
       console.log(`[Nightlamp] Running Sentry check (every ${POLL_INTERVAL_SEC}s)...`);
@@ -64,17 +72,18 @@ async function init(): Promise<void> {
       }
     });
     console.log(`[Nightlamp] Sentry monitor scheduled: every ${POLL_INTERVAL_SEC}s`);
+  } else if (sentryConfig) {
+    console.log('[Nightlamp] Sentry disabled: credentials are placeholders. Set real SENTRY_AUTH_TOKEN, SENTRY_ORG_SLUG, SENTRY_PROJECT_SLUG.');
   } else {
     console.log('[Nightlamp] Sentry not configured (set SENTRY_AUTH_TOKEN, SENTRY_ORG_SLUG, SENTRY_PROJECT_SLUG)');
   }
 
   const uptimeRobotKey = process.env.UPTIMEROBOT_API_KEY;
+  const uptimeRobotConfig: UptimeRobotConfig | null = uptimeRobotKey
+    ? { apiKey: uptimeRobotKey }
+    : null;
 
-  if (uptimeRobotKey) {
-    const uptimeRobotConfig: UptimeRobotConfig = {
-      apiKey: uptimeRobotKey,
-    };
-
+  if (uptimeRobotConfig && !isUptimeRobotConfigPlaceholder(uptimeRobotConfig)) {
     const cronExpr = `*/${POLL_INTERVAL_SEC} * * * * *`;
     cron.schedule(cronExpr, async () => {
       console.log(`[Nightlamp] Running UptimeRobot check (every ${POLL_INTERVAL_SEC}s)...`);
@@ -91,6 +100,8 @@ async function init(): Promise<void> {
       }
     });
     console.log(`[Nightlamp] UptimeRobot monitor scheduled: every ${POLL_INTERVAL_SEC}s`);
+  } else if (uptimeRobotConfig) {
+    console.log('[Nightlamp] UptimeRobot disabled: API key is a placeholder. Set a real UPTIMEROBOT_API_KEY.');
   } else {
     console.log('[Nightlamp] UptimeRobot not configured (set UPTIMEROBOT_API_KEY)');
   }

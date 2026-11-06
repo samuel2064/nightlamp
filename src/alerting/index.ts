@@ -8,8 +8,9 @@ export {
   evaluateSelfMonitor,
   buildSelfMonitorDashboard,
   severityForResult,
+  computeErrorBudgetStatus,
 } from './self-monitor';
-export type { SelfMonitorSlo, SelfMonitorInput } from './self-monitor';
+export type { SelfMonitorSlo, SelfMonitorInput, ErrorBudgetStatus } from './self-monitor';
 export {
   ESCALATION_POLICIES,
   SEVERITY_TO_PRIORITY,

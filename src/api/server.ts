@@ -18,7 +18,7 @@ import { OnboardingApi } from '../teams/onboarding-api';
 import { PlaybookBuilderApi } from '../playbook/playbook-builder-api';
 import { NotificationApi } from '../notifications';
 import { ReportsApi } from '../reports';
-import { getPolicyForSeverity, getOnCallAt, ESCALATION_POLICIES, buildSelfMonitorDashboard } from '../alerting';
+import { getPolicyForSeverity, getOnCallAt, ESCALATION_POLICIES, buildSelfMonitorDashboard, computeErrorBudgetStatus, SELF_MONITOR_DEFAULTS } from '../alerting';
 import { nodeHTTPRequestHandler } from '@trpc/server/adapters/node-http';
 import { handleSSERequest } from './sse';
 import { createPlaybookEngine } from '../playbook/engine';
@@ -1341,19 +1341,42 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       }
 
       if (path === '/api/health' || path === '/api/health/') {
-        const checkCount = db.exec('SELECT COUNT(*) as count FROM checks');
-        const eventCount = db.exec('SELECT COUNT(*) as count FROM failure_events');
+        // Only enabled monitors contribute to health. A disabled monitor (for
+        // example one holding placeholder integration credentials) must not be
+        // able to keep the dashboard permanently red.
+        const activeCheckJoin = `LEFT JOIN checks c ON fe.check_id = c.id
+          WHERE (c.id IS NULL OR c.enabled = 1)`;
+        const activeResultJoin = `LEFT JOIN checks c ON cr.check_id = c.id
+          WHERE (c.id IS NULL OR c.enabled = 1)`;
+
+        const checkCount = db.exec('SELECT COUNT(*) as count FROM checks WHERE enabled = 1');
+        const eventCount = db.exec(`SELECT COUNT(*) as count FROM failure_events fe ${activeCheckJoin}`);
         const playbookCount = db.exec('SELECT COUNT(*) as count FROM playbook_entries');
         const recentEvents = db.exec(
-          `SELECT COUNT(*) as count FROM failure_events WHERE detected_at >= datetime('now', '-24 hours')`
+          `SELECT COUNT(*) as count FROM failure_events fe ${activeCheckJoin}
+           AND fe.detected_at >= datetime('now', '-24 hours')`
         );
         const recentCritical = db.exec(
-          `SELECT COUNT(*) as count FROM failure_events WHERE severity = 'critical' AND detected_at >= datetime('now', '-24 hours')`
+          `SELECT COUNT(*) as count FROM failure_events fe ${activeCheckJoin}
+           AND fe.severity = 'critical' AND fe.detected_at >= datetime('now', '-24 hours')`
+        );
+        const recentResults = db.exec(
+          `SELECT COUNT(*) as total,
+                  SUM(CASE WHEN cr.status <> 'pass' THEN 1 ELSE 0 END) as failed
+           FROM check_results cr ${activeResultJoin}
+           AND cr.executed_at >= datetime('now', '-24 hours')`
         );
         let uptimeSeconds = 0;
         try {
           uptimeSeconds = Math.floor(process.uptime());
         } catch { /* uptime not available */ }
+
+        const totalResults = Number(recentResults[0]?.values[0]?.[0] || 0);
+        const failedResults = Number(recentResults[0]?.values[0]?.[1] || 0);
+        const errorRate24h = totalResults > 0
+          ? Math.round((failedResults / totalResults) * 1000) / 10
+          : 0;
+        const errorBudgetObjectivePct = SELF_MONITOR_DEFAULTS.maxErrorRate * 100;
 
         const selfMonitor = {
           status: 'ok',
@@ -1367,12 +1390,9 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             criticalLast24h: recentCritical[0]?.values[0]?.[0] || 0,
           },
           slo: {
-            errorRate24h: (() => {
-              const total = Number(eventCount[0]?.values[0]?.[0] || 0);
-              const recent = Number(recentEvents[0]?.values[0]?.[0] || 0);
-              return total > 0 ? Math.round((recent / total) * 1000) / 10 : 0;
-            })(),
-            errorBudgetStatus: 'ok',
+            errorRate24h,
+            errorBudgetObjectivePct,
+            errorBudgetStatus: computeErrorBudgetStatus(errorRate24h, errorBudgetObjectivePct),
           },
         };
         res.writeHead(200);

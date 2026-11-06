@@ -354,10 +354,14 @@ describe('API Server', () => {
     });
 
     it('GET /api/health includes self-monitoring SLO fields', async () => {
+      db.run('INSERT INTO check_results (id, check_id, status, summary) VALUES (?, ?, ?, ?)',
+        ['r-api-failed', 'c1', 'fail', 'upstream failed']);
       const res = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json() as any;
       assert.ok(typeof res.slo.errorRate24h === 'number');
       assert.ok(res.slo.errorBudgetStatus);
       assert.ok(typeof res.stats.incidentsLast24h === 'number');
+      assert.ok(res.slo.errorRate24h > res.slo.errorBudgetObjectivePct);
+      assert.notStrictEqual(res.slo.errorBudgetStatus, 'ok');
     });
   });
 });
