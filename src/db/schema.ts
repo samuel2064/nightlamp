@@ -1,4 +1,5 @@
 import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
+import { up as applyTenantIsolationMigration } from './migrations/008-tenant-isolation';
 
 export interface NightlampDb {
   db: SqlJsDatabase;
@@ -541,6 +542,8 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   `);
   db.run('CREATE INDEX IF NOT EXISTS idx_webhook_events_type ON webhook_events(event_type)');
   db.run('CREATE INDEX IF NOT EXISTS idx_webhook_events_received ON webhook_events(received_at DESC)');
+
+  applyTenantIsolationMigration(db);
 
   return db;
 }
