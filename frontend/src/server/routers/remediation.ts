@@ -1,9 +1,9 @@
 import { z } from 'zod'
-import { router, publicProcedure } from '../trpc'
-import { backend } from '../services/backend'
+import { router, protectedProcedure } from '../trpc'
+import { createBackendClient } from '../services/backend'
 
 export const remediationRouter = router({
-  listRuns: publicProcedure
+  listRuns: protectedProcedure
     .input(
       z.object({
         status: z.string().optional(),
@@ -11,29 +11,34 @@ export const remediationRouter = router({
         offset: z.number().optional(),
       }).optional(),
     )
-    .query(({ input }) => backend.remediation.listRuns(input)),
+    .query(({ ctx, input }) => createBackendClient(ctx.token).remediation.listRuns(input)),
 
-  approveRun: publicProcedure
+  approveRun: protectedProcedure
     .input(z.object({ id: z.string() }))
-    .mutation(({ input }) => backend.remediation.approveRun(input.id)),
+    .mutation(({ ctx, input }) => createBackendClient(ctx.token).remediation.approveRun(input.id)),
 
-  rejectRun: publicProcedure
+  rejectRun: protectedProcedure
     .input(z.object({ id: z.string() }))
-    .mutation(({ input }) => backend.remediation.rejectRun(input.id)),
+    .mutation(({ ctx, input }) => createBackendClient(ctx.token).remediation.rejectRun(input.id)),
 
-  retryRun: publicProcedure
+  retryRun: protectedProcedure
     .input(z.object({ id: z.string() }))
-    .mutation(({ input }) => backend.remediation.retryRun(input.id)),
+    .mutation(({ ctx, input }) => createBackendClient(ctx.token).remediation.retryRun(input.id)),
 
-  listPolicies: publicProcedure
-    .query(() => backend.remediation.listPolicies()),
+  listPolicies: protectedProcedure
+    .query(({ ctx }) => createBackendClient(ctx.token).remediation.listPolicies()),
 
-  updatePolicy: publicProcedure
+  updatePolicy: protectedProcedure
     .input(z.object({
       id: z.string(),
       auto_approve: z.boolean().optional(),
       require_dry_run: z.boolean().optional(),
       cooldown_minutes: z.number().optional(),
     }))
-    .mutation(({ input }) => backend.remediation.updatePolicy(input.id, input)),
+    .mutation(({ ctx, input }) =>
+      createBackendClient(ctx.token).remediation.updatePolicy(input.id, {
+        auto_approve: input.auto_approve,
+        require_dry_run: input.require_dry_run,
+        cooldown_minutes: input.cooldown_minutes,
+      })),
 })

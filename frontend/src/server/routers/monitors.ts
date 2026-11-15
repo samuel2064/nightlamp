@@ -1,12 +1,12 @@
 import { z } from 'zod'
-import { router, publicProcedure } from '../trpc'
-import { backend } from '../services/backend'
+import { router, protectedProcedure } from '../trpc'
+import { createBackendClient } from '../services/backend'
 
 export const monitorsRouter = router({
-  list: publicProcedure
+  list: protectedProcedure
     .input(z.object({ limit: z.number().optional(), offset: z.number().optional() }).optional())
-    .query(async ({ input }) => {
-      const results = await backend.checkResults.list(input)
+    .query(async ({ ctx, input }) => {
+      const results = await createBackendClient(ctx.token).checkResults.list(input)
       const checks = results.results.map(r => ({
         id: r.checkId,
         name: `Check ${r.checkId.slice(0, 8)}`,
@@ -18,10 +18,10 @@ export const monitorsRouter = router({
       return { monitors: checks, count: results.count }
     }),
 
-  detail: publicProcedure
+  detail: protectedProcedure
     .input(z.object({ id: z.string() }))
-    .query(async ({ input }) => {
-      const results = await backend.checkResults.list({ limit: 200 })
+    .query(async ({ ctx, input }) => {
+      const results = await createBackendClient(ctx.token).checkResults.list({ limit: 200 })
       const result = results.results.find(r => r.checkId === input.id)
       if (!result) throw new Error(`Monitor ${input.id} not found`)
       return result

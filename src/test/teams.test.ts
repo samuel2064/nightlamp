@@ -3,6 +3,7 @@ import { startApiServer } from '../api/server';
 import { Database } from 'sql.js';
 import { Server } from 'http';
 import assert from 'assert';
+import { TEST_CLERK_USER_ID, TEST_LOCAL_USER_ID } from './setup';
 
 describe('Teams API', () => {
   let db: Database;
@@ -11,6 +12,8 @@ describe('Teams API', () => {
 
   before(async () => {
     db = await createDatabase();
+    db.run('INSERT INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)',
+      [TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID, 'owner@example.com', 'Owner']);
     server = startApiServer(db, { port: 0 });
     const addr = server.address() as any;
     port = addr.port;
@@ -25,7 +28,7 @@ describe('Teams API', () => {
     const res = await fetch(`http://127.0.0.1:${port}/api/teams`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Test Team', slug: 'test-team', ownerId: 'user-1', plan: 'basic' }),
+      body: JSON.stringify({ name: 'Test Team', slug: 'test-team', ownerId: TEST_LOCAL_USER_ID, plan: 'basic' }),
     });
     const data = await res.json() as any;
     assert.strictEqual(data.success, true);
@@ -38,7 +41,7 @@ describe('Teams API', () => {
     const res = await fetch(`http://127.0.0.1:${port}/api/teams`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Team 2', slug: 'team-2', ownerId: 'user-2' }),
+      body: JSON.stringify({ name: 'Team 2', slug: 'team-2', ownerId: TEST_LOCAL_USER_ID }),
     });
     const data = await res.json() as any;
     assert.strictEqual(data.success, true);
@@ -52,7 +55,7 @@ describe('Teams API', () => {
 
     const membersRes = await (await fetch(`http://127.0.0.1:${port}/api/teams/${data.id}/members`)).json() as any;
     assert.strictEqual(membersRes.count, 1);
-    assert.strictEqual(membersRes.members[0].userId, 'user-2');
+    assert.strictEqual(membersRes.members[0].userId, TEST_LOCAL_USER_ID);
     assert.strictEqual(membersRes.members[0].role, 'owner');
   });
 
@@ -60,7 +63,7 @@ describe('Teams API', () => {
     const res = await fetch(`http://127.0.0.1:${port}/api/teams`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Duplicate', slug: 'test-team', ownerId: 'user-1' }),
+      body: JSON.stringify({ name: 'Duplicate', slug: 'test-team', ownerId: TEST_LOCAL_USER_ID }),
     });
     assert.strictEqual(res.status, 409);
   });
@@ -113,7 +116,7 @@ describe('Teams API', () => {
     const createRes = await fetch(`http://127.0.0.1:${port}/api/teams`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'To Delete', slug: 'to-delete', ownerId: 'user-del' }),
+      body: JSON.stringify({ name: 'To Delete', slug: 'to-delete', ownerId: TEST_LOCAL_USER_ID }),
     });
     const { id } = await createRes.json() as any;
 
@@ -131,7 +134,7 @@ describe('Teams API', () => {
       const res = await fetch(`http://127.0.0.1:${port}/api/teams`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'Members Team', slug: 'members-team', ownerId: 'owner-1' }),
+        body: JSON.stringify({ name: 'Members Team', slug: 'members-team', ownerId: TEST_LOCAL_USER_ID }),
       });
       teamId = (await res.json()).id;
     });
@@ -213,7 +216,7 @@ describe('Teams API', () => {
       const res = await fetch(`http://127.0.0.1:${port}/api/teams`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'Workspace Team', slug: 'workspace-team', ownerId: 'ws-owner' }),
+        body: JSON.stringify({ name: 'Workspace Team', slug: 'workspace-team', ownerId: TEST_LOCAL_USER_ID }),
       });
       teamId = (await res.json()).id;
     });
@@ -248,7 +251,7 @@ describe('Teams API', () => {
       const res = await fetch(`http://127.0.0.1:${port}/api/teams`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'Invite Team', slug: 'invite-team', ownerId: 'inv-owner' }),
+        body: JSON.stringify({ name: 'Invite Team', slug: 'invite-team', ownerId: TEST_LOCAL_USER_ID }),
       });
       teamId = (await res.json()).id;
     });

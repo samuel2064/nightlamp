@@ -22,13 +22,70 @@ import { getPolicyForSeverity, getOnCallAt, ESCALATION_POLICIES, buildSelfMonito
 import { nodeHTTPRequestHandler } from '@trpc/server/adapters/node-http';
 import { handleSSERequest } from './sse';
 import { createPlaybookEngine } from '../playbook/engine';
-import { appRouter, createTRPCContext } from './trpc';
+import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
+import { ApiAuthError, AuthContext, assertTeamMembership, authenticateRequest, requireRole } from './auth';
 
 export interface ApiConfig {
   port: number;
   stripeClient?: StripeClient;
   stripeWebhookSecret?: string;
   baseUrl?: string;
+}
+
+interface EndpointRule {
+  path: string;
+  method?: string;
+}
+
+const PUBLIC_ENDPOINTS: EndpointRule[] = [
+  { path: '/api/health' },
+  { path: '/api/performance/latency' },
+  { path: '/api/leads', method: 'POST' },
+  { path: '/api/webhooks/clerk', method: 'POST' },
+  { path: '/api/x/auth' },
+  { path: '/api/x/callback' },
+];
+
+const PUBLIC_PATH_PATTERNS: RegExp[] = [
+  /^\/api\/invitations\/[^/]+$/,
+  /^\/api\/invitations\/[^/]+\/accept$/,
+];
+
+const ADMIN_ENDPOINTS: EndpointRule[] = [
+  { path: '/api/remediation/approve', method: 'POST' },
+  { path: '/api/remediation/reject', method: 'POST' },
+  { path: '/api/remediation/retry', method: 'POST' },
+  { path: '/api/remediation/policies', method: 'POST' },
+  { path: '/api/alerting/channels', method: 'POST' },
+  { path: '/api/alerting/channels', method: 'PUT' },
+  { path: '/api/alerting/channels', method: 'DELETE' },
+  { path: '/api/alerting/rules', method: 'POST' },
+  { path: '/api/alerting/rules', method: 'PUT' },
+  { path: '/api/alerting/rules', method: 'DELETE' },
+  { path: '/api/x/post', method: 'POST' },
+  { path: '/api/x/schedule', method: 'POST' },
+  { path: '/api/x/schedule-thread', method: 'POST' },
+  { path: '/api/playbook/remediate', method: 'POST' },
+];
+
+function normalizePath(path: string): string {
+  const normalized = path.replace(/\/+$/, '');
+  return normalized || '/';
+}
+
+function matchesEndpoint(path: string, method: string | undefined, rules: EndpointRule[]): boolean {
+  const normalized = normalizePath(path);
+  return rules.some((rule) => {
+    const rulePath = normalizePath(rule.path);
+    const pathMatches = normalized === rulePath || normalized.startsWith(`${rulePath}/`);
+    const methodMatches = !rule.method || rule.method === method;
+    return pathMatches && methodMatches;
+  });
+}
+
+function isPublicEndpoint(path: string, method: string | undefined): boolean {
+  if (PUBLIC_PATH_PATTERNS.some((pattern) => pattern.test(normalizePath(path)))) return true;
+  return matchesEndpoint(path, method, PUBLIC_ENDPOINTS);
 }
 
 function buildEventsPayload(db: Database, params: URLSearchParams): { events: any[]; count: number; limit: number; offset: number } {
@@ -127,13 +184,60 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
     });
 
     try {
+      let auth: AuthContext | null = null;
+      if (!isPublicEndpoint(path, req.method)) {
+        try {
+          auth = authenticateRequest(db, req);
+        } catch (err: any) {
+          if (err instanceof ApiAuthError) {
+            res.writeHead(err.statusCode);
+            res.end(JSON.stringify({ error: err.message, code: err.code }));
+            return;
+          }
+          throw err;
+        }
+
+        const teamPathMatch = path.match(/^\/api\/teams\/([^/]+)/);
+        if (teamPathMatch) {
+          const requestedTeamId = teamPathMatch[1];
+          const teamExists = db.exec('SELECT id FROM teams WHERE id = ?', [requestedTeamId]);
+          if (teamExists.length > 0 && teamExists[0].values.length > 0) {
+            try {
+              assertTeamMembership(db, auth.userId, requestedTeamId);
+            } catch (err: any) {
+              if (err instanceof ApiAuthError) {
+                res.writeHead(err.statusCode);
+                res.end(JSON.stringify({ error: err.message, code: err.code }));
+                return;
+              }
+              throw err;
+            }
+          }
+        }
+
+        if (matchesEndpoint(path, req.method, ADMIN_ENDPOINTS) && auth.teamId) {
+          try {
+            requireRole(auth, ['owner', 'admin']);
+          } catch (err: any) {
+            if (err instanceof ApiAuthError) {
+              res.writeHead(err.statusCode);
+              res.end(JSON.stringify({ error: err.message, code: err.code }));
+              return;
+            }
+            throw err;
+          }
+        }
+      }
+
+      const scope = auth ? auth.userId : 'public';
+
       if (path === '/api/performance/latency' || path === '/api/performance/latency/') {
         res.end(JSON.stringify({ latency: latencyTracker.summary() }));
         return;
       }
       if (path === '/api/events' || path === '/api/events/') {
         if (req.method === 'GET') {
-          const ck = cacheKey(path, parsedUrl.searchParams.toString());
+          const ck = cacheKey(scope, path, parsedUrl.searchParams.toString());
           const cached = hotCache.get<string>(ck);
           if (cached) {
             res.end(cached);
@@ -152,7 +256,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
       if (path === '/api/check-results' || path === '/api/check-results/') {
         if (req.method === 'GET') {
-          const ck = cacheKey(path, parsedUrl.searchParams.toString());
+          const ck = cacheKey(scope, path, parsedUrl.searchParams.toString());
           const cached = hotCache.get<string>(ck);
           if (cached) {
             res.end(cached);
@@ -171,7 +275,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
       if (path === '/api/playbook' || path === '/api/playbook/') {
         if (req.method === 'GET') {
-          const ck = cacheKey(path);
+          const ck = cacheKey(scope, path);
           const cached = hotCache.get<string>(ck);
           if (cached) {
             res.end(cached);
@@ -917,7 +1021,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
       if (path === '/api/monitors' || path === '/api/monitors/') {
         if (req.method === 'GET') {
-          const ck = cacheKey(path, parsedUrl.searchParams.toString());
+          const ck = cacheKey(scope, path, parsedUrl.searchParams.toString());
           const cached = hotCache.get<string>(ck);
           if (cached) {
             res.end(cached);
@@ -1007,7 +1111,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
       if (path === '/api/dependency-health' || path === '/api/dependency-health/') {
         if (req.method === 'GET') {
-          const ck = cacheKey(path);
+          const ck = cacheKey(scope, path);
           const cached = hotCache.get<string>(ck);
           if (cached) {
             res.end(cached);
@@ -1330,7 +1434,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           res,
           path: trpcPath,
           allowMethodOverride: true,
-          createContext: () => createTRPCContext(db, playbookEngine),
+          createContext: () => createTRPCContextFromNodeRequest(db, playbookEngine, req),
         }).catch((err: any) => {
           if (!res.headersSent) {
             res.writeHead(500);

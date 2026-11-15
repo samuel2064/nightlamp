@@ -31,6 +31,7 @@ describe('Playbook tRPC Router', () => {
       id: userId,
       email: 'test@example.com',
       teamIds: [teamId],
+      roles: { [teamId]: 'owner' },
     };
 
     const ctx = createTRPCContext(db, engine);

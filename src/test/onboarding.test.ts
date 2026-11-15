@@ -3,6 +3,8 @@ import { startApiServer } from '../api/server';
 import { Database } from 'sql.js';
 import { Server } from 'http';
 import assert from 'assert';
+import { v4 as uuidv4 } from 'uuid';
+import { TEST_CLERK_USER_ID, TEST_LOCAL_USER_ID } from './setup';
 
 describe('Onboarding API', () => {
   let db: Database;
@@ -11,6 +13,8 @@ describe('Onboarding API', () => {
 
   before(async () => {
     db = await createDatabase();
+    db.run('INSERT INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)',
+      [TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID, 'owner@example.com', 'Owner']);
     server = startApiServer(db, { port: 0 });
     const addr = server.address() as any;
     port = addr.port;
@@ -228,6 +232,9 @@ describe('Onboarding API', () => {
     const statusRes = await (await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/status`)).json() as any;
     assert.strictEqual(statusRes.session.completed, true);
     assert.strictEqual(statusRes.session.createdTeamId, completeData.teamId);
+
+    db.run('INSERT INTO memberships (id, team_id, user_id, role) VALUES (?, ?, ?, ?)',
+      [uuidv4(), completeData.teamId, TEST_LOCAL_USER_ID, 'owner']);
 
     const teamRes = await (await fetch(`http://127.0.0.1:${port}/api/teams/${completeData.teamId}`)).json() as any;
     assert.ok(teamRes.team);

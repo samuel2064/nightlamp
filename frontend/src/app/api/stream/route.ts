@@ -1,4 +1,5 @@
-import { backend } from '@/server/services/backend'
+import { auth } from '@clerk/nextjs/server'
+import { createBackendClient } from '@/server/services/backend'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -15,6 +16,15 @@ const POLL_INTERVAL_MS = 10_000
  * the UI a real liveness signal plus round-trip latency.
  */
 export async function GET(request: Request) {
+  const { userId, getToken } = await auth()
+  if (!userId) {
+    return new Response(JSON.stringify({ error: 'Authentication required' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  const backend = createBackendClient(await getToken())
   const encoder = new TextEncoder()
   let interval: ReturnType<typeof setInterval> | undefined
   let closed = false

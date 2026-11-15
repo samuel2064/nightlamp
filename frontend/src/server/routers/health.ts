@@ -1,12 +1,13 @@
-import { router, publicProcedure } from '../trpc'
-import { backend } from '../services/backend'
+import { router, protectedProcedure } from '../trpc'
+import { createBackendClient } from '../services/backend'
 
 export const healthRouter = router({
-  status: publicProcedure
-    .query(() => backend.health.get()),
+  status: protectedProcedure
+    .query(({ ctx }) => createBackendClient(ctx.token).health.get()),
 
-  overview: publicProcedure
-    .query(async () => {
+  overview: protectedProcedure
+    .query(async ({ ctx }) => {
+      const backend = createBackendClient(ctx.token)
       const [health, events, checks] = await Promise.all([
         backend.health.get(),
         backend.events.list({ limit: 5 }),
