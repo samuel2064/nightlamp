@@ -121,19 +121,31 @@ jobs:
           fi
       - name: Check frontend tRPC endpoint
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://nightlamp-frontend.onrender.com/api/trpc" || true)
-          echo "Frontend /api/trpc HTTP $STATUS"
-          # Accept 200 (tRPC batch endpoint), 405 (method not allowed - GET not supported), reject 404
-          if [ "$STATUS" = "404" ]; then
-            echo "Frontend /api/trpc returned 404 - tRPC handler missing"
+          STATUS=$(curl -s -o /tmp/trpc_body -w "%{http_code}" "https://nightlamp-frontend.onrender.com/api/trpc/health.status" || true)
+          BODY=$(head -c 200 /tmp/trpc_body)
+          echo "Frontend /api/trpc/health.status HTTP $STATUS :: $BODY"
+          # A mounted tRPC route answers with a JSON envelope (200 or 401 when the
+          # procedure is protected). Only an HTML 404 means the route is missing.
+          if [ "$STATUS" = "404" ] && echo "$BODY" | grep -qi "<!DOCTYPE html>"; then
+            echo "Frontend /api/trpc returned an HTML 404 - tRPC handler missing"
             exit 1
           fi
-          if [ "$STATUS" = "200" ] || [ "$STATUS" = "405" ]; then
-            echo "Frontend /api/trpc healthy"
+          if [ "$STATUS" = "200" ] || [ "$STATUS" = "401" ] || [ "$STATUS" = "405" ]; then
+            echo "Frontend /api/trpc route mounted"
           else
             echo "Frontend /api/trpc returned unexpected status: $STATUS"
             exit 1
           fi
+      - name: Check frontend API health route
+        run: |
+          for i in $(seq 1 6); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://nightlamp-frontend.onrender.com/api/health" || true)
+            echo "Attempt $i: /api/health HTTP $STATUS"
+            if [ "$STATUS" = "200" ]; then break; fi
+            sleep 20
+          done
+          test "$STATUS" = "200" || { echo "::error::Frontend API health route missing (/api/health returned $STATUS)"; exit 1; }
+          curl -s "https://nightlamp-frontend.onrender.com/api/health" | head -c 500; echo
 
   notify:
     name: Deployment notification
