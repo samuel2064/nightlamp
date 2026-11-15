@@ -7,4 +7,7 @@ export const billingRouter = router({
 
   subscriptions: publicProcedure
     .query(() => backend.billing.listSubscriptions()),
+
+  portal: publicProcedure
+    .mutation(() => backend.billing.portalUrl()),
 })

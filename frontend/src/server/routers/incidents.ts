@@ -14,7 +14,5 @@ export const incidentsRouter = router({
 
   acknowledge: publicProcedure
     .input(z.object({ id: z.string() }))
-    .mutation(async ({ input }) => {
-      return { success: true, id: input.id }
-    }),
+    .mutation(({ input }) => backend.events.acknowledge(input.id)),
 })
