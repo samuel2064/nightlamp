@@ -85,11 +85,55 @@ jobs:
             sleep 20
           done
           test "$STATUS" = "200" && echo "Backend healthy" || { echo "Backend smoke failed"; exit 1; }
-      - name: Check frontend
+      - name: Check frontend root
         run: |
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://nightlamp-frontend.onrender.com/" || true)
-          echo "Frontend HTTP $STATUS"
-          test "$STATUS" = "200" && echo "Frontend healthy" || { echo "Frontend smoke failed"; exit 1; }
+          echo "Frontend / HTTP $STATUS"
+          test "$STATUS" = "200" && echo "Frontend root healthy" || { echo "Frontend root smoke failed"; exit 1; }
+      - name: Check frontend dashboard (must not be 404)
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://nightlamp-frontend.onrender.com/dashboard" || true)
+          echo "Frontend /dashboard HTTP $STATUS"
+          # Accept 200 (authenticated), 307/308 (redirect to sign-in), reject 404
+          if [ "$STATUS" = "404" ]; then
+            echo "Frontend /dashboard returned 404 - dashboard routes missing"
+            exit 1
+          fi
+          if [ "$STATUS" = "200" ] || [ "$STATUS" = "307" ] || [ "$STATUS" = "308" ]; then
+            echo "Frontend /dashboard healthy (auth redirect OK)"
+          else
+            echo "Frontend /dashboard returned unexpected status: $STATUS"
+            exit 1
+          fi
+      - name: Check frontend dashboard playbooks
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://nightlamp-frontend.onrender.com/dashboard/playbooks" || true)
+          echo "Frontend /dashboard/playbooks HTTP $STATUS"
+          if [ "$STATUS" = "404" ]; then
+            echo "Frontend /dashboard/playbooks returned 404 - playbooks route missing"
+            exit 1
+          fi
+          if [ "$STATUS" = "200" ] || [ "$STATUS" = "307" ] || [ "$STATUS" = "308" ]; then
+            echo "Frontend /dashboard/playbooks healthy (auth redirect OK)"
+          else
+            echo "Frontend /dashboard/playbooks returned unexpected status: $STATUS"
+            exit 1
+          fi
+      - name: Check frontend tRPC endpoint
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://nightlamp-frontend.onrender.com/api/trpc" || true)
+          echo "Frontend /api/trpc HTTP $STATUS"
+          # Accept 200 (tRPC batch endpoint), 405 (method not allowed - GET not supported), reject 404
+          if [ "$STATUS" = "404" ]; then
+            echo "Frontend /api/trpc returned 404 - tRPC handler missing"
+            exit 1
+          fi
+          if [ "$STATUS" = "200" ] || [ "$STATUS" = "405" ]; then
+            echo "Frontend /api/trpc healthy"
+          else
+            echo "Frontend /api/trpc returned unexpected status: $STATUS"
+            exit 1
+          fi
 
   notify:
     name: Deployment notification
