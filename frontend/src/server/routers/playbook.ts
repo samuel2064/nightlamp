@@ -1,16 +1,16 @@
 import { z } from 'zod'
-import { router, publicProcedure } from '../trpc'
-import { backend } from '../services/backend'
+import { router, protectedProcedure } from '../trpc'
+import { createBackendClient } from '../services/backend'
 
 export const playbookRouter = router({
-  list: publicProcedure
-    .query(() => backend.playbook.list()),
+  list: protectedProcedure
+    .query(({ ctx }) => createBackendClient(ctx.token).playbook.list()),
 
-  search: publicProcedure
+  search: protectedProcedure
     .input(z.object({ q: z.string() }))
-    .query(({ input }) => backend.playbook.search(input.q)),
+    .query(({ ctx, input }) => createBackendClient(ctx.token).playbook.search(input.q)),
 
-  get: publicProcedure
+  get: protectedProcedure
     .input(z.object({ id: z.string() }))
-    .query(({ input }) => backend.playbook.get(input.id)),
+    .query(({ ctx, input }) => createBackendClient(ctx.token).playbook.get(input.id)),
 })

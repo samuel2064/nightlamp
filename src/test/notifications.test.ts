@@ -3,6 +3,7 @@ import * as http from 'http';
 import { createDatabase } from '../db/schema';
 import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
+import { createTestToken } from './setup';
 
 describe('Notification Service', function () {
   let db: Database;
@@ -322,7 +323,14 @@ describe('Notification Service', function () {
     function fetchFromApi(path: string, options?: any): Promise<any> {
       return new Promise((resolve, reject) => {
         const url = `http://localhost:${port}${path}`;
-        const req = require('http').request(url, options || { method: 'GET' }, (res: any) => {
+        const requestOptions = {
+          ...(options || { method: 'GET' }),
+          headers: {
+            ...(options?.headers || {}),
+            Authorization: `Bearer ${createTestToken()}`,
+          },
+        };
+        const req = require('http').request(url, requestOptions, (res: any) => {
           let data = '';
           res.on('data', (chunk: string) => { data += chunk; });
           res.on('end', () => {

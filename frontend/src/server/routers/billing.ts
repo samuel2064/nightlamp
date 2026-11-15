@@ -1,10 +1,10 @@
-import { router, publicProcedure } from '../trpc'
-import { backend } from '../services/backend'
+import { router, protectedProcedure } from '../trpc'
+import { createBackendClient } from '../services/backend'
 
 export const billingRouter = router({
-  summary: publicProcedure
-    .query(() => backend.billing.summary()),
+  summary: protectedProcedure
+    .query(({ ctx }) => createBackendClient(ctx.token).billing.summary()),
 
-  subscriptions: publicProcedure
-    .query(() => backend.billing.listSubscriptions()),
+  subscriptions: protectedProcedure
+    .query(({ ctx }) => createBackendClient(ctx.token).billing.listSubscriptions()),
 })

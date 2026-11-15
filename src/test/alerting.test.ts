@@ -1,6 +1,7 @@
 import assert from 'assert';
 import { createDatabase } from '../db/schema';
 import { Database } from 'sql.js';
+import { createTestToken } from './setup';
 
 describe('Alerting System', function () {
   let db: Database;
@@ -209,7 +210,14 @@ describe('Alerting System', function () {
     function fetchFromApi(path: string, options?: any): Promise<any> {
       return new Promise((resolve, reject) => {
         const url = `http://localhost:${port}${path}`;
-        const req = http.request(url, options || { method: 'GET' }, (res: any) => {
+        const requestOptions = {
+          ...(options || { method: 'GET' }),
+          headers: {
+            ...(options?.headers || {}),
+            Authorization: `Bearer ${createTestToken()}`,
+          },
+        };
+        const req = http.request(url, requestOptions, (res: any) => {
           let data = '';
           res.on('data', (chunk: string) => { data += chunk; });
           res.on('end', () => {

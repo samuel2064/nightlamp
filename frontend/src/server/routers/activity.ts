@@ -1,13 +1,14 @@
 import { z } from 'zod'
-import { router, publicProcedure } from '../trpc'
-import { backend } from '../services/backend'
+import { router, protectedProcedure } from '../trpc'
+import { createBackendClient } from '../services/backend'
 
 export const activityRouter = router({
-  list: publicProcedure
+  list: protectedProcedure
     .input(z.object({ limit: z.number().optional(), offset: z.number().optional() }).optional())
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const limit = input?.limit || 50
       const offset = input?.offset || 0
+      const backend = createBackendClient(ctx.token)
       const [events, checks, playbook] = await Promise.all([
         backend.events.list({ limit, offset }),
         backend.checkResults.list({ limit: Math.min(limit, 50), offset }),

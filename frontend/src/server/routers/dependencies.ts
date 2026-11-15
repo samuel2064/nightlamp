@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { router, publicProcedure } from '../trpc'
+import { router, protectedProcedure } from '../trpc'
 
 interface Dependency {
   id: string
@@ -22,32 +22,36 @@ interface DependencyUpdate {
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'
 
-async function fetchDeps(): Promise<Dependency[]> {
-  const res = await fetch(`${BACKEND_URL}/api/dependencies`)
+async function fetchDeps(token: string | null): Promise<Dependency[]> {
+  const res = await fetch(`${BACKEND_URL}/api/dependencies`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  })
   if (!res.ok) return []
   const data = await res.json()
   return data.dependencies || []
 }
 
-async function fetchUpdates(breakingOnly = false): Promise<DependencyUpdate[]> {
+async function fetchUpdates(token: string | null, breakingOnly = false): Promise<DependencyUpdate[]> {
   const url = `${BACKEND_URL}/api/dependencies/updates${breakingOnly ? '?breaking=true' : ''}`
-  const res = await fetch(url)
+  const res = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  })
   if (!res.ok) return []
   const data = await res.json()
   return data.updates || []
 }
 
 export const dependenciesRouter = router({
-  list: publicProcedure
-    .query(async () => {
-      const deps = await fetchDeps()
+  list: protectedProcedure
+    .query(async ({ ctx }) => {
+      const deps = await fetchDeps(ctx.token)
       return { dependencies: deps, count: deps.length }
     }),
 
-  updates: publicProcedure
+  updates: protectedProcedure
     .input(z.object({ breakingOnly: z.boolean().optional() }).optional())
-    .query(async ({ input }) => {
-      const updates = await fetchUpdates(input?.breakingOnly)
+    .query(async ({ ctx, input }) => {
+      const updates = await fetchUpdates(ctx.token, input?.breakingOnly)
       return { updates, count: updates.length }
     }),
 })

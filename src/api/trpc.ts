@@ -3,12 +3,15 @@ import { z } from 'zod';
 import superjson from 'superjson';
 import { Database } from 'sql.js';
 import { PlaybookEngine, createPlaybookEngine, PlaybookExecution, PlaybookDefinition, PlaybookStep } from '../playbook/engine';
+import { ApiAuthError, TeamRole, upsertUser, verifyAccessToken, extractBearerToken } from './auth';
+import { IncomingMessage } from 'http';
 import * as crypto from 'crypto';
 
 export interface UserInfo {
   id: string;
   email: string;
   teamIds: string[];
+  roles?: Record<string, TeamRole>;
 }
 
 export interface TRPCContext {
@@ -33,21 +36,40 @@ const protectedProcedure = publicProcedure.use(async ({ ctx, next }) => {
 
 function getUserFromToken(token: string | undefined, db: Database): UserInfo | null {
   if (!token) return null;
-  
+
+  let claims;
+  try {
+    claims = verifyAccessToken(token);
+  } catch (err: any) {
+    if (err instanceof ApiAuthError && err.code === 'AUTH_NOT_CONFIGURED') {
+      throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Authentication is not configured' });
+    }
+    return null;
+  }
+
+  const user = upsertUser(db, claims);
   const result = db.exec(
-    `SELECT u.id, u.email, u.team_id FROM users u 
-     JOIN memberships m ON u.id = m.user_id 
+    `SELECT m.team_id, m.role FROM memberships m
+     JOIN users u ON u.id = m.user_id
      WHERE u.clerk_user_id = ? AND m.team_id IS NOT NULL`,
-    [token]
+    [claims.sub]
   );
-  
-  if (result.length === 0 || result[0].values.length === 0) return null;
-  
-  const teamIds = result[0].values.map((row: any) => row[2]).filter(Boolean);
+
+  const teamIds: string[] = [];
+  const roles: Record<string, TeamRole> = {};
+  if (result.length > 0) {
+    for (const row of result[0].values as any[]) {
+      const teamId = row[0] as string;
+      teamIds.push(teamId);
+      roles[teamId] = row[1] as TeamRole;
+    }
+  }
+
   return {
-    id: result[0].values[0][0] as string,
-    email: result[0].values[0][1] as string,
+    id: user.id,
+    email: user.email,
     teamIds,
+    roles,
   };
 }
 
@@ -69,6 +91,16 @@ export async function createTRPCContextFromRequest(
   return { db, playbookEngine, user };
 }
 
+export function createTRPCContextFromNodeRequest(
+  db: Database,
+  playbookEngine: PlaybookEngine,
+  req: IncomingMessage
+): TRPCContext {
+  const token = extractBearerToken(req.headers) || undefined;
+  const user = getUserFromToken(token, db);
+  return { db, playbookEngine, user };
+}
+
 export function createTRPCContext(db: Database, playbookEngine: PlaybookEngine): TRPCContext {
   return { db, playbookEngine, user: null };
 }
@@ -82,20 +114,50 @@ function assertTeamAccess(ctx: TRPCContext, teamId: string): void {
   }
 }
 
+function assertTeamRole(ctx: TRPCContext, teamId: string, allowedRoles: TeamRole[]): void {
+  assertTeamAccess(ctx, teamId);
+  const role = ctx.user?.roles?.[teamId];
+  if (!role || !allowedRoles.includes(role)) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: 'Insufficient permissions for this team' });
+  }
+}
+
+function listAccessiblePlaybookIds(ctx: TRPCContext): Set<string> {
+  const ids = new Set<string>();
+  if (!ctx.user || ctx.user.teamIds.length === 0) return ids;
+  const placeholders = ctx.user.teamIds.map(() => '?').join(', ');
+  const result = ctx.db.exec(
+    `SELECT id FROM custom_playbooks WHERE team_id IN (${placeholders})`,
+    ctx.user.teamIds
+  );
+  if (result.length > 0) {
+    for (const row of result[0].values as any[]) {
+      ids.add(row[0] as string);
+    }
+  }
+  return ids;
+}
+
 export const playbookRouter = router({
-  listExecutions: publicProcedure
+  listExecutions: protectedProcedure
     .input(z.object({ playbookId: z.string().optional() }).optional())
     .query(({ ctx, input }) => {
-      const executions = ctx.playbookEngine.listExecutions(input?.playbookId);
+      const accessible = listAccessiblePlaybookIds(ctx);
+      const executions = ctx.playbookEngine
+        .listExecutions(input?.playbookId)
+        .filter((execution) => accessible.has(execution.playbookId));
       return { executions, count: executions.length };
     }),
 
-  getExecution: publicProcedure
+  getExecution: protectedProcedure
     .input(z.object({ id: z.string() }))
     .query(({ ctx, input }) => {
       const execution = ctx.playbookEngine.getExecution(input.id);
       if (!execution) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Execution not found' });
+      }
+      if (!listAccessiblePlaybookIds(ctx).has(execution.playbookId)) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Not a member of this team' });
       }
       return { execution };
     }),
@@ -255,7 +317,7 @@ export const playbookRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Playbook not found' });
       }
       const teamId = result[0].values[0][0] as string;
-      assertTeamAccess(ctx, teamId);
+      assertTeamRole(ctx, teamId, ['owner', 'admin']);
       
       const updates: string[] = [];
       const params: any[] = [];
@@ -292,7 +354,7 @@ export const playbookRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Playbook not found' });
       }
       const teamId = result[0].values[0][0] as string;
-      assertTeamAccess(ctx, teamId);
+      assertTeamRole(ctx, teamId, ['owner', 'admin']);
       
       ctx.db.run('DELETE FROM custom_playbooks WHERE id = ?', [input.id]);
       return { success: true };
