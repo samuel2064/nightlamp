@@ -70,7 +70,39 @@ export function classifyFailure(
       }
     }
 
-    if (context.statusCode >= 500) {
+    if (context.statusCode >= 500 && context.errorMessage) {
+      const msg = context.errorMessage.toLowerCase();
+      if (
+        msg.includes('degraded') ||
+        msg.includes('slow') ||
+        msg.includes('latency') ||
+        msg.includes('timeout') ||
+        msg.includes('slo') ||
+        msg.includes('service level')
+      ) {
+        events.push({
+          id: uuidv4(),
+          checkId,
+          failureType: 'slo_breach',
+          severity: 'critical',
+          title: 'SLO breach detected',
+          description: `Status ${context.statusCode}: ${context.errorMessage || 'Server error on webhook callback'}`,
+          rawData: context,
+          detectedAt: now,
+        });
+      } else {
+        events.push({
+          id: uuidv4(),
+          checkId,
+          failureType: 'broken_webhook',
+          severity: 'critical',
+          title: 'Webhook endpoint returning server errors',
+          description: `Status ${context.statusCode}: ${context.errorMessage || 'Server error on webhook callback'}`,
+          rawData: context,
+          detectedAt: now,
+        });
+      }
+    } else if (context.statusCode >= 500) {
       events.push({
         id: uuidv4(),
         checkId,
@@ -94,6 +126,40 @@ export function classifyFailure(
         severity: 'warning',
         title: 'Unexpected API response structure - possible schema drift',
         description: `Response keys: [${bodyKeys.join(', ')}]`,
+        rawData: context,
+        detectedAt: now,
+      });
+    }
+
+    if (
+      bodyKeys.some(
+        (k) => k.includes('error') || k.includes('message') || k.includes('detail'),
+      )
+    ) {
+      events.push({
+        id: uuidv4(),
+        checkId,
+        failureType: 'error_spike',
+        severity: 'critical',
+        title: 'Error spike in API response',
+        description: `Response contains error-related keys: [${bodyKeys.join(', ')}]`,
+        rawData: context,
+        detectedAt: now,
+      });
+    }
+
+    if (
+      bodyKeys.some(
+        (k) => k.includes('new') || k.includes('first') || k.includes('unseen'),
+      )
+    ) {
+      events.push({
+        id: uuidv4(),
+        checkId,
+        failureType: 'new_error_pattern',
+        severity: 'warning',
+        title: 'New error pattern detected',
+        description: `Response contains new error pattern indicators: [${bodyKeys.join(', ')}]`,
         rawData: context,
         detectedAt: now,
       });

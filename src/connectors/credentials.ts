@@ -1,5 +1,6 @@
 import { SentryConfig } from './sentry';
 import { UptimeRobotConfig } from './uptimerobot';
+import { WebflowConfig } from './webflow';
 
 /**
  * Credentials copied from `.env.example` or a scaffolded deployment are
@@ -29,4 +30,9 @@ export function isSentryConfigPlaceholder(config: Partial<SentryConfig> | null |
 export function isUptimeRobotConfigPlaceholder(config: Partial<UptimeRobotConfig> | null | undefined): boolean {
   if (!config) return true;
   return isPlaceholderCredential(config.apiKey);
+}
+
+export function isWebflowConfigPlaceholder(config: Partial<WebflowConfig> | null | undefined): boolean {
+  if (!config) return true;
+  return isPlaceholderCredential(config.apiKey) || isPlaceholderCredential(config.accountId);
 }

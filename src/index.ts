@@ -6,8 +6,8 @@ import { Database } from 'sql.js';
 import * as dotenv from 'dotenv';
 import { v4 as uuidv4 } from 'uuid';
 import { createDatabase, saveDatabase } from './db';
-import { SentryConfig, SentryIssue, UptimeRobotConfig, UptimeRobotMonitor, XConfig, buildAuthorizeUrl, postThread, verifyCredentials, refreshAccessToken, exchangeCodeForToken, parseLaunchThread, isSentryConfigPlaceholder, isUptimeRobotConfigPlaceholder } from './connectors';
-import { runSentryCheck, runUptimeRobotCheck, sanitizeChecks } from './engine';
+import { SentryConfig, SentryIssue, UptimeRobotConfig, UptimeRobotMonitor, XConfig, buildAuthorizeUrl, postThread, verifyCredentials, refreshAccessToken, parseLaunchThread, isSentryConfigPlaceholder, isUptimeRobotConfigPlaceholder, isWebflowConfigPlaceholder, pollWebflow, WebflowConfig, WebflowElement } from './connectors';
+import { runSentryCheck, runUptimeRobotCheck, sanitizeChecks, runWebflowCheck } from './engine';
 import { createStripeClient } from './billing';
 import { startApiServer } from './api';
 import { initEngine, setDb } from './remediation/engine';
@@ -30,6 +30,7 @@ const API_PORT = parseInt(process.env.PORT || process.env.API_PORT || '3001', 10
 let db: Database;
 let sentryIssueCache: SentryIssue[] = [];
 let uptimeRobotMonitorCache: UptimeRobotMonitor[] = [];
+let webflowElementCache: WebflowElement[] = [];
 
 async function init(): Promise<void> {
   console.log('[Nightlamp] Initializing health check engine...');
@@ -104,6 +105,33 @@ async function init(): Promise<void> {
     console.log('[Nightlamp] UptimeRobot disabled: API key is a placeholder. Set a real UPTIMEROBOT_API_KEY.');
   } else {
     console.log('[Nightlamp] UptimeRobot not configured (set UPTIMEROBOT_API_KEY)');
+  }
+
+  const webflowConfig: WebflowConfig | null = process.env.WEBFLOW_API_KEY
+    ? { apiKey: process.env.WEBFLOW_API_KEY, accountId: process.env.WEBFLOW_ACCOUNT_ID || 'test-account' }
+    : null;
+
+  if (webflowConfig && !isWebflowConfigPlaceholder(webflowConfig)) {
+    const cronExpr = `*/${POLL_INTERVAL_SEC} * * * * *`;
+    cron.schedule(cronExpr, async () => {
+      console.log(`[Nightlamp] Running Webflow check (every ${POLL_INTERVAL_SEC}s)...`);
+      try {
+        const result = await runWebflowCheck(db, webflowConfig, webflowElementCache, PLAYBOOK_DIR);
+        webflowElementCache = result.webflowMonitors;
+        console.log(`[Nightlamp] Webflow check complete: ${result.status} - ${result.summary}`);
+        if (result.failureEvents > 0) {
+          console.log(`[Nightlamp] ${result.failureEvents} failure(s) detected, playbook: ${result.playbookEntries.join(', ')}`);
+        }
+        saveDatabase(db, DB_PATH);
+      } catch (err: any) {
+        console.error(`[Nightlamp] Webflow check failed: ${err.message}`);
+      }
+    });
+    console.log(`[Nightlamp] Webflow monitor scheduled: every ${POLL_INTERVAL_SEC}s`);
+  } else if (webflowConfig) {
+    console.log('[Nightlamp] Webflow disabled: credentials are placeholders. Set real WEBFLOW_API_KEY, WEBFLOW_ACCOUNT_ID.');
+  } else {
+    console.log('[Nightlamp] Webflow not configured (set WEBFLOW_API_KEY, WEBFLOW_ACCOUNT_ID)');
   }
 
   const stripeKey = process.env.STRIPE_SECRET_KEY;

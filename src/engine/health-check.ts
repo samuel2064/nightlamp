@@ -8,6 +8,16 @@ import {
   detectNewPatterns,
   isSentryConfigPlaceholder,
   isUptimeRobotConfigPlaceholder,
+  isWebflowConfigPlaceholder,
+  pollWebflow,
+  detectWebflowElementChanges,
+  detectFormSubmissions,
+  detectNavigationChanges,
+  WebflowConfig,
+  WebflowPollResult,
+  WebflowElement,
+  WebflowFormSubmission,
+  WebflowNavigationPath,
 } from '../connectors';
 import { UptimeRobotConfig, UptimeRobotMonitor, pollUptimeRobot, detectStatusChanges, detectSSLIssues } from '../connectors';
 import { classifyFailure, FailureType } from '../classifier';
@@ -31,6 +41,7 @@ export interface CheckRunResult {
   playbookEntries: string[];
   issues: SentryIssue[];
   monitors: UptimeRobotMonitor[];
+  webflowMonitors: WebflowElement[];
 }
 
 export interface CheckConfigLike {
@@ -136,7 +147,9 @@ export function disablePlaceholderChecks(db: Database): number {
       ? isSentryConfigPlaceholder(config as Partial<SentryConfig> | null)
       : source === 'uptimerobot'
         ? isUptimeRobotConfigPlaceholder(config as Partial<UptimeRobotConfig> | null)
-        : false;
+        : source === 'webflow'
+          ? isWebflowConfigPlaceholder(config as Partial<WebflowConfig> | null)
+          : false;
 
     if (placeholder) {
       db.run(`UPDATE checks SET enabled = 0, updated_at = datetime('now') WHERE id = ?`, [id]);
@@ -223,7 +236,7 @@ export async function runSentryCheck(
       failureCount += await autoRemediateOnRecurrence(db, checkId, entry, event.failureType, playbookDir, events);
     }
 
-    return { checkId, status: 'error', summary: result.error, failureEvents: failureCount, playbookEntries: events, issues: result.issues, monitors: [] };
+    return { checkId, status: 'error', summary: result.error, failureEvents: failureCount, playbookEntries: events, issues: result.issues, monitors: [], webflowMonitors: [] };
   }
 
   const spikes = detectSpikes(result.issues, previousIssues);
@@ -269,10 +282,10 @@ export async function runSentryCheck(
     }
   }
 
-  const status: 'pass' | 'fail' = failureCount > 0 ? 'fail' : 'pass';
+const status: 'pass' | 'fail' = failureCount > 0 ? 'fail' : 'pass';
   db.run(
-    `INSERT INTO check_results (id, check_id, status, summary, details, raw_data) VALUES (?, ?, ?, ?, ?, ?)`,
-    [uuidv4(), checkId, status, `${result.issues.length} issues found, ${spikes.length} spikes, ${newPatterns.length} new patterns`, JSON.stringify({ spikes: spikes.length, newPatterns: newPatterns.length }), JSON.stringify(result)]
+    `INSERT INTO check_results (id, check_id, status, summary, details, raw_data) VALUES (?, ?, ?, ?, ?)`,
+    [uuidv4(), checkId, status, `${result.issues.length} issues, ${spikes.length} spikes, ${newPatterns.length} new patterns`, JSON.stringify({ spikes: spikes.length, newPatterns: newPatterns.length }), JSON.stringify(result)]
   );
 
   return {
@@ -283,6 +296,7 @@ export async function runSentryCheck(
     playbookEntries: events,
     issues: result.issues,
     monitors: [],
+    webflowMonitors: []
   };
 }
 
@@ -327,7 +341,7 @@ export async function runUptimeRobotCheck(
       failureCount += await autoRemediateOnRecurrence(db, checkId, entry, event.failureType, playbookDir, events);
     }
 
-    return { checkId, status: 'error', summary: result.error, failureEvents: failureCount, playbookEntries: events, monitors: result.monitors, issues: [] };
+    return { checkId, status: 'error', summary: result.error, failureEvents: failureCount, playbookEntries: events, monitors: result.monitors, issues: [], webflowMonitors: [] };
   }
 
   const downMonitors = detectSSLIssues(result.monitors);
@@ -387,5 +401,192 @@ export async function runUptimeRobotCheck(
     playbookEntries: events,
     monitors: result.monitors,
     issues: [],
+    webflowMonitors: []
+  };
+}
+
+/**
+ * Run a Webflow health check: poll element data, detect changes,
+ * form submissions, and navigation path changes.
+ */
+export async function runWebflowCheck(
+  db: Database,
+  config: WebflowConfig,
+  previousElements: WebflowElement[],
+  playbookDir: string
+): Promise<CheckRunResult> {
+  const events: string[] = [];
+  let failureCount = 0;
+
+  const checkId = ensureCheck(db, 'webflow', 'Webflow Element Monitor', config);
+
+  const result = await pollWebflow(config);
+
+  if (result.error) {
+    db.run(
+      `INSERT INTO check_results (id, check_id, status, summary, details, raw_data) VALUES (?, ?, 'error', ?, ?, ?)`,
+      [uuidv4(), checkId, result.error, result.error, JSON.stringify(result)]
+    );
+
+    const classification = classifyFailure(checkId, {
+      statusCode: 500,
+      errorMessage: result.error,
+    });
+
+    for (const event of classification) {
+      db.run(
+        `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [event.id, checkId, event.failureType, event.severity, event.title, event.description, JSON.stringify(event.rawData)]
+      );
+
+      await evaluateAndNotify(db, event.failureType, event.severity, event.title, event.description, event.detectedAt, checkId, event.id).catch((err: any) => {
+        console.error(`[Alerting] Failed to send notification for Webflow event ${event.id}: ${err.message}`);
+      });
+
+      const entry = getOrCreatePlaybookEntry(db, event.failureType);
+      const filePath = writePlaybookFile(playbookDir, entry);
+      events.push(filePath);
+      failureCount++;
+      failureCount += await autoRemediateOnRecurrence(db, checkId, entry, event.failureType, playbookDir, events);
+    }
+
+    return { checkId, status: 'error', summary: result.error, failureEvents: failureCount, playbookEntries: events, monitors: [], issues: [], webflowMonitors: [] };
+  }
+
+  // Detect element changes
+  const { added, removed, modified } = detectWebflowElementChanges(result.elements, previousElements || []);
+
+  // Detect new form submissions
+  const newForms = detectFormSubmissions(result.forms, []);
+
+  // Detect navigation changes
+  const { newPaths, leftPages } = detectNavigationChanges(result.navigation, []);
+
+  // Process added elements
+  for (const element of added) {
+    const eventId = uuidv4();
+    db.run(
+      `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data) VALUES (?, ?, 'schema_drift', 'info', ?, ?, ?)`,
+      [eventId, checkId, `Webflow element added: ${element.elementId}`, `New element ${element.tagName} (${element.elementId}) added to page`, JSON.stringify({ element })]
+    );
+
+    await evaluateAndNotify(db, 'schema_drift', 'info', `Webflow element added: ${element.elementId}`, `New element ${element.tagName} (${element.elementId}) added to page`, new Date().toISOString(), checkId, eventId).catch((err: any) => {
+      console.error(`[Alerting] Failed to send notification for Webflow added element ${eventId}: ${err.message}`);
+    });
+
+    const entry = getOrCreatePlaybookEntry(db, 'schema_drift' as FailureType);
+    const filePath = writePlaybookFile(playbookDir, entry);
+    events.push(filePath);
+    failureCount++;
+  }
+
+  // Process removed elements
+  for (const element of removed) {
+    const eventId = uuidv4();
+    db.run(
+      `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data) VALUES (?, ?, 'schema_drift', 'warning', ?, ?, ?)`,
+      [eventId, checkId, `Webflow element removed: ${element.elementId}`, `Element ${element.elementId} removed from page`, JSON.stringify({ element })]
+    );
+
+    await evaluateAndNotify(db, 'schema_drift', 'warning', `Webflow element removed: ${element.elementId}`, `Element ${element.elementId} removed from page`, new Date().toISOString(), checkId, eventId).catch((err: any) => {
+      console.error(`[Alerting] Failed to send notification for Webflow removed element ${eventId}: ${err.message}`);
+    });
+
+    const entry = getOrCreatePlaybookEntry(db, 'schema_drift' as FailureType);
+    const filePath = writePlaybookFile(playbookDir, entry);
+    events.push(filePath);
+    failureCount++;
+  }
+
+  // Process modified elements
+  for (const element of modified) {
+    const eventId = uuidv4();
+    db.run(
+      `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data) VALUES (?, ?, 'schema_drift', 'info', ?, ?, ?)`,
+      [eventId, checkId, `Webflow element modified: ${element.elementId}`, `Element ${element.elementId} tag changed`, JSON.stringify({ element })]
+    );
+
+    await evaluateAndNotify(db, 'schema_drift', 'info', `Webflow element modified: ${element.elementId}`, `Element ${element.elementId} tag changed`, new Date().toISOString(), checkId, eventId).catch((err: any) => {
+      console.error(`[Alerting] Failed to send notification for Webflow modified element ${eventId}: ${err.message}`);
+    });
+
+    const entry = getOrCreatePlaybookEntry(db, 'schema_drift' as FailureType);
+    const filePath = writePlaybookFile(playbookDir, entry);
+    events.push(filePath);
+    failureCount++;
+  }
+
+  // Process new navigation paths
+  for (const path of newPaths) {
+    const eventId = uuidv4();
+    db.run(
+      `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data) VALUES (?, ?, 'navigation_change', 'info', ?, ?, ?)`,
+      [eventId, checkId, `Webflow navigation path added: ${path.pathId}`, `New navigation path ${path.url} (${path.title})`, JSON.stringify({ path })]
+    );
+
+    await evaluateAndNotify(db, 'navigation_change', 'info', `Webflow navigation path added: ${path.pathId}`, `New navigation path ${path.url} (${path.title})`, new Date().toISOString(), checkId, eventId).catch((err: any) => {
+      console.error(`[Alerting] Failed to send notification for new navigation path ${eventId}: ${err.message}`);
+    });
+
+    const entry = getOrCreatePlaybookEntry(db, 'navigation_change' as FailureType);
+    const filePath = writePlaybookFile(playbookDir, entry);
+    events.push(filePath);
+    failureCount++;
+  }
+
+  // Process left pages
+  for (const path of leftPages) {
+    const eventId = uuidv4();
+    db.run(
+      `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data) VALUES (?, ?, 'navigation_change', 'warning', ?, ?, ?)`,
+      [eventId, checkId, `Webflow navigation path left: ${path.pathId}`, `Navigation path ${path.url} (${path.title}) removed`, JSON.stringify({ path })]
+    );
+
+    await evaluateAndNotify(db, 'navigation_change', 'warning', `Webflow navigation path left: ${path.pathId}`, `Navigation path ${path.url} (${path.title}) removed`, new Date().toISOString(), checkId, eventId).catch((err: any) => {
+      console.error(`[Alerting] Failed to send notification for left navigation path ${eventId}: ${err.message}`);
+    });
+
+    const entry = getOrCreatePlaybookEntry(db, 'navigation_change' as FailureType);
+    const filePath = writePlaybookFile(playbookDir, entry);
+    events.push(filePath);
+    failureCount++;
+  }
+
+  // Process new form submissions
+  for (const form of newForms) {
+    const eventId = uuidv4();
+    db.run(
+      `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data) VALUES (?, ?, 'form_submission', 'info', ?, ?, ?)`,
+      [eventId, checkId, `Webflow form submission: ${form.formId}`, `New form submission to ${form.formId}`, JSON.stringify({ form })]
+    );
+
+    await evaluateAndNotify(db, 'form_submission', 'info', `Webflow form submission: ${form.formId}`, `New form submission to ${form.formId}`, new Date().toISOString(), checkId, eventId).catch((err: any) => {
+      console.error(`[Alerting] Failed to send notification for form submission ${eventId}: ${err.message}`);
+    });
+
+    const entry = getOrCreatePlaybookEntry(db, 'form_submission' as FailureType);
+    const filePath = writePlaybookFile(playbookDir, entry);
+    events.push(filePath);
+    failureCount++;
+  }
+
+  // Build webflowMonitors from current elements
+  const webflowMonitors: WebflowElement[] = result.elements;
+
+  const status: 'pass' | 'fail' = failureCount > 0 ? 'fail' : 'pass';
+  db.run(
+    `INSERT INTO check_results (id, check_id, status, summary, details, raw_data) VALUES (?, ?, ?, ?, ?)`,
+    [uuidv4(), checkId, status, `${result.elements.length} elements, ${result.forms.length} forms, ${result.navigation.length} navigation paths`, JSON.stringify({ elements: result.elements.length, forms: result.forms.length, navigation: result.navigation.length }), JSON.stringify(result)]
+  );
+
+  return {
+    checkId,
+    status,
+    summary: `${result.elements.length} elements, ${result.forms.length} forms, ${result.navigation.length} navigation paths`,
+    failureEvents: failureCount,
+    playbookEntries: events,
+    monitors: [],
+    issues: [],
+    webflowMonitors,
   };
 }

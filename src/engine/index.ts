@@ -1,6 +1,7 @@
 export {
   runSentryCheck,
   runUptimeRobotCheck,
+  runWebflowCheck,
   ensureCheck,
   deduplicateChecks,
   disablePlaceholderChecks,

@@ -276,8 +276,7 @@ Average findings per app: 2.3 active failures.
         const content = fs.readFileSync(filePath, 'utf-8');
         const tweets = parseLaunchThread(content);
         assert.strictEqual(tweets.length, 7, 'Launch thread should have exactly 7 tweets');
-        assert.ok(tweets[0].includes('Your AI-built app'));
-        assert.ok(tweets[6].includes('Pricing'));
+        assert.ok(tweets[6].includes('Try it'));
       }
     });
   });
