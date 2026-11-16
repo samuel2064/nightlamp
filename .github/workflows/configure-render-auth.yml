@@ -1,0 +1,250 @@
+name: Configure Render auth env vars
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ops/render-auth-config
+
+permissions:
+  contents: write
+
+env:
+  RENDER_API: https://api.render.com/v1
+  CLERK_ISSUER: https://capable-goldfish-98.clerk.accounts.dev
+  CLERK_INSTANCE: capable-goldfish-98.clerk.accounts.dev
+  REPORT_BRANCH: ops/render-auth-report
+  EXPECTED_BACKEND_NAME: nightlamp-api
+  EXPECTED_FRONTEND_NAME: nightlamp-frontend
+
+jobs:
+  configure:
+    name: Configure the Clerk auth variables on Render
+    runs-on: ubuntu-latest
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      BACKEND_SERVICE_ID: ${{ secrets.RENDER_BACKEND_SERVICE_ID }}
+      FRONTEND_SERVICE_ID: ${{ secrets.RENDER_FRONTEND_SERVICE_ID }}
+      GITHUB_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+      GITHUB_CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
+      CLERK_JWT_PUBLIC_KEY: |
+        -----BEGIN PUBLIC KEY-----
+        MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6+uwb+X/QKQQp/8A0Sy3
+        bYmwSAPHnynUH4TEbt3RP3tH8/h4868CiJVDDXeORwwSKz8kcfFfZPt5OtLuzPUn
+        yzTeDv0Lud9loahWP+aY/pnRgyGWHuk575jnJA8bRJtg+EIyZakQNNOH0Brs09DQ
+        QMHHiH9YTSDkGyT7yZmH32cGFs2qoAAwxyM6nLy7MdQpWcat+RrGwKB1W4wIjLAI
+        5EUNqNEuZniGogPlMyV1Bz1oiJWXlYr91hJDDiCPPzHtuow4g4DGybHguGlQUStk
+        hESQfyn316/DTggeR4rZfKxNAbwba7/W0JPmqmsfyd2cwQkUUljhv2vjLx96GgHl
+        5QIDAQAB
+        -----END PUBLIC KEY-----
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 1
+
+      - name: Preflight
+        run: |
+          set -euo pipefail
+          test -n "$RENDER_API_KEY" || { echo "::error::RENDER_API_KEY secret is missing or empty"; exit 1; }
+          test -n "$BACKEND_SERVICE_ID" || { echo "::error::RENDER_BACKEND_SERVICE_ID secret is missing or empty"; exit 1; }
+          echo "preflight ok"
+
+      - name: Resolve the service identities
+        run: |
+          set -euo pipefail
+          curl -sS --fail-with-body -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$BACKEND_SERVICE_ID" -o /tmp/backend-service.json
+          BACKEND_NAME=$(jq -r 'if .service then .service.name else .name end' /tmp/backend-service.json)
+          BACKEND_TYPE=$(jq -r 'if .service then .service.type else .type end' /tmp/backend-service.json)
+          echo "backend service: $BACKEND_NAME ($BACKEND_TYPE)"
+          [ "$BACKEND_NAME" = "$EXPECTED_BACKEND_NAME" ] || { echo "::error::refusing to configure a service named '$BACKEND_NAME'"; exit 1; }
+          echo "$BACKEND_NAME" > /tmp/backend-name.txt
+          if [ -n "$FRONTEND_SERVICE_ID" ]; then
+            curl -sS --fail-with-body -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$FRONTEND_SERVICE_ID" -o /tmp/frontend-service.json
+            FRONTEND_NAME=$(jq -r 'if .service then .service.name else .name end' /tmp/frontend-service.json)
+            echo "frontend service: $FRONTEND_NAME"
+            [ "$FRONTEND_NAME" = "$EXPECTED_FRONTEND_NAME" ] || { echo "::error::unexpected frontend service '$FRONTEND_NAME'"; exit 1; }
+            echo "$FRONTEND_NAME" > /tmp/frontend-name.txt
+          else
+            echo "no frontend service id secret" > /tmp/frontend-name.txt
+          fi
+
+      - name: Verify the signing key against the live Clerk JWKS
+        run: |
+          set -euo pipefail
+          curl -sS --fail-with-body "$CLERK_ISSUER/.well-known/jwks.json" -o /tmp/jwks.json
+          KID=$(jq -r '[.keys[] | select(.use=="sig" or .use==null)][0].kid' /tmp/jwks.json)
+          N=$(jq -r '[.keys[] | select(.use=="sig" or .use==null)][0].n' /tmp/jwks.json)
+          printf '%s\n' "$CLERK_JWT_PUBLIC_KEY" > /tmp/key.pem
+          MOD=$(openssl rsa -pubin -in /tmp/key.pem -noout -modulus | sed 's/^Modulus=//')
+          NHEX=$(printf '%s' "$N" | python3 -c "import sys,base64;s=sys.stdin.read().strip();s+= '='*(-len(s)%4);print(base64.urlsafe_b64decode(s).hex().lstrip('0'))")
+          MODHEX=$(printf '%s' "$MOD" | tr 'A-F' 'a-f' | sed 's/^0*//')
+          echo "jwks kid=$KID"
+          if [ "$NHEX" != "$MODHEX" ]; then
+            echo "::error::the configured public key does not match the live JWKS signing key"
+            exit 1
+          fi
+          echo "the configured public key matches the live JWKS signing key"
+          echo "$KID" > /tmp/kid.txt
+
+      - name: Read the current environment variable keys
+        run: |
+          set -euo pipefail
+          : > /tmp/backend-keys.txt
+          : > /tmp/frontend-keys.txt
+          curl -sS --fail-with-body -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$BACKEND_SERVICE_ID/env-vars" -o /tmp/backend-envvars.json
+          jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/backend-envvars.json | sort | tee -a /tmp/backend-keys.txt
+          if [ -n "$FRONTEND_SERVICE_ID" ]; then
+            curl -sS --fail-with-body -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$FRONTEND_SERVICE_ID/env-vars" -o /tmp/frontend-envvars.json
+            jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/frontend-envvars.json | sort | tee -a /tmp/frontend-keys.txt
+          fi
+
+      - name: Configure nightlamp-api
+        run: |
+          set -euo pipefail
+          : > /tmp/actions.log
+          apply_env_var() {
+            local service="$1" envfile="$2" key="$3" value="$4"
+            local id current
+            id=$(jq -r --arg k "$key" '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | map(select(.key==$k)) | .[0].id // ""' "$envfile")
+            current=$(jq -r --arg k "$key" '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | map(select(.key==$k)) | .[0].value // ""' "$envfile")
+            if [ -n "$id" ]; then
+              if [ "$current" = "$value" ]; then
+                echo "$key: already set to the expected value"
+                echo "unchanged $key" >> /tmp/actions.log
+                return 0
+              fi
+              curl -sS --fail-with-body -X PATCH \
+                -H "Authorization: Bearer $RENDER_API_KEY" \
+                -H "Content-Type: application/json" \
+                -d "$(jq -n --arg v "$value" '{value:$v}')" \
+                "$RENDER_API/services/$service/env-vars/$id" -o /tmp/patch-$key.json
+              echo "$key: updated"
+              echo "updated $key" >> /tmp/actions.log
+            else
+              curl -sS --fail-with-body -X POST \
+                -H "Authorization: Bearer $RENDER_API_KEY" \
+                -H "Content-Type: application/json" \
+                -d "$(jq -n --arg k "$key" --arg v "$value" '{key:$k,value:$v}')" \
+                "$RENDER_API/services/$service/env-vars" -o /tmp/post-$key.json
+              echo "$key: created"
+              echo "created $key" >> /tmp/actions.log
+            fi
+          }
+          apply_env_var "$BACKEND_SERVICE_ID" /tmp/backend-envvars.json CLERK_JWT_ISSUER "$CLERK_ISSUER"
+          apply_env_var "$BACKEND_SERVICE_ID" /tmp/backend-envvars.json CLERK_JWT_PUBLIC_KEY "$CLERK_JWT_PUBLIC_KEY"
+
+      - name: Configure nightlamp-frontend when a variable is missing
+        run: |
+          set -euo pipefail
+          if [ -z "$FRONTEND_SERVICE_ID" ]; then
+            echo "no frontend service id secret, skipping"
+            exit 0
+          fi
+          decode_clerk_instance() {
+            printf '%s' "$1" | python3 -c "import sys,base64;s=sys.stdin.read().strip();p=s.split('_',2);b=''.join(c for c in p[2] if c.isalnum() or c in '-_') if len(p)>2 else '';b=b+'='*(-len(b)%4);print(base64.urlsafe_b64decode(b).decode('utf-8','replace') if b else '')"
+          }
+          PUB_INSTANCE=$(decode_clerk_instance "$GITHUB_CLERK_PUBLISHABLE_KEY")
+          SEC_INSTANCE=$(decode_clerk_instance "$GITHUB_CLERK_SECRET_KEY")
+          echo "github publishable key instance: ${PUB_INSTANCE:-unknown}"
+          echo "github secret key instance: ${SEC_INSTANCE:-unknown}"
+          if [ -z "$PUB_INSTANCE" ] || [ "$PUB_INSTANCE" != "$CLERK_INSTANCE" ]; then
+            echo "::warning::the repository publishable key does not belong to $CLERK_INSTANCE, refusing to copy it to Render"
+            echo "refused NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY (instance mismatch)" >> /tmp/actions.log
+          fi
+          if [ -z "$SEC_INSTANCE" ] || [ "$SEC_INSTANCE" != "$CLERK_INSTANCE" ]; then
+            echo "::warning::the repository secret key does not belong to $CLERK_INSTANCE, refusing to copy it to Render"
+            echo "refused CLERK_SECRET_KEY (instance mismatch)" >> /tmp/actions.log
+          fi
+          apply_frontend_var() {
+            local key="$1" value="$2"
+            local id
+            id=$(jq -r --arg k "$key" '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | map(select(.key==$k)) | .[0].id // ""' /tmp/frontend-envvars.json)
+            if [ -n "$id" ]; then
+              echo "$key: already present on the frontend service, left untouched"
+              echo "present $key" >> /tmp/actions.log
+              return 0
+            fi
+            if [ -z "$value" ]; then
+              echo "::warning::$key is missing on the frontend service and no repository value is available"
+              echo "missing $key" >> /tmp/actions.log
+              return 0
+            fi
+            curl -sS --fail-with-body -X POST \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg k "$key" --arg v "$value" '{key:$k,value:$v}')" \
+              "$RENDER_API/services/$FRONTEND_SERVICE_ID/env-vars" -o /tmp/post-$key.json
+            echo "$key: created on the frontend service"
+            echo "created $key" >> /tmp/actions.log
+          }
+          if [ -z "$PUB_INSTANCE" ] || [ "$PUB_INSTANCE" != "$CLERK_INSTANCE" ]; then
+            echo "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY not copied (instance mismatch)"
+          else
+            apply_frontend_var NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY "$GITHUB_CLERK_PUBLISHABLE_KEY"
+          fi
+          if [ -z "$SEC_INSTANCE" ] || [ "$SEC_INSTANCE" != "$CLERK_INSTANCE" ]; then
+            echo "CLERK_SECRET_KEY not copied (instance mismatch)"
+          else
+            apply_frontend_var CLERK_SECRET_KEY "$GITHUB_CLERK_SECRET_KEY"
+          fi
+
+      - name: Re-read the environment variable keys
+        run: |
+          set -euo pipefail
+          : > /tmp/backend-keys-after.txt
+          : > /tmp/frontend-keys-after.txt
+          curl -sS --fail-with-body -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$BACKEND_SERVICE_ID/env-vars" -o /tmp/backend-envvars-after.json
+          jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/backend-envvars-after.json | sort | tee -a /tmp/backend-keys-after.txt
+          if [ -n "$FRONTEND_SERVICE_ID" ]; then
+            curl -sS --fail-with-body -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$FRONTEND_SERVICE_ID/env-vars" -o /tmp/frontend-envvars-after.json
+            jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/frontend-envvars-after.json | sort | tee -a /tmp/frontend-keys-after.txt
+          fi
+
+      - name: Publish the key-only report
+        if: always()
+        run: |
+          set -uo pipefail
+          BACKEND_NAME=$(cat /tmp/backend-name.txt 2>/dev/null || echo 'unknown')
+          FRONTEND_NAME=$(cat /tmp/frontend-name.txt 2>/dev/null || echo 'unknown')
+          KID=$(cat /tmp/kid.txt 2>/dev/null || echo 'unknown')
+          jq -n \
+            --arg run "$GITHUB_RUN_ID" \
+            --arg sha "$GITHUB_SHA" \
+            --arg branch "$GITHUB_REF_NAME" \
+            --arg kid "$KID" \
+            --arg backendName "$BACKEND_NAME" \
+            --arg frontendName "$FRONTEND_NAME" \
+            --arg actions "$(tr '\n' ';' < /tmp/actions.log)" \
+            --arg backendBefore "$(tr '\n' ',' < /tmp/backend-keys.txt)" \
+            --arg backendAfter "$(tr '\n' ',' < /tmp/backend-keys-after.txt)" \
+            --arg frontendBefore "$(tr '\n' ',' < /tmp/frontend-keys.txt)" \
+            --arg frontendAfter "$(tr '\n' ',' < /tmp/frontend-keys-after.txt)" \
+            '{run:$run,sha:$sha,branch:$branch,backendService:$backendName,frontendService:$frontendName,jwksKid:$kid,actions:$actions,backendEnvVarKeysBefore:$backendBefore,backendEnvVarKeysAfter:$backendAfter,frontendEnvVarKeysBefore:$frontendBefore,frontendEnvVarKeysAfter:$frontendAfter,valuesIncluded:false}' > /tmp/report.json
+          cat /tmp/report.json
+          {
+            echo "## Render auth configuration report"
+            echo
+            echo "- run: $GITHUB_RUN_ID"
+            echo "- sha: $GITHUB_SHA"
+            echo "- backend service: $BACKEND_NAME"
+            echo "- frontend service: $(cat /tmp/frontend-name.txt)"
+            echo "- jwks signing key id: $(cat /tmp/kid.txt)"
+            echo "- actions: $(tr '\n' ';' < /tmp/actions.log)"
+            echo "- backend env var keys before: $(tr '\n' ',' < /tmp/backend-keys.txt)"
+            echo "- backend env var keys after: $(tr '\n' ',' < /tmp/backend-keys-after.txt)"
+            echo "- frontend env var keys before: $(tr '\n' ',' < /tmp/frontend-keys.txt)"
+            echo "- frontend env var keys after: $(tr '\n' ',' < /tmp/frontend-keys-after.txt)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          git config user.name "nightlamp-ci"
+          git config user.email "ci@nightlamp.local"
+          git fetch --depth=1 origin "$REPORT_BRANCH" || true
+          if git rev-parse --verify FETCH_HEAD >/dev/null 2>&1; then
+            git checkout -B "$REPORT_BRANCH" FETCH_HEAD
+          fi
+          mkdir -p reports
+          cp /tmp/report.json reports/render-auth-config.json
+          git add reports/render-auth-config.json
+          git commit -m "render auth configuration report $GITHUB_RUN_ID" || true
+          git push origin "HEAD:$REPORT_BRANCH"
