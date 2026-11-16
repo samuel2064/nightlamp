@@ -7,3 +7,4 @@ data/
 .next/
 .env.local
 *.log
+*.tsbuildinfo
