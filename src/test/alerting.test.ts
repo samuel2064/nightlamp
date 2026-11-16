@@ -1,7 +1,7 @@
 import assert from 'assert';
 import { createDatabase } from '../db/schema';
 import { Database } from 'sql.js';
-import { createTestToken } from './setup';
+import { createTestToken, TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID } from './setup';
 
 describe('Alerting System', function () {
   let db: Database;
@@ -195,6 +195,10 @@ describe('Alerting System', function () {
     const http = require('http');
 
     beforeEach(function (done) {
+      db.run('INSERT INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)',
+        [TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID, 'owner@example.com', 'Owner']);
+      db.run("INSERT INTO teams (id, name, slug, owner_id) VALUES ('alerting-team', 'Alerting Team', 'alerting-team', ?)", [TEST_LOCAL_USER_ID]);
+      db.run("INSERT INTO memberships (id, team_id, user_id, role) VALUES ('alerting-owner', 'alerting-team', ?, 'owner')", [TEST_LOCAL_USER_ID]);
       const { startApiServer } = require('../api/server');
       server = startApiServer(db, { port: 0 });
       server.on('listening', () => {

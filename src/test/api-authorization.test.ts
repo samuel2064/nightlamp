@@ -12,6 +12,8 @@ import { createTestToken, fetchWithoutAuth, TEST_CLERK_USER_ID, TEST_JWT_SECRET,
 import { up as applyTenantIsolationMigration } from '../db/migrations/008-tenant-isolation';
 import { evaluateAndNotify } from '../alerting/evaluator';
 import { createServer } from 'http';
+import { registerAction } from '../remediation/actions/registry';
+import { setDb } from '../remediation/engine';
 
 function nodeRequest(headers: Record<string, string>): IncomingMessage {
   return { headers } as unknown as IncomingMessage;
@@ -26,6 +28,7 @@ describe('P0 API authorization', () => {
 
   before(async () => {
     db = await createDatabase();
+    setDb(db);
 
     db.run('INSERT INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)',
       [TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID, 'owner@example.com', 'Owner']);
@@ -164,6 +167,80 @@ describe('P0 API authorization', () => {
     it('keeps the health endpoint public for uptime checks', async () => {
       const res = await fetchWithoutAuth(`http://127.0.0.1:${port}/api/health`);
       assert.strictEqual(res.status, 200);
+    });
+  });
+
+  describe('REST admin role gate', () => {
+    const endpoints = [
+      '/api/remediation/approve',
+      '/api/alerting/channels',
+      '/api/playbook/remediate',
+    ];
+
+    before(() => {
+      for (const role of ['member', 'admin']) {
+        db.run('INSERT INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)',
+          [`gate-${role}`, `gate-clerk-${role}`, `${role}@example.com`, role]);
+        db.run('INSERT INTO memberships (id, team_id, user_id, role) VALUES (?, ?, ?, ?)',
+          [uuidv4(), teamId, `gate-${role}`, role]);
+      }
+      registerAction('Authorization test action', 'authorization_test', async () => ({
+        success: true, output: 'Authorized remediation executed',
+      }));
+    });
+
+    async function post(endpoint: string, subject: string, body: object) {
+      return fetchWithoutAuth(`http://127.0.0.1:${port}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${createTestToken({ sub: subject })}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('returns 403 on every admin endpoint for a signed-in user without membership', async () => {
+      for (const endpoint of endpoints) {
+        const res = await post(endpoint, 'personal-clerk-user', {});
+        assert.strictEqual(res.status, 403, endpoint);
+        assert.strictEqual((await res.json() as any).code, 'FORBIDDEN');
+      }
+    });
+
+    it('returns 403 on every admin endpoint for a member', async () => {
+      for (const endpoint of endpoints) {
+        const res = await post(endpoint, 'gate-clerk-member', {});
+        assert.strictEqual(res.status, 403, endpoint);
+        assert.strictEqual((await res.json() as any).code, 'FORBIDDEN');
+      }
+    });
+
+    it('allows owners and admins to execute all three admin operations', async () => {
+      for (const subject of [TEST_CLERK_USER_ID, 'gate-clerk-admin']) {
+        const entryId = uuidv4();
+        const runId = uuidv4();
+        db.run(`INSERT INTO playbook_entries (id, failure_type, title, body, team_id) VALUES (?, 'authorization_test', 'Role gate test', 'Test', ?)`,
+          [entryId, teamId]);
+        db.run(`INSERT INTO remediation_runs (id, playbook_entry_id, action_name, status, team_id) VALUES (?, ?, 'authorization_test', 'pending', ?)`,
+          [runId, entryId, teamId]);
+
+        const approve = await post(endpoints[0], subject, { id: runId });
+        assert.strictEqual(approve.status, 200);
+        assert.strictEqual((await approve.json() as any).status, 'success');
+        assert.strictEqual(db.exec('SELECT status FROM remediation_runs WHERE id = ?', [runId])[0].values[0][0], 'success');
+
+        const channel = await post(endpoints[1], subject, { name: 'Role gate channel', type: 'slack', config: {} });
+        assert.strictEqual(channel.status, 200);
+        const channelId = (await channel.json() as any).id;
+        assert.strictEqual(db.exec('SELECT team_id FROM alert_channels WHERE id = ?', [channelId])[0].values[0][0], teamId);
+
+        const remediate = await post(endpoints[2], subject, { failureType: 'rate_limit_shift', currentIntervalSec: 30 });
+        assert.strictEqual(remediate.status, 200);
+        const remediation = await remediate.json() as any;
+        assert.ok(remediation.logId);
+        assert.strictEqual(db.exec('SELECT team_id FROM remediation_log WHERE id = ?', [remediation.logId])[0].values[0][0], teamId);
+      }
     });
   });
 
