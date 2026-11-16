@@ -519,7 +519,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         return;
       }
 
-      if (teamApi.handle(req, res)) {
+      if (teamApi.handle(req, res, auth)) {
         return;
       }
 

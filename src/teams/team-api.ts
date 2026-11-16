@@ -2,16 +2,17 @@ import { Database } from 'sql.js';
 import { IncomingMessage, ServerResponse } from 'http';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
+import type { AuthContext } from '../api/auth';
 
 export class TeamApi {
   constructor(private db: Database) {}
 
-  handle(req: IncomingMessage, res: ServerResponse): boolean {
+  handle(req: IncomingMessage, res: ServerResponse, auth?: AuthContext | null): boolean {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = parsedUrl.pathname;
 
     if (path === '/api/teams' || path === '/api/teams/') {
-      if (req.method === 'GET') { this.handleListTeams(res); return true; }
+      if (req.method === 'GET') { this.handleListTeams(res, auth); return true; }
       if (req.method === 'POST') { this.handleCreateTeam(req, res); return true; }
       res.writeHead(405);
       res.end(JSON.stringify({ error: 'Method not allowed' }));
@@ -91,10 +92,17 @@ export class TeamApi {
     return false;
   }
 
-  private handleListTeams(res: ServerResponse): void {
-    const result = this.db.exec(
-      'SELECT id, name, slug, owner_id, plan, created_at FROM teams ORDER BY created_at DESC'
-    );
+  private handleListTeams(res: ServerResponse, auth?: AuthContext | null): void {
+    const result = auth
+      ? this.db.exec(
+        `SELECT id, name, slug, owner_id, plan, created_at FROM teams
+         WHERE owner_id = ? OR EXISTS (SELECT 1 FROM memberships m WHERE m.team_id = teams.id AND m.user_id = ?)
+         ORDER BY created_at DESC`,
+        [auth.userId, auth.userId]
+      )
+      : this.db.exec(
+        'SELECT id, name, slug, owner_id, plan, created_at FROM teams ORDER BY created_at DESC'
+      );
     const teams = result.length > 0 ? result[0].values.map((row: any) => ({
       id: row[0],
       name: row[1],

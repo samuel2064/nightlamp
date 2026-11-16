@@ -649,6 +649,13 @@ describe('P0 API authorization', () => {
 
       capture.close();
     });
+
+    it('does not list another tenant in the team directory', async () => {
+      const list = await getJson('/api/teams');
+      const teamIds = list.teams.map((t: any) => t.id as string);
+      assert.ok(teamIds.includes(teamId));
+      assert.ok(!teamIds.includes(otherTeamId));
+    });
   });
 
   describe('tenant migration', () => {
