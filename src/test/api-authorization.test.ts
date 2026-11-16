@@ -235,6 +235,109 @@ describe('P0 API authorization', () => {
     });
   });
 
+  describe('remediation approval queue', () => {
+    before(() => {
+      db.run(`INSERT INTO playbook_entries (id, failure_type, title, body, team_id)
+              VALUES ('queue-playbook', 'broken_webhook', 'Webhook failure', 'Inspect webhook delivery', ?)`, [teamId]);
+      db.run(`INSERT INTO playbook_entries (id, failure_type, title, body, team_id)
+              VALUES ('queue-foreign-playbook', 'expired_token', 'Foreign failure', 'Private description', ?)`, [otherTeamId]);
+      for (const [id, owner, playbook] of [
+        ['queue-own-a', teamId, 'queue-playbook'],
+        ['queue-own-b', teamId, 'queue-playbook'],
+        ['queue-foreign', otherTeamId, 'queue-foreign-playbook'],
+        ['queue-personal', null, null],
+      ]) {
+        db.run(`INSERT INTO remediation_runs (id, action_name, team_id, playbook_entry_id, created_at)
+                VALUES (?, 'retry-webhook', ?, ?, '2026-11-16 10:00:00')`, [id, owner, playbook]);
+      }
+      db.run(`INSERT INTO remediation_runs (id, action_name, team_id, playbook_entry_id, status, started_at, completed_at)
+              VALUES ('queue-success', 'retry-webhook', ?, 'queue-playbook', 'success', '2026-11-16 09:00:00', '2026-11-16 09:01:00')`, [teamId]);
+      db.run(`INSERT INTO remediation_runs (id, action_name, team_id, playbook_entry_id, status)
+              VALUES ('queue-cross-link', 'rotate-token', ?, 'queue-foreign-playbook', 'failed')`, [teamId]);
+    });
+
+    async function queue(query = '', token = createTestToken()): Promise<any> {
+      const res = await fetchWithoutAuth(`http://127.0.0.1:${port}/api/remediation/runs${query}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      assert.strictEqual(res.status, 200);
+      return res.json();
+    }
+
+    it('denies unauthenticated requests including the trailing-slash route', async () => {
+      for (const path of ['/api/remediation/runs', '/api/remediation/runs/']) {
+        const res = await fetchWithoutAuth(`http://127.0.0.1:${port}${path}`);
+        assert.strictEqual(res.status, 401);
+      }
+    });
+
+    it('defaults to pending runs in the authenticated tenant and returns the exact envelope', async () => {
+      const body = await queue();
+      assert.deepStrictEqual(Object.keys(body).sort(), ['count', 'runs']);
+      assert.strictEqual(body.count, 2);
+      assert.deepStrictEqual(body.runs.map((run: any) => run.id), ['queue-own-a', 'queue-own-b']);
+      assert.deepStrictEqual(body.runs[0], {
+        id: 'queue-own-a', playbook_entry_id: 'queue-playbook', action_name: 'retry-webhook',
+        status: 'pending', initiated_by: null, approved_by: null, output: null, error: null,
+        created_at: '2026-11-16 10:00:00', started_at: null, completed_at: null,
+        affected_resource: 'queue-playbook', failure_type: 'broken_webhook', description: 'Inspect webhook delivery',
+      });
+    });
+
+    it('filters status and preserves execution timestamps', async () => {
+      const body = await queue('?status=success');
+      assert.strictEqual(body.count, 1);
+      assert.strictEqual(body.runs[0].id, 'queue-success');
+      assert.strictEqual(body.runs[0].status, 'success');
+      assert.strictEqual(body.runs[0].started_at, '2026-11-16 09:00:00');
+      assert.strictEqual(body.runs[0].completed_at, '2026-11-16 09:01:00');
+      assert.deepStrictEqual(await queue('?status=pending_approval'), { runs: [], count: 0 });
+    });
+
+    it('paginates deterministically while counting all tenant-visible matches', async () => {
+      const body = await queue('?limit=1&offset=1');
+      assert.strictEqual(body.count, 2);
+      assert.deepStrictEqual(body.runs.map((run: any) => run.id), ['queue-own-b']);
+      assert.deepStrictEqual(await queue('?limit=1&offset=2'), { runs: [], count: 2 });
+    });
+
+    it('keeps null-team legacy runs exclusively in personal scope', async () => {
+      const body = await queue('', createTestToken({ sub: 'personal-clerk-user' }));
+      assert.strictEqual(body.count, 1);
+      assert.deepStrictEqual(body.runs.map((run: any) => run.id), ['queue-personal']);
+      assert.strictEqual(body.runs[0].description, null);
+    });
+
+    it('does not leak linked playbook contents across tenant boundaries', async () => {
+      const body = await queue('?status=failed');
+      assert.strictEqual(body.count, 1);
+      assert.strictEqual(body.runs[0].id, 'queue-cross-link');
+      assert.strictEqual(body.runs[0].failure_type, null);
+      assert.strictEqual(body.runs[0].description, null);
+    });
+
+    it('rejects invalid pagination', async () => {
+      for (const query of ['limit=0', 'limit=-1', 'limit=abc', 'limit=1.5', 'offset=-1', 'offset=abc', 'offset=9007199254740992']) {
+        const res = await fetchWithoutAuth(`http://127.0.0.1:${port}/api/remediation/runs?${query}`, {
+          headers: { Authorization: `Bearer ${createTestToken()}` },
+        });
+        assert.strictEqual(res.status, 400, query);
+      }
+    });
+
+    it('advertises the endpoint in the unknown-path route catalogue', async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/unknown-route`);
+      assert.strictEqual(res.status, 404);
+      const body = await res.json() as any;
+      assert.ok(body.available.includes('/api/remediation/runs'));
+    });
+
+    after(() => {
+      db.run("DELETE FROM remediation_runs WHERE id LIKE 'queue-%'");
+      db.run("DELETE FROM playbook_entries WHERE id LIKE 'queue-%'");
+    });
+  });
+
   describe('REST tenant isolation', () => {
     const ownCheckId = 'own-check';
     const foreignCheckId = 'foreign-check';

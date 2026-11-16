@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { Database } from 'sql.js';
+import { Database, SqlValue } from 'sql.js';
 import { FailureType } from '../classifier';
 import { PlaybookEntry } from '../playbook';
 import { remediateWebhookRestart } from './scripts/webhook-restart';
@@ -153,6 +153,34 @@ export function getRemediationLogs(
   })) : [];
 
   return { logs, count: totalCount };
+}
+
+export function getRemediationRuns(
+  db: Database,
+  params: { status?: string; limit?: number; offset?: number; teamId?: string | null } = {},
+): { runs: Record<string, SqlValue>[]; count: number } {
+  const scope = tenantFilter('team_id', params.teamId ?? null);
+  const playbookScope = tenantFilter('p.team_id', params.teamId ?? null);
+  const status = params.status || 'pending';
+  const filterParams = [...scope.params, status];
+  const countResult = db.exec(
+    `SELECT COUNT(*) AS count FROM remediation_runs WHERE ${scope.clause} AND status = ?`,
+    filterParams,
+  );
+  const count = countResult[0].values[0][0] as number;
+  const result = db.exec(
+    `SELECT r.id, r.playbook_entry_id, r.action_name, r.status, r.initiated_by, r.approved_by,
+            r.output, r.error, r.created_at, r.started_at, r.completed_at,
+            r.playbook_entry_id AS affected_resource, p.failure_type, p.body AS description
+     FROM (SELECT * FROM remediation_runs WHERE ${scope.clause} AND status = ?) r
+     LEFT JOIN playbook_entries p ON p.id = r.playbook_entry_id AND ${playbookScope.clause}
+     ORDER BY r.created_at DESC, r.id ASC LIMIT ? OFFSET ?`,
+    [...filterParams, ...playbookScope.params, params.limit ?? 50, params.offset ?? 0],
+  );
+  const runs = result.length ? result[0].values.map(row =>
+    Object.fromEntries(result[0].columns.map((column, index) => [column, row[index]])),
+  ) : [];
+  return { runs, count };
 }
 
 let dbInstance: Database | null = null;
