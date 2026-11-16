@@ -180,6 +180,24 @@ describe('cross-tenant mutation sweep', () => {
       assert.strictEqual(scalar('SELECT name FROM alert_channels WHERE id = ?', [ownerChannelId]), 'Updated channel');
       assert.strictEqual(scalar('SELECT enabled FROM alert_channels WHERE id = ?', [ownerChannelId]), 0);
     });
+
+    it('answers 400 when an update carries no fields, and does not claim the row is missing', async () => {
+      const channel = await call('PUT', `/api/alerting/channels/${channelId}`, {
+        clerkId: TEAM_A_CLERK,
+        body: {},
+      });
+      assert.strictEqual(channel.status, 400);
+      assert.strictEqual(channel.payload.error, 'No fields to update');
+      assert.strictEqual(scalar('SELECT COUNT(*) FROM alert_channels WHERE id = ?', [channelId]), 1);
+
+      const rule = await call('PUT', `/api/alerting/rules/${ruleId}`, {
+        clerkId: TEAM_A_CLERK,
+        body: {},
+      });
+      assert.strictEqual(rule.status, 400);
+      assert.strictEqual(rule.payload.error, 'No fields to update');
+      assert.strictEqual(scalar('SELECT COUNT(*) FROM alert_rules WHERE id = ?', [ruleId]), 1);
+    });
   });
 
   describe('remediation runs', () => {
