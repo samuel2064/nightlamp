@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { RefreshCw } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
+import { EmptyState } from '@/components/ui/empty-state'
 
 export default function BillingPage() {
   const { data, isLoading, isError, refetch } = trpc.billing.summary.useQuery()
@@ -42,6 +43,22 @@ export default function BillingPage() {
             <RefreshCw className="size-3 mr-1" /> Retry
           </Button>
         </div>
+      </div>
+    )
+  }
+
+  if (!data) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-2xl font-semibold">Billing</h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          Subscription and billing overview
+        </p>
+        <EmptyState
+          icon={RefreshCw}
+          title="No billing data"
+          description="Subscription and billing data will appear here once your app sends its first billing event."
+        />
       </div>
     )
   }
