@@ -53,19 +53,41 @@ jobs:
 
       - name: Resolve the service identities
         run: |
-          set -euo pipefail
-          curl -sS --fail-with-body -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$BACKEND_SERVICE_ID" -o /tmp/backend-service.json
-          BACKEND_NAME=$(jq -r 'if .service then .service.name else .name end' /tmp/backend-service.json)
-          BACKEND_TYPE=$(jq -r 'if .service then .service.type else .type end' /tmp/backend-service.json)
-          echo "backend service: $BACKEND_NAME ($BACKEND_TYPE)"
-          [ "$BACKEND_NAME" = "$EXPECTED_BACKEND_NAME" ] || { echo "::error::refusing to configure a service named '$BACKEND_NAME'"; exit 1; }
+          set -uo pipefail
+          : > /tmp/diag.log
+          BACKEND_STATUS=$(curl -sS -o /tmp/backend-service.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$BACKEND_SERVICE_ID")
+          echo "GET /services/<backend> -> HTTP $BACKEND_STATUS" >> /tmp/diag.log
+          if [ "$BACKEND_STATUS" != "200" ]; then
+            echo "::error::the Render API answered HTTP $BACKEND_STATUS for the backend service id"
+            exit 1
+          fi
+          echo "backend response top-level keys: $(jq -r 'if type=="object" then (keys|join(",")) else type end' /tmp/backend-service.json 2>>/tmp/diag.log)" >> /tmp/diag.log
+          BACKEND_NAME=$(jq -r 'if .service then .service.name else .name end' /tmp/backend-service.json 2>>/tmp/diag.log)
+          BACKEND_TYPE=$(jq -r 'if .service then .service.type else .type end' /tmp/backend-service.json 2>>/tmp/diag.log)
+          echo "backend service: $BACKEND_NAME ($BACKEND_TYPE)" >> /tmp/diag.log
+          if [ -z "$BACKEND_NAME" ] || [ "$BACKEND_NAME" = "null" ]; then
+            echo "::error::no service name in the Render response"
+            exit 1
+          fi
+          if [ "$BACKEND_NAME" != "$EXPECTED_BACKEND_NAME" ]; then
+            echo "::error::refusing to configure a service named '$BACKEND_NAME', expected '$EXPECTED_BACKEND_NAME'"
+            exit 1
+          fi
           echo "$BACKEND_NAME" > /tmp/backend-name.txt
           if [ -n "$FRONTEND_SERVICE_ID" ]; then
-            curl -sS --fail-with-body -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$FRONTEND_SERVICE_ID" -o /tmp/frontend-service.json
-            FRONTEND_NAME=$(jq -r 'if .service then .service.name else .name end' /tmp/frontend-service.json)
-            echo "frontend service: $FRONTEND_NAME"
-            [ "$FRONTEND_NAME" = "$EXPECTED_FRONTEND_NAME" ] || { echo "::error::unexpected frontend service '$FRONTEND_NAME'"; exit 1; }
-            echo "$FRONTEND_NAME" > /tmp/frontend-name.txt
+            FRONTEND_STATUS=$(curl -sS -o /tmp/frontend-service.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$FRONTEND_SERVICE_ID")
+            echo "GET /services/<frontend> -> HTTP $FRONTEND_STATUS" >> /tmp/diag.log
+            if [ "$FRONTEND_STATUS" = "200" ]; then
+              FRONTEND_NAME=$(jq -r 'if .service then .service.name else .name end' /tmp/frontend-service.json 2>>/tmp/diag.log)
+              echo "frontend service: $FRONTEND_NAME" >> /tmp/diag.log
+              if [ "$FRONTEND_NAME" != "$EXPECTED_FRONTEND_NAME" ]; then
+                echo "::error::unexpected frontend service '$FRONTEND_NAME'"
+                exit 1
+              fi
+              echo "$FRONTEND_NAME" > /tmp/frontend-name.txt
+            else
+              echo "no frontend service id secret" > /tmp/frontend-name.txt
+            fi
           else
             echo "no frontend service id secret" > /tmp/frontend-name.txt
           fi
@@ -80,33 +102,42 @@ jobs:
           MOD=$(openssl rsa -pubin -in /tmp/key.pem -noout -modulus | sed 's/^Modulus=//')
           NHEX=$(printf '%s' "$N" | python3 -c "import sys,base64;s=sys.stdin.read().strip();s+= '='*(-len(s)%4);print(base64.urlsafe_b64decode(s).hex().lstrip('0'))")
           MODHEX=$(printf '%s' "$MOD" | tr 'A-F' 'a-f' | sed 's/^0*//')
-          echo "jwks kid=$KID"
+          echo "jwks kid=$KID" >> /tmp/diag.log
           if [ "$NHEX" != "$MODHEX" ]; then
             echo "::error::the configured public key does not match the live JWKS signing key"
             exit 1
           fi
-          echo "the configured public key matches the live JWKS signing key"
+          echo "the configured public key matches the live JWKS signing key" >> /tmp/diag.log
           echo "$KID" > /tmp/kid.txt
 
       - name: Read the current environment variable keys
         run: |
-          set -euo pipefail
+          set -uo pipefail
           : > /tmp/backend-keys.txt
           : > /tmp/frontend-keys.txt
-          curl -sS --fail-with-body -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$BACKEND_SERVICE_ID/env-vars" -o /tmp/backend-envvars.json
+          BACKEND_STATUS=$(curl -sS -o /tmp/backend-envvars.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$BACKEND_SERVICE_ID/env-vars")
+          echo "GET /services/<backend>/env-vars -> HTTP $BACKEND_STATUS" >> /tmp/diag.log
+          if [ "$BACKEND_STATUS" != "200" ]; then
+            echo "::error::the Render API answered HTTP $BACKEND_STATUS for the backend env vars"
+            exit 1
+          fi
+          echo "backend env var response type: $(jq -r 'type' /tmp/backend-envvars.json)" >> /tmp/diag.log
           jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/backend-envvars.json | sort | tee -a /tmp/backend-keys.txt
           if [ -n "$FRONTEND_SERVICE_ID" ]; then
-            curl -sS --fail-with-body -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$FRONTEND_SERVICE_ID/env-vars" -o /tmp/frontend-envvars.json
-            jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/frontend-envvars.json | sort | tee -a /tmp/frontend-keys.txt
+            FRONTEND_STATUS=$(curl -sS -o /tmp/frontend-envvars.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$FRONTEND_SERVICE_ID/env-vars")
+            echo "GET /services/<frontend>/env-vars -> HTTP $FRONTEND_STATUS" >> /tmp/diag.log
+            if [ "$FRONTEND_STATUS" = "200" ]; then
+              jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/frontend-envvars.json | sort | tee -a /tmp/frontend-keys.txt
+            fi
           fi
 
       - name: Configure nightlamp-api
         run: |
-          set -euo pipefail
+          set -uo pipefail
           : > /tmp/actions.log
           apply_env_var() {
             local service="$1" envfile="$2" key="$3" value="$4"
-            local id current
+            local id current status
             id=$(jq -r --arg k "$key" '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | map(select(.key==$k)) | .[0].id // ""' "$envfile")
             current=$(jq -r --arg k "$key" '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | map(select(.key==$k)) | .[0].value // ""' "$envfile")
             if [ -n "$id" ]; then
@@ -115,29 +146,39 @@ jobs:
                 echo "unchanged $key" >> /tmp/actions.log
                 return 0
               fi
-              curl -sS --fail-with-body -X PATCH \
+              status=$(curl -sS -o "/tmp/patch-$key.json" -w "%{http_code}" -X PATCH \
                 -H "Authorization: Bearer $RENDER_API_KEY" \
                 -H "Content-Type: application/json" \
                 -d "$(jq -n --arg v "$value" '{value:$v}')" \
-                "$RENDER_API/services/$service/env-vars/$id" -o /tmp/patch-$key.json
+                "$RENDER_API/services/$service/env-vars/$id")
+              echo "PATCH $key -> HTTP $status" >> /tmp/diag.log
+              if [ "$status" != "200" ]; then
+                echo "::error::the Render API answered HTTP $status when updating $key"
+                return 1
+              fi
               echo "$key: updated"
               echo "updated $key" >> /tmp/actions.log
             else
-              curl -sS --fail-with-body -X POST \
+              status=$(curl -sS -o "/tmp/post-$key.json" -w "%{http_code}" -X POST \
                 -H "Authorization: Bearer $RENDER_API_KEY" \
                 -H "Content-Type: application/json" \
                 -d "$(jq -n --arg k "$key" --arg v "$value" '{key:$k,value:$v}')" \
-                "$RENDER_API/services/$service/env-vars" -o /tmp/post-$key.json
+                "$RENDER_API/services/$service/env-vars")
+              echo "POST $key -> HTTP $status" >> /tmp/diag.log
+              if [ "$status" != "200" ] && [ "$status" != "201" ]; then
+                echo "::error::the Render API answered HTTP $status when creating $key"
+                return 1
+              fi
               echo "$key: created"
               echo "created $key" >> /tmp/actions.log
             fi
           }
-          apply_env_var "$BACKEND_SERVICE_ID" /tmp/backend-envvars.json CLERK_JWT_ISSUER "$CLERK_ISSUER"
-          apply_env_var "$BACKEND_SERVICE_ID" /tmp/backend-envvars.json CLERK_JWT_PUBLIC_KEY "$CLERK_JWT_PUBLIC_KEY"
+          apply_env_var "$BACKEND_SERVICE_ID" /tmp/backend-envvars.json CLERK_JWT_ISSUER "$CLERK_ISSUER" || exit 1
+          apply_env_var "$BACKEND_SERVICE_ID" /tmp/backend-envvars.json CLERK_JWT_PUBLIC_KEY "$CLERK_JWT_PUBLIC_KEY" || exit 1
 
       - name: Configure nightlamp-frontend when a variable is missing
         run: |
-          set -euo pipefail
+          set -uo pipefail
           if [ -z "$FRONTEND_SERVICE_ID" ]; then
             echo "no frontend service id secret, skipping"
             exit 0
@@ -147,19 +188,11 @@ jobs:
           }
           PUB_INSTANCE=$(decode_clerk_instance "$GITHUB_CLERK_PUBLISHABLE_KEY")
           SEC_INSTANCE=$(decode_clerk_instance "$GITHUB_CLERK_SECRET_KEY")
-          echo "github publishable key instance: ${PUB_INSTANCE:-unknown}"
-          echo "github secret key instance: ${SEC_INSTANCE:-unknown}"
-          if [ -z "$PUB_INSTANCE" ] || [ "$PUB_INSTANCE" != "$CLERK_INSTANCE" ]; then
-            echo "::warning::the repository publishable key does not belong to $CLERK_INSTANCE, refusing to copy it to Render"
-            echo "refused NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY (instance mismatch)" >> /tmp/actions.log
-          fi
-          if [ -z "$SEC_INSTANCE" ] || [ "$SEC_INSTANCE" != "$CLERK_INSTANCE" ]; then
-            echo "::warning::the repository secret key does not belong to $CLERK_INSTANCE, refusing to copy it to Render"
-            echo "refused CLERK_SECRET_KEY (instance mismatch)" >> /tmp/actions.log
-          fi
+          echo "github publishable key instance: ${PUB_INSTANCE:-unknown}" >> /tmp/diag.log
+          echo "github secret key instance: ${SEC_INSTANCE:-unknown}" >> /tmp/diag.log
           apply_frontend_var() {
             local key="$1" value="$2"
-            local id
+            local id status
             id=$(jq -r --arg k "$key" '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | map(select(.key==$k)) | .[0].id // ""' /tmp/frontend-envvars.json)
             if [ -n "$id" ]; then
               echo "$key: already present on the frontend service, left untouched"
@@ -171,35 +204,48 @@ jobs:
               echo "missing $key" >> /tmp/actions.log
               return 0
             fi
-            curl -sS --fail-with-body -X POST \
+            status=$(curl -sS -o "/tmp/post-$key.json" -w "%{http_code}" -X POST \
               -H "Authorization: Bearer $RENDER_API_KEY" \
               -H "Content-Type: application/json" \
               -d "$(jq -n --arg k "$key" --arg v "$value" '{key:$k,value:$v}')" \
-              "$RENDER_API/services/$FRONTEND_SERVICE_ID/env-vars" -o /tmp/post-$key.json
+              "$RENDER_API/services/$FRONTEND_SERVICE_ID/env-vars")
+            echo "POST frontend $key -> HTTP $status" >> /tmp/diag.log
+            if [ "$status" != "200" ] && [ "$status" != "201" ]; then
+              echo "::error::the Render API answered HTTP $status when creating $key on the frontend service"
+              return 1
+            fi
             echo "$key: created on the frontend service"
             echo "created $key" >> /tmp/actions.log
           }
           if [ -z "$PUB_INSTANCE" ] || [ "$PUB_INSTANCE" != "$CLERK_INSTANCE" ]; then
             echo "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY not copied (instance mismatch)"
+            echo "refused NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY (instance mismatch)" >> /tmp/actions.log
           else
-            apply_frontend_var NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY "$GITHUB_CLERK_PUBLISHABLE_KEY"
+            apply_frontend_var NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY "$GITHUB_CLERK_PUBLISHABLE_KEY" || exit 1
           fi
           if [ -z "$SEC_INSTANCE" ] || [ "$SEC_INSTANCE" != "$CLERK_INSTANCE" ]; then
             echo "CLERK_SECRET_KEY not copied (instance mismatch)"
+            echo "refused CLERK_SECRET_KEY (instance mismatch)" >> /tmp/actions.log
           else
-            apply_frontend_var CLERK_SECRET_KEY "$GITHUB_CLERK_SECRET_KEY"
+            apply_frontend_var CLERK_SECRET_KEY "$GITHUB_CLERK_SECRET_KEY" || exit 1
           fi
 
       - name: Re-read the environment variable keys
         run: |
-          set -euo pipefail
+          set -uo pipefail
           : > /tmp/backend-keys-after.txt
           : > /tmp/frontend-keys-after.txt
-          curl -sS --fail-with-body -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$BACKEND_SERVICE_ID/env-vars" -o /tmp/backend-envvars-after.json
-          jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/backend-envvars-after.json | sort | tee -a /tmp/backend-keys-after.txt
+          BACKEND_STATUS=$(curl -sS -o /tmp/backend-envvars-after.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$BACKEND_SERVICE_ID/env-vars")
+          echo "GET /services/<backend>/env-vars (after) -> HTTP $BACKEND_STATUS" >> /tmp/diag.log
+          if [ "$BACKEND_STATUS" = "200" ]; then
+            jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/backend-envvars-after.json | sort | tee -a /tmp/backend-keys-after.txt
+          fi
           if [ -n "$FRONTEND_SERVICE_ID" ]; then
-            curl -sS --fail-with-body -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$FRONTEND_SERVICE_ID/env-vars" -o /tmp/frontend-envvars-after.json
-            jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/frontend-envvars-after.json | sort | tee -a /tmp/frontend-keys-after.txt
+            FRONTEND_STATUS=$(curl -sS -o /tmp/frontend-envvars-after.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$FRONTEND_SERVICE_ID/env-vars")
+            echo "GET /services/<frontend>/env-vars (after) -> HTTP $FRONTEND_STATUS" >> /tmp/diag.log
+            if [ "$FRONTEND_STATUS" = "200" ]; then
+              jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/frontend-envvars-after.json | sort | tee -a /tmp/frontend-keys-after.txt
+            fi
           fi
 
       - name: Publish the key-only report
@@ -209,6 +255,7 @@ jobs:
           BACKEND_NAME=$(cat /tmp/backend-name.txt 2>/dev/null || echo 'unknown')
           FRONTEND_NAME=$(cat /tmp/frontend-name.txt 2>/dev/null || echo 'unknown')
           KID=$(cat /tmp/kid.txt 2>/dev/null || echo 'unknown')
+          DIAG=$(tr '\n' ';' < /tmp/diag.log 2>/dev/null || echo '')
           jq -n \
             --arg run "$GITHUB_RUN_ID" \
             --arg sha "$GITHUB_SHA" \
@@ -216,12 +263,13 @@ jobs:
             --arg kid "$KID" \
             --arg backendName "$BACKEND_NAME" \
             --arg frontendName "$FRONTEND_NAME" \
-            --arg actions "$(tr '\n' ';' < /tmp/actions.log)" \
-            --arg backendBefore "$(tr '\n' ',' < /tmp/backend-keys.txt)" \
-            --arg backendAfter "$(tr '\n' ',' < /tmp/backend-keys-after.txt)" \
-            --arg frontendBefore "$(tr '\n' ',' < /tmp/frontend-keys.txt)" \
-            --arg frontendAfter "$(tr '\n' ',' < /tmp/frontend-keys-after.txt)" \
-            '{run:$run,sha:$sha,branch:$branch,backendService:$backendName,frontendService:$frontendName,jwksKid:$kid,actions:$actions,backendEnvVarKeysBefore:$backendBefore,backendEnvVarKeysAfter:$backendAfter,frontendEnvVarKeysBefore:$frontendBefore,frontendEnvVarKeysAfter:$frontendAfter,valuesIncluded:false}' > /tmp/report.json
+            --arg diag "$DIAG" \
+            --arg actions "$(tr '\n' ';' < /tmp/actions.log 2>/dev/null || echo '')" \
+            --arg backendBefore "$(tr '\n' ',' < /tmp/backend-keys.txt 2>/dev/null || echo '')" \
+            --arg backendAfter "$(tr '\n' ',' < /tmp/backend-keys-after.txt 2>/dev/null || echo '')" \
+            --arg frontendBefore "$(tr '\n' ',' < /tmp/frontend-keys.txt 2>/dev/null || echo '')" \
+            --arg frontendAfter "$(tr '\n' ',' < /tmp/frontend-keys-after.txt 2>/dev/null || echo '')" \
+            '{run:$run,sha:$sha,branch:$branch,backendService:$backendName,frontendService:$frontendName,jwksKid:$kid,diagnostics:$diag,actions:$actions,backendEnvVarKeysBefore:$backendBefore,backendEnvVarKeysAfter:$backendAfter,frontendEnvVarKeysBefore:$frontendBefore,frontendEnvVarKeysAfter:$frontendAfter,valuesIncluded:false}' > /tmp/report.json
           cat /tmp/report.json
           {
             echo "## Render auth configuration report"
@@ -229,13 +277,14 @@ jobs:
             echo "- run: $GITHUB_RUN_ID"
             echo "- sha: $GITHUB_SHA"
             echo "- backend service: $BACKEND_NAME"
-            echo "- frontend service: $(cat /tmp/frontend-name.txt)"
-            echo "- jwks signing key id: $(cat /tmp/kid.txt)"
-            echo "- actions: $(tr '\n' ';' < /tmp/actions.log)"
-            echo "- backend env var keys before: $(tr '\n' ',' < /tmp/backend-keys.txt)"
-            echo "- backend env var keys after: $(tr '\n' ',' < /tmp/backend-keys-after.txt)"
-            echo "- frontend env var keys before: $(tr '\n' ',' < /tmp/frontend-keys.txt)"
-            echo "- frontend env var keys after: $(tr '\n' ',' < /tmp/frontend-keys-after.txt)"
+            echo "- frontend service: $(cat /tmp/frontend-name.txt 2>/dev/null || echo unknown)"
+            echo "- jwks signing key id: $(cat /tmp/kid.txt 2>/dev/null || echo unknown)"
+            echo "- diagnostics: $(tr '\n' ';' < /tmp/diag.log 2>/dev/null || echo '')"
+            echo "- actions: $(tr '\n' ';' < /tmp/actions.log 2>/dev/null || echo '')"
+            echo "- backend env var keys before: $(tr '\n' ',' < /tmp/backend-keys.txt 2>/dev/null || echo '')"
+            echo "- backend env var keys after: $(tr '\n' ',' < /tmp/backend-keys-after.txt 2>/dev/null || echo '')"
+            echo "- frontend env var keys before: $(tr '\n' ',' < /tmp/frontend-keys.txt 2>/dev/null || echo '')"
+            echo "- frontend env var keys after: $(tr '\n' ',' < /tmp/frontend-keys-after.txt 2>/dev/null || echo '')"
           } >> "$GITHUB_STEP_SUMMARY"
           git config user.name "nightlamp-ci"
           git config user.email "ci@nightlamp.local"
