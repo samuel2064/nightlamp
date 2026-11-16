@@ -1,10 +1,11 @@
 {
-  "run": "43974873199",
-  "sha": "8b28c97158a63d578ec273c4c55b21baaf1b9db2",
+  "run": "43977254901",
+  "sha": "5b4aae9d9a45c4b544f013a97953a5c4b05641ea",
   "branch": "ops/render-auth-config",
   "backendService": "unknown",
   "frontendService": "unknown",
   "jwksKid": "unknown",
+  "diagnostics": "GET /services/<backend> -> HTTP 200;backend response top-level keys: autoDeploy,autoDeployTrigger,branch,createdAt,dashboardUrl,id,name,notifyOnFail,ownerId,repo,rootDir,serviceDetails,slug,suspended,suspenders,type,updatedAt;backend service: nightlamp-backend (web_service);",
   "actions": "",
   "backendEnvVarKeysBefore": "",
   "backendEnvVarKeysAfter": "",
