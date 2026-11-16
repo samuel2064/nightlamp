@@ -288,9 +288,6 @@ describe('Billing - BillingApi', () => {
       baseUrl: 'http://localhost:3001',
     });
 
-    const subs = new SubscriptionModel(db);
-    subs.createCustomer('test@nightlamp.dev', 'Test User');
-    const cust = subs.getCustomerByStripeId(null as any) || subs.getCustomer(subs.createCustomer('cust_for_test', 'Test').id);
   });
 
   it('GET /api/billing/plans returns all plans', async () => {
@@ -305,7 +302,7 @@ describe('Billing - BillingApi', () => {
   it('POST /api/billing/customer creates a customer', async () => {
     const res = await handleRequest(api, 'POST', '/api/billing/customer', JSON.stringify({ email: 'new@test.com', name: 'New User' }));
     const data = JSON.parse(res.body);
-    expect(data.customer.email).to.equal('new@test.com');
+    expect(data.customer.email).to.equal('billing@test.com');
     expect(data.customer.name).to.equal('New User');
     expect(data.customer.id).to.be.a('string');
   });
@@ -319,8 +316,9 @@ describe('Billing - BillingApi', () => {
 
   it('POST /api/billing/create-checkout-session creates checkout', async () => {
     const subs = new SubscriptionModel(db);
-    const cust = subs.createCustomer('checkout@test.com');
-    const res = await handleRequest(api, 'POST', '/api/billing/create-checkout-session', JSON.stringify({ customerId: cust.id, planTier: 'advanced' }));
+    const cust = subs.createCustomer('billing@test.com');
+    subs.updateStripeCustomerId(cust.id, 'cus_test');
+    const res = await handleRequest(api, 'POST', '/api/billing/create-checkout-session', JSON.stringify({ planTier: 'advanced' }));
     const data = JSON.parse(res.body);
     expect(data.url).to.be.a('string');
     expect(data.sessionId).to.be.a('string');
@@ -334,23 +332,24 @@ describe('Billing - BillingApi', () => {
 
   it('POST /api/billing/create-checkout-session rejects invalid tier', async () => {
     const subs = new SubscriptionModel(db);
-    const cust = subs.createCustomer('bad-tier@test.com');
-    const res = await handleRequest(api, 'POST', '/api/billing/create-checkout-session', JSON.stringify({ customerId: cust.id, planTier: 'platinum' }));
+    const cust = subs.createCustomer('billing@test.com');
+    subs.updateStripeCustomerId(cust.id, 'cus_test');
+    const res = await handleRequest(api, 'POST', '/api/billing/create-checkout-session', JSON.stringify({ planTier: 'platinum' }));
     expect(res.statusCode).to.equal(400);
     const data = JSON.parse(res.body);
     expect(data.error).to.include('Invalid plan tier');
   });
 
   it('POST /api/billing/create-checkout-session rejects unknown customer', async () => {
-    const res = await handleRequest(api, 'POST', '/api/billing/create-checkout-session', JSON.stringify({ customerId: 'nonexistent', planTier: 'basic' }));
+    const res = await handleRequest(api, 'POST', '/api/billing/create-checkout-session', JSON.stringify({ planTier: 'basic' }));
     expect(res.statusCode).to.equal(404);
   });
 
   it('GET /api/billing/subscription returns subscription with limits', async () => {
     const subs = new SubscriptionModel(db);
-    const cust = subs.createCustomer('sub-check@test.com');
+    const cust = subs.createCustomer('billing@test.com');
     subs.createSubscription(cust.id, 'basic');
-    const res = await handleRequest(api, 'GET', `/api/billing/subscription?customerId=${cust.id}`);
+    const res = await handleRequest(api, 'GET', '/api/billing/subscription');
     const data = JSON.parse(res.body);
     expect(data.subscription).to.not.be.null;
     expect(data.subscription.planTier).to.equal('basic');
@@ -358,25 +357,25 @@ describe('Billing - BillingApi', () => {
   });
 
   it('GET /api/billing/subscription returns null for no subscription', async () => {
-    const res = await handleRequest(api, 'GET', '/api/billing/subscription?customerId=nonexistent');
+    const res = await handleRequest(api, 'GET', '/api/billing/subscription');
     const data = JSON.parse(res.body);
     expect(data.subscription).to.be.null;
   });
 
-  it('GET /api/billing/subscription requires customerId', async () => {
-    const res = await handleRequest(api, 'GET', '/api/billing/subscription');
+  it('GET /api/billing/subscription rejects client customerId', async () => {
+    const res = await handleRequest(api, 'GET', '/api/billing/subscription?customerId=untrusted');
     expect(res.statusCode).to.equal(400);
   });
 
   it('GET /api/billing/usage returns usage with remaining', async () => {
     const subs = new SubscriptionModel(db);
-    const cust = subs.createCustomer('usage-check@test.com');
+    const cust = subs.createCustomer('billing@test.com');
     subs.createSubscription(cust.id, 'advanced');
     const usage = new UsageTracker(db);
     usage.recordUsage(cust.id, 'monitors', 3);
     usage.recordUsage(cust.id, 'reports', 10);
 
-    const res = await handleRequest(api, 'GET', `/api/billing/usage?customerId=${cust.id}`);
+    const res = await handleRequest(api, 'GET', '/api/billing/usage');
     const data = JSON.parse(res.body);
     expect(data.usage.monitors).to.equal(3);
     expect(data.usage.reports).to.equal(10);
@@ -384,20 +383,20 @@ describe('Billing - BillingApi', () => {
     expect(data.remaining.monitors).to.equal(17);
   });
 
-  it('GET /api/billing/usage requires customerId', async () => {
-    const res = await handleRequest(api, 'GET', '/api/billing/usage');
+  it('GET /api/billing/usage rejects client customerId', async () => {
+    const res = await handleRequest(api, 'GET', '/api/billing/usage?customerId=untrusted');
     expect(res.statusCode).to.equal(400);
   });
 
-  it('GET /api/billing/portal requires customerId', async () => {
-    const res = await handleRequest(api, 'GET', '/api/billing/portal');
+  it('GET /api/billing/portal rejects client customerId', async () => {
+    const res = await handleRequest(api, 'GET', '/api/billing/portal?customerId=untrusted');
     expect(res.statusCode).to.equal(400);
   });
 
   it('GET /api/billing/portal returns 404 for customer without stripe ID', async () => {
     const subs = new SubscriptionModel(db);
-    const cust = subs.createCustomer('no-stripe@test.com');
-    const res = await handleRequest(api, 'GET', `/api/billing/portal?customerId=${cust.id}`);
+    subs.createCustomer('billing@test.com');
+    const res = await handleRequest(api, 'GET', '/api/billing/portal');
     expect(res.statusCode).to.equal(404);
   });
 
@@ -707,6 +706,8 @@ function handleRequest(api: BillingApi, method: string, url: string, body?: stri
       },
     } as any;
 
-    api.handle(req, res);
+    api.handle(req, res, url === '/api/billing/webhook' ? null : {
+      userId: 'billing-user', email: 'billing@test.com', teamId: null, role: 'owner', token: 'verified-test-context',
+    });
   });
 }

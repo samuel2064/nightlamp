@@ -39,7 +39,7 @@ Self-serve billing portal: plan overview, plan change, payment method management
 
 - Plan name, price, billing interval
 - Usage meters: monitors used, reports used, storage used
-- Usage data served by: `GET /api/billing/usage?customerId=...`
+- Usage data served by: `GET /api/billing/usage` (customer resolved from verified authentication)
 - CTA: "Change Plan" opens comparison table
 
 ### 2. Plan Comparison Table
