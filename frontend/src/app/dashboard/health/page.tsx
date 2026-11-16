@@ -8,6 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { RefreshCw, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { EmptyState } from '@/components/ui/empty-state'
 import {
   deriveHealthStatus,
   healthLevelVariant,
@@ -66,6 +67,22 @@ export default function HealthPage() {
         </Button>
       </div>
     </div>
+  }
+
+  if (!health) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-2xl font-semibold">Health</h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          System health overview
+        </p>
+        <EmptyState
+          icon={AlertTriangle}
+          title="No health data"
+          description="Health checks will appear here once your app sends its first health check event."
+        />
+      </div>
+    )
   }
 
   // Status is derived worst-of from the live counters; the stored backend

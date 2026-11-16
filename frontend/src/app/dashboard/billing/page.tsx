@@ -8,6 +8,7 @@ import { RefreshCw, CreditCard, ExternalLink, AlertCircle } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
+import { EmptyState } from '@/components/ui/empty-state'
 
 // TODO: Backend billing portal endpoint (/api/billing/portal) not yet implemented.
 // Requires Stripe customer portal integration on the backend.
@@ -61,6 +62,22 @@ export default function BillingPage() {
             <RefreshCw className="size-3 mr-1" /> Retry
           </Button>
         </div>
+      </div>
+    )
+  }
+
+  if (!data) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-2xl font-semibold">Billing</h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          Subscription and billing overview
+        </p>
+        <EmptyState
+          icon={RefreshCw}
+          title="No billing data"
+          description="Subscription and billing data will appear here once your app sends its first billing event."
+        />
       </div>
     )
   }
