@@ -3,7 +3,7 @@ import * as http from 'http';
 import { createDatabase } from '../db/schema';
 import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
-import { createTestToken } from './setup';
+import { createTestToken, TEST_CLERK_USER_ID, TEST_LOCAL_USER_ID } from './setup';
 
 describe('Notification Service', function () {
   let db: Database;
@@ -327,7 +327,7 @@ describe('Notification Service', function () {
           ...(options || { method: 'GET' }),
           headers: {
             ...(options?.headers || {}),
-            Authorization: `Bearer ${createTestToken()}`,
+            Authorization: `Bearer ${options?.token || createTestToken()}`,
           },
         };
         const req = require('http').request(url, requestOptions, (res: any) => {
@@ -398,31 +398,38 @@ describe('Notification Service', function () {
       assert.strictEqual(result.error, 'name, type, and config are required');
     });
 
-    it('POST /api/notifications/channels should support teamId', async function () {
+    it('POST /api/notifications/channels should derive teamId from the authenticated tenant', async function () {
       const teamId = uuidv4();
-      db.run('INSERT INTO teams (id, name, slug, owner_id) VALUES (?, ?, ?, ?)', [teamId, 'Notif Team', 'notif-team', 'user1']);
+      db.run('INSERT OR IGNORE INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)', [TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID, 'owner@example.com', 'Owner']);
+      db.run('INSERT INTO teams (id, name, slug, owner_id) VALUES (?, ?, ?, ?)', [teamId, 'Notif Team', 'notif-team', TEST_LOCAL_USER_ID]);
+      db.run('INSERT INTO memberships (id, team_id, user_id, role) VALUES (?, ?, ?, ?)', [uuidv4(), teamId, TEST_LOCAL_USER_ID, 'owner']);
       const result = await fetchFromApi('/api/notifications/channels', {
         method: 'POST',
-        body: { name: 'Team Channel', type: 'slack-webhook', config: { webhookUrl: 'https://hooks.slack.com/services/test' }, teamId },
+        token: createTestToken({ org_id: teamId }),
+        body: { name: 'Team Channel', type: 'slack-webhook', config: { webhookUrl: 'https://hooks.slack.com/services/test' } },
       });
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.teamId, teamId);
     });
 
-    it('GET /api/notifications/channels should filter by teamId', async function () {
+    it('GET /api/notifications/channels should filter by the authenticated tenant', async function () {
       const teamId1 = uuidv4();
       const teamId2 = uuidv4();
-      db.run('INSERT INTO teams (id, name, slug, owner_id) VALUES (?, ?, ?, ?)', [teamId1, 'Team A', 'team-a', 'u1']);
-      db.run('INSERT INTO teams (id, name, slug, owner_id) VALUES (?, ?, ?, ?)', [teamId2, 'Team B', 'team-b', 'u2']);
+      db.run('INSERT OR IGNORE INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)', [TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID, 'owner@example.com', 'Owner']);
+      db.run('INSERT INTO teams (id, name, slug, owner_id) VALUES (?, ?, ?, ?)', [teamId1, 'Team A', 'team-a', TEST_LOCAL_USER_ID]);
+      db.run('INSERT INTO teams (id, name, slug, owner_id) VALUES (?, ?, ?, ?)', [teamId2, 'Team B', 'team-b', 'other-user']);
+      db.run('INSERT INTO memberships (id, team_id, user_id, role) VALUES (?, ?, ?, ?)', [uuidv4(), teamId1, TEST_LOCAL_USER_ID, 'owner']);
+      const token = createTestToken({ org_id: teamId1 });
       await fetchFromApi('/api/notifications/channels', {
         method: 'POST',
-        body: { name: 'Channel A', type: 'slack-webhook', config: { webhookUrl: 'https://hooks.slack.com/services/a' }, teamId: teamId1 },
+        token,
+        body: { name: 'Channel A', type: 'slack-webhook', config: { webhookUrl: 'https://hooks.slack.com/services/a' } },
       });
-      await fetchFromApi('/api/notifications/channels', {
-        method: 'POST',
-        body: { name: 'Channel B', type: 'slack-webhook', config: { webhookUrl: 'https://hooks.slack.com/services/b' }, teamId: teamId2 },
-      });
-      const result = await fetchFromApi(`/api/notifications/channels?teamId=${teamId1}`);
+      db.run(
+        `INSERT INTO alert_channels (id, name, type, config, team_id) VALUES (?, 'Channel B', 'slack', ?, ?)`,
+        [uuidv4(), JSON.stringify({ webhookUrl: 'https://hooks.slack.com/services/b' }), teamId2],
+      );
+      const result = await fetchFromApi(`/api/notifications/channels?teamId=${teamId1}`, { token });
       assert.strictEqual(result.channels.length, 1);
       assert.strictEqual(result.channels[0].name, 'Channel A');
     });

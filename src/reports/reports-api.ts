@@ -1,5 +1,7 @@
 import { Database } from 'sql.js';
 import { IncomingMessage, ServerResponse } from 'http';
+import type { AuthContext } from '../api/auth';
+import { tenantFilter } from '../api/tenant';
 
 interface CacheEntry {
   data: any;
@@ -12,28 +14,29 @@ export class ReportsApi {
 
   constructor(private db: Database) {}
 
-  handle(req: IncomingMessage, res: ServerResponse): boolean {
+  handle(req: IncomingMessage, res: ServerResponse, auth?: AuthContext | null): boolean {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = parsedUrl.pathname;
+    const teamId = auth ? auth.teamId : null;
 
     try {
       if (path === '/api/reports/incident-trends' && req.method === 'GET') {
-        this.handleIncidentTrends(parsedUrl, res);
+        this.handleIncidentTrends(parsedUrl, res, teamId);
         return true;
       }
 
       if (path === '/api/reports/uptime-stats' && req.method === 'GET') {
-        this.handleUptimeStats(parsedUrl, res);
+        this.handleUptimeStats(parsedUrl, res, teamId);
         return true;
       }
 
       if (path === '/api/reports/playbook-effectiveness' && req.method === 'GET') {
-        this.handlePlaybookEffectiveness(parsedUrl, res);
+        this.handlePlaybookEffectiveness(parsedUrl, res, teamId);
         return true;
       }
 
       if (path === '/api/reports/team-summary' && req.method === 'GET') {
-        this.handleTeamSummary(parsedUrl, res);
+        this.handleTeamSummary(parsedUrl, res, teamId);
         return true;
       }
     } catch (err: any) {
@@ -96,12 +99,13 @@ export class ReportsApi {
     }
   }
 
-  private handleIncidentTrends(parsedUrl: URL, res: ServerResponse): void {
+  private handleIncidentTrends(parsedUrl: URL, res: ServerResponse, teamId: string | null): void {
     const format = parsedUrl.searchParams.get('format') || 'json';
     const periodDays = this.parsePeriod(parsedUrl.searchParams);
     const granularity = this.getGranularity(periodDays);
+    const scope = tenantFilter('team_id', teamId);
 
-    const data = this.getCachedOrFetch(`incident-trends:${periodDays}:${granularity}`, () => {
+    const data = this.getCachedOrFetch(`incident-trends:${teamId || 'personal'}:${periodDays}:${granularity}`, () => {
       const dateTrunc = granularity === 'hour'
         ? "strftime('%Y-%m-%dT%H:00:00', detected_at)"
         : granularity === 'week'
@@ -114,10 +118,10 @@ export class ReportsApi {
                COUNT(*) as count,
                COUNT(DISTINCT check_id) as affected_checks
         FROM failure_events
-        WHERE detected_at >= datetime('now', '-${periodDays} days')
+        WHERE detected_at >= datetime('now', '-${periodDays} days') AND ${scope.clause}
         GROUP BY period, failure_type
         ORDER BY period ASC
-      `);
+      `, scope.params);
 
       const timeBuckets = new Map<string, Map<string, { count: number; affectedChecks: number }>>();
       const allTypes = new Set<string>();
@@ -179,16 +183,17 @@ export class ReportsApi {
     }
   }
 
-  private handleUptimeStats(parsedUrl: URL, res: ServerResponse): void {
+  private handleUptimeStats(parsedUrl: URL, res: ServerResponse, teamId: string | null): void {
     const format = parsedUrl.searchParams.get('format') || 'json';
     const periodDays = this.parsePeriod(parsedUrl.searchParams);
     const monitorId = parsedUrl.searchParams.get('monitor_id') || '';
+    const scope = tenantFilter('team_id', teamId);
 
-    const data = this.getCachedOrFetch(`uptime-stats:${monitorId}:${periodDays}`, () => {
+    const data = this.getCachedOrFetch(`uptime-stats:${teamId || 'personal'}:${monitorId}:${periodDays}`, () => {
       if (!monitorId) {
         const allMonitors = this.db.exec(`
-          SELECT id, name, source FROM checks WHERE enabled = 1 ORDER BY name
-        `);
+          SELECT id, name, source FROM checks WHERE enabled = 1 AND ${scope.clause} ORDER BY name
+        `, scope.params);
         const monitors = allMonitors.length > 0
           ? allMonitors[0].values.map((r: any) => ({ id: r[0], name: r[1], source: r[2] }))
           : [];
@@ -197,9 +202,9 @@ export class ReportsApi {
           const results = this.db.exec(`
             SELECT status, COUNT(*) as cnt
             FROM check_results
-            WHERE check_id = ? AND executed_at >= datetime('now', '-${periodDays} days')
+            WHERE check_id = ? AND executed_at >= datetime('now', '-${periodDays} days') AND ${scope.clause}
             GROUP BY status
-          `, [m.id]);
+          `, [m.id, ...scope.params]);
 
           let total = 0;
           let passed = 0;
@@ -226,7 +231,7 @@ export class ReportsApi {
       }
 
       const monitorInfo = this.db.exec(
-        `SELECT id, name, source FROM checks WHERE id = ?`, [monitorId]
+        `SELECT id, name, source FROM checks WHERE id = ? AND ${scope.clause}`, [monitorId, ...scope.params]
       );
       if (monitorInfo.length === 0 || monitorInfo[0].values.length === 0) {
         return { error: 'Monitor not found' };
@@ -241,10 +246,10 @@ export class ReportsApi {
                status,
                COUNT(*) as count
         FROM check_results
-        WHERE check_id = ? AND executed_at >= datetime('now', '-${periodDays} days')
+        WHERE check_id = ? AND executed_at >= datetime('now', '-${periodDays} days') AND ${scope.clause}
         GROUP BY day, status
         ORDER BY day ASC
-      `, [monitorId]);
+      `, [monitorId, ...scope.params]);
 
       const dailyMap = new Map<string, { total: number; pass: number; fail: number }>();
       if (timeResults.length > 0) {
@@ -271,9 +276,9 @@ export class ReportsApi {
       const respTimeResults = this.db.exec(`
         SELECT cr.executed_at, cr.status
         FROM check_results cr
-        WHERE cr.check_id = ? AND cr.executed_at >= datetime('now', '-${periodDays} days')
+        WHERE cr.check_id = ? AND cr.executed_at >= datetime('now', '-${periodDays} days') AND ${scope.clause}
         ORDER BY cr.executed_at ASC
-      `, [monitorId]);
+      `, [monitorId, ...scope.params]);
 
       const responseTimes = respTimeResults.length > 0
         ? respTimeResults[0].values.map((r: any) => ({ timestamp: r[0], status: r[1] }))
@@ -323,17 +328,19 @@ export class ReportsApi {
     }
   }
 
-  private handlePlaybookEffectiveness(parsedUrl: URL, res: ServerResponse): void {
+  private handlePlaybookEffectiveness(parsedUrl: URL, res: ServerResponse, teamId: string | null): void {
     const format = parsedUrl.searchParams.get('format') || 'json';
     const playbookId = parsedUrl.searchParams.get('playbook_id') || '';
+    const scope = tenantFilter('team_id', teamId);
 
-    const data = this.getCachedOrFetch(`playbook-effectiveness:${playbookId}`, () => {
+    const data = this.getCachedOrFetch(`playbook-effectiveness:${teamId || 'personal'}:${playbookId}`, () => {
       if (!playbookId) {
         const allEntries = this.db.exec(`
           SELECT pe.id, pe.failure_type, pe.title, pe.occurrence_count, pe.first_seen_at, pe.last_occurrence_at
           FROM playbook_entries pe
+          WHERE ${scope.clause}
           ORDER BY pe.occurrence_count DESC
-        `);
+        `, scope.params);
 
         const entries = allEntries.length > 0
           ? allEntries[0].values.map((r: any) => ({
@@ -352,8 +359,8 @@ export class ReportsApi {
                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successes,
                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failures,
                    SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) as skips
-            FROM remediation_log WHERE playbook_entry_id = ?
-          `, [e.id]);
+            FROM remediation_log WHERE playbook_entry_id = ? AND ${scope.clause}
+          `, [e.id, ...scope.params]);
 
           let total = 0, successes = 0, failures = 0, skips = 0;
           if (remResults.length > 0 && remResults[0].values.length > 0) {
@@ -381,8 +388,8 @@ export class ReportsApi {
 
       const entryResult = this.db.exec(`
         SELECT id, failure_type, title, occurrence_count, first_seen_at, last_occurrence_at, body
-        FROM playbook_entries WHERE id = ?
-      `, [playbookId]);
+        FROM playbook_entries WHERE id = ? AND ${scope.clause}
+      `, [playbookId, ...scope.params]);
 
       if (entryResult.length === 0 || entryResult[0].values.length === 0) {
         return { error: 'Playbook entry not found' };
@@ -402,9 +409,9 @@ export class ReportsApi {
       const remHistory = this.db.exec(`
         SELECT id, script, status, output, executed_at
         FROM remediation_log
-        WHERE playbook_entry_id = ?
+        WHERE playbook_entry_id = ? AND ${scope.clause}
         ORDER BY executed_at DESC
-      `, [playbookId]);
+      `, [playbookId, ...scope.params]);
 
       const remediationHistory = remHistory.length > 0
         ? remHistory[0].values.map((r: any) => ({
@@ -451,35 +458,38 @@ export class ReportsApi {
     }
   }
 
-  private handleTeamSummary(parsedUrl: URL, res: ServerResponse): void {
+  private handleTeamSummary(parsedUrl: URL, res: ServerResponse, teamId: string | null): void {
     const format = parsedUrl.searchParams.get('format') || 'json';
+    const scope = tenantFilter('team_id', teamId);
 
-    const data = this.getCachedOrFetch('team-summary', () => {
-      const teamCount = this.db.exec('SELECT COUNT(*) FROM teams');
+    const data = this.getCachedOrFetch(`team-summary:${teamId || 'personal'}`, () => {
+      const teamCount = teamId
+        ? this.db.exec('SELECT COUNT(*) FROM teams WHERE id = ?', [teamId])
+        : this.db.exec('SELECT COUNT(*) FROM teams WHERE id IS NULL');
       const totalTeams = teamCount.length > 0 ? (teamCount[0].values[0]?.[0] as number) || 0 : 0;
 
-      const monitorCount = this.db.exec('SELECT COUNT(*) FROM checks WHERE enabled = 1');
+      const monitorCount = this.db.exec(`SELECT COUNT(*) FROM checks WHERE enabled = 1 AND ${scope.clause}`, scope.params);
       const totalMonitors = monitorCount.length > 0 ? (monitorCount[0].values[0]?.[0] as number) || 0 : 0;
 
-      const checkResultCount = this.db.exec("SELECT COUNT(*) FROM check_results WHERE executed_at >= datetime('now', '-30 days')");
+      const checkResultCount = this.db.exec(`SELECT COUNT(*) FROM check_results WHERE executed_at >= datetime('now', '-30 days') AND ${scope.clause}`, scope.params);
       const totalCheckResults = checkResultCount.length > 0 ? (checkResultCount[0].values[0]?.[0] as number) || 0 : 0;
 
-      const incidentCount = this.db.exec("SELECT COUNT(*) FROM failure_events WHERE detected_at >= datetime('now', '-30 days')");
+      const incidentCount = this.db.exec(`SELECT COUNT(*) FROM failure_events WHERE detected_at >= datetime('now', '-30 days') AND ${scope.clause}`, scope.params);
       const totalIncidents = incidentCount.length > 0 ? (incidentCount[0].values[0]?.[0] as number) || 0 : 0;
 
-      const criticalIncidents = this.db.exec("SELECT COUNT(*) FROM failure_events WHERE severity = 'critical' AND detected_at >= datetime('now', '-30 days')");
+      const criticalIncidents = this.db.exec(`SELECT COUNT(*) FROM failure_events WHERE severity = 'critical' AND detected_at >= datetime('now', '-30 days') AND ${scope.clause}`, scope.params);
       const totalCritical = criticalIncidents.length > 0 ? (criticalIncidents[0].values[0]?.[0] as number) || 0 : 0;
 
-      const activeRemediations = this.db.exec("SELECT COUNT(*) FROM remediation_runs WHERE status = 'pending'");
+      const activeRemediations = this.db.exec(`SELECT COUNT(*) FROM remediation_runs WHERE status = 'pending' AND ${scope.clause}`, scope.params);
       const totalActiveRemediations = activeRemediations.length > 0 ? (activeRemediations[0].values[0]?.[0] as number) || 0 : 0;
 
       const failureTypes = this.db.exec(`
         SELECT failure_type, COUNT(*) as cnt
         FROM failure_events
-        WHERE detected_at >= datetime('now', '-30 days')
+        WHERE detected_at >= datetime('now', '-30 days') AND ${scope.clause}
         GROUP BY failure_type
         ORDER BY cnt DESC
-      `);
+      `, scope.params);
 
       const failureTypeBreakdown = failureTypes.length > 0
         ? failureTypes[0].values.map((r: any) => ({ failureType: r[0], count: r[1] }))
@@ -488,15 +498,17 @@ export class ReportsApi {
       const bySeverity = this.db.exec(`
         SELECT severity, COUNT(*) as cnt
         FROM failure_events
-        WHERE detected_at >= datetime('now', '-30 days')
+        WHERE detected_at >= datetime('now', '-30 days') AND ${scope.clause}
         GROUP BY severity
-      `);
+      `, scope.params);
 
       const severityBreakdown = bySeverity.length > 0
         ? bySeverity[0].values.map((r: any) => ({ severity: r[0], count: r[1] }))
         : [];
 
-      const totalMembers = this.db.exec('SELECT COUNT(*) FROM memberships');
+      const totalMembers = teamId
+        ? this.db.exec('SELECT COUNT(*) FROM memberships WHERE team_id = ?', [teamId])
+        : this.db.exec('SELECT COUNT(*) FROM memberships WHERE team_id IS NULL');
       const memberCount = totalMembers.length > 0 ? (totalMembers[0].values[0]?.[0] as number) || 0 : 0;
 
       return {

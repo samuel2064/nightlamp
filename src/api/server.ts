@@ -24,6 +24,7 @@ import { handleSSERequest } from './sse';
 import { createPlaybookEngine } from '../playbook/engine';
 import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
 import { ApiAuthError, AuthContext, assertTeamMembership, authenticateRequest, requireRole } from './auth';
+import { tenantFilter, rowBelongsToTenant } from './tenant';
 
 export interface ApiConfig {
   port: number;
@@ -88,14 +89,15 @@ function isPublicEndpoint(path: string, method: string | undefined): boolean {
   return matchesEndpoint(path, method, PUBLIC_ENDPOINTS);
 }
 
-function buildEventsPayload(db: Database, params: URLSearchParams): { events: any[]; count: number; limit: number; offset: number } {
+function buildEventsPayload(db: Database, params: URLSearchParams, teamId: string | null): { events: any[]; count: number; limit: number; offset: number } {
   const limit = Math.min(parseInt(params.get('limit') || '50', 10), 200);
   const offset = parseInt(params.get('offset') || '0', 10);
   const type = params.get('type') || '';
   const severity = params.get('severity') || '';
+  const tenantScope = tenantFilter('team_id', teamId);
 
-  let sql = 'SELECT id, check_id, failure_type, severity, title, description, detected_at, acknowledged FROM failure_events WHERE 1=1';
-  const queryParams: any[] = [];
+  let sql = `SELECT id, check_id, failure_type, severity, title, description, detected_at, acknowledged FROM failure_events WHERE ${tenantScope.clause}`;
+  const queryParams: any[] = [...tenantScope.params];
 
   if (type) {
     sql += ' AND failure_type = ?';
@@ -124,13 +126,14 @@ function buildEventsPayload(db: Database, params: URLSearchParams): { events: an
   return { events, count: events.length, limit, offset };
 }
 
-function buildCheckResultsPayload(db: Database, params: URLSearchParams): { results: any[]; count: number; limit: number; offset: number } {
+function buildCheckResultsPayload(db: Database, params: URLSearchParams, teamId: string | null): { results: any[]; count: number; limit: number; offset: number } {
   const limit = Math.min(parseInt(params.get('limit') || '50', 10), 200);
   const offset = parseInt(params.get('offset') || '0', 10);
   const status = params.get('status') || '';
+  const tenantScope = tenantFilter('team_id', teamId);
 
-  let sql = 'SELECT id, check_id, status, summary, executed_at FROM check_results WHERE 1=1';
-  const queryParams: any[] = [];
+  let sql = `SELECT id, check_id, status, summary, executed_at FROM check_results WHERE ${tenantScope.clause}`;
+  const queryParams: any[] = [...tenantScope.params];
 
   if (status) {
     sql += ' AND status = ?';
@@ -229,7 +232,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         }
       }
 
-      const scope = auth ? auth.userId : 'public';
+      const scope = auth ? `${auth.userId}:${auth.teamId || 'personal'}` : 'public';
+      const teamId = auth ? auth.teamId : null;
 
       if (path === '/api/performance/latency' || path === '/api/performance/latency/') {
         res.end(JSON.stringify({ latency: latencyTracker.summary() }));
@@ -243,7 +247,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             res.end(cached);
             return;
           }
-          const payload = buildEventsPayload(db, parsedUrl.searchParams);
+          const payload = buildEventsPayload(db, parsedUrl.searchParams, teamId);
           const body = JSON.stringify(payload);
           hotCache.set(ck, body);
           res.end(body);
@@ -262,7 +266,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             res.end(cached);
             return;
           }
-          const payload = buildCheckResultsPayload(db, parsedUrl.searchParams);
+          const payload = buildCheckResultsPayload(db, parsedUrl.searchParams, teamId);
           const body = JSON.stringify(payload);
           hotCache.set(ck, body);
           res.end(body);
@@ -281,8 +285,10 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             res.end(cached);
             return;
           }
+          const tenantScope = tenantFilter('team_id', teamId);
           const result = db.exec(
-            'SELECT id, failure_type, title, first_seen_at, last_occurrence_at, occurrence_count FROM playbook_entries ORDER BY last_occurrence_at DESC'
+            `SELECT id, failure_type, title, first_seen_at, last_occurrence_at, occurrence_count FROM playbook_entries WHERE ${tenantScope.clause} ORDER BY last_occurrence_at DESC`,
+            tenantScope.params,
           );
           const entries = result.length > 0 ? result[0].values.map((row: any) => ({
             id: row[0],
@@ -309,9 +315,10 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           res.end(JSON.stringify({ entries: [], count: 0, query: q }));
           return;
         }
+        const tenantScope = tenantFilter('team_id', teamId);
         const result = db.exec(
-          `SELECT id, failure_type, title, first_seen_at, last_occurrence_at, occurrence_count FROM playbook_entries WHERE LOWER(title) LIKE ? OR LOWER(failure_type) LIKE ? ORDER BY last_occurrence_at DESC`,
-          [`%${q}%`, `%${q}%`]
+          `SELECT id, failure_type, title, first_seen_at, last_occurrence_at, occurrence_count FROM playbook_entries WHERE ${tenantScope.clause} AND (LOWER(title) LIKE ? OR LOWER(failure_type) LIKE ?) ORDER BY last_occurrence_at DESC`,
+          [...tenantScope.params, `%${q}%`, `%${q}%`]
         );
         const entries = result.length > 0 ? result[0].values.map((row: any) => ({
           id: row[0],
@@ -332,7 +339,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           return;
         }
         const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit') || '20', 10), 50);
-        const matches = matchPlaybookEntries(db, symptoms, limit);
+        const matches = matchPlaybookEntries(db, symptoms, limit, teamId);
         res.end(JSON.stringify({ matches, count: matches.length, query: symptoms }));
         return;
       }
@@ -344,7 +351,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           return;
         }
         const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit') || '5', 10), 20);
-        const correlations = getCorrelatedPatterns(db, failureType, limit);
+        const correlations = getCorrelatedPatterns(db, failureType, limit, teamId);
         res.end(JSON.stringify({ correlations, count: correlations.length, failureType }));
         return;
       }
@@ -360,7 +367,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
               res.end(JSON.stringify({ error: 'failureType is required' }));
               return;
             }
-            const entry = getOrCreatePlaybookEntry(db, failureType as FailureType);
+            const entry = getOrCreatePlaybookEntry(db, failureType as FailureType, teamId);
             const result = await runRemediation(db, entry, { webhookUrl, tokenEndpoint, clientId, clientSecret, apiEndpoint, newSchemaVersion, currentIntervalSec });
             res.end(JSON.stringify(result));
           } catch (err: any) {
@@ -375,13 +382,14 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit') || '50', 10), 200);
         const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
         const failureType = parsedUrl.searchParams.get('failureType') || undefined;
-        const { logs, count } = getRemediationLogs(db, limit, offset, failureType);
+        const { logs, count } = getRemediationLogs(db, limit, offset, failureType, teamId);
         res.end(JSON.stringify({ logs, count, limit, offset }));
         return;
       }
 
       if (path === '/api/dependencies' || path === '/api/dependencies/') {
-        const result = db.exec('SELECT id, name, current_version, specified_range, is_dev, created_at, updated_at FROM dependencies ORDER BY name ASC');
+        const tenantScope = tenantFilter('team_id', teamId);
+        const result = db.exec(`SELECT id, name, current_version, specified_range, is_dev, created_at, updated_at FROM dependencies WHERE ${tenantScope.clause} ORDER BY name ASC`, tenantScope.params);
         const dependencies = result.length > 0 ? result[0].values.map((row: any) => ({
           id: row[0],
           name: row[1],
@@ -397,9 +405,11 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
       if (path === '/api/dependencies/updates' || path === '/api/dependencies/updates/') {
         const breakingOnly = parsedUrl.searchParams.get('breaking') === 'true';
+        const dependencyScope = tenantFilter('d.team_id', teamId);
+        const updateScope = tenantFilter('du.team_id', teamId);
         let sql = `SELECT du.id, du.dependency_id, du.available_version, du.current_version, du.change_type, du.is_breaking, du.changelog_url, du.detected_at
-                   FROM dependency_updates du WHERE 1=1`;
-        const params: any[] = [];
+                   FROM dependency_updates du JOIN dependencies d ON d.id = du.dependency_id WHERE ${dependencyScope.clause} AND ${updateScope.clause}`;
+        const params: any[] = [...dependencyScope.params, ...updateScope.params];
         if (breakingOnly) {
           sql += ' AND du.is_breaking = 1';
         }
@@ -426,13 +436,13 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           req.on('end', () => {
             try {
               const data = JSON.parse(body);
-              const policy = listPolicies().find((p: any) => p.id === data.id);
+              const policy = listPolicies(teamId).find((p: any) => p.id === data.id);
               if (!policy) {
                 res.writeHead(404);
                 res.end(JSON.stringify({ error: 'Policy not found' }));
                 return;
               }
-              const updated = updatePolicy(data.id, { auto_approve: data.auto_approve, require_dry_run: data.require_dry_run, cooldown_minutes: data.cooldown_minutes });
+              const updated = updatePolicy(data.id, { auto_approve: data.auto_approve, require_dry_run: data.require_dry_run, cooldown_minutes: data.cooldown_minutes }, teamId);
               res.end(JSON.stringify({ success: true, policy: updated }));
             } catch (err: any) {
               res.writeHead(400);
@@ -441,7 +451,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           });
           return;
         }
-        const policies = listPolicies();
+        const policies = listPolicies(teamId);
         res.end(JSON.stringify({ policies }));
         return;
       }
@@ -453,7 +463,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           try {
             const { id } = JSON.parse(body);
             if (!id) { res.writeHead(400); res.end(JSON.stringify({ error: 'id is required' })); return; }
-            const result = await approveRun(id);
+            const result = await approveRun(id, teamId);
             res.end(JSON.stringify({ success: true, ...result }));
           } catch (err: any) {
             res.writeHead(400);
@@ -470,7 +480,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           try {
             const { id } = JSON.parse(body);
             if (!id) { res.writeHead(400); res.end(JSON.stringify({ error: 'id is required' })); return; }
-            const result = rejectRun(id);
+            const result = rejectRun(id, teamId);
             res.end(JSON.stringify({ success: true, ...result }));
           } catch (err: any) {
             res.writeHead(400);
@@ -487,7 +497,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           try {
             const { id } = JSON.parse(body);
             if (!id) { res.writeHead(400); res.end(JSON.stringify({ error: 'id is required' })); return; }
-            const result = await retryRun(id);
+            const result = await retryRun(id, teamId);
             res.end(JSON.stringify({ success: true, ...result }));
           } catch (err: any) {
             res.writeHead(400);
@@ -497,7 +507,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         return;
       }
 
-      if (billingApi && billingApi.handle(req, res)) {
+      if (billingApi && billingApi.handle(req, res, auth)) {
         return;
       }
 
@@ -513,19 +523,19 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         return;
       }
 
-      if (onboardingApi.handle(req, res)) {
+      if (onboardingApi.handle(req, res, auth)) {
         return;
       }
 
-      if (playbookBuilderApi.handle(req, res)) {
+      if (playbookBuilderApi.handle(req, res, auth)) {
         return;
       }
 
-      if (notificationApi.handle(req, res)) {
+      if (notificationApi.handle(req, res, auth)) {
         return;
       }
 
-      if (reportsApi.handle(req, res)) {
+      if (reportsApi.handle(req, res, auth)) {
         return;
       }
 
@@ -548,8 +558,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
               }
               const id = uuidv4();
               db.run(
-                `INSERT INTO alert_channels (id, name, type, config) VALUES (?, ?, ?, ?)`,
-                [id, name, type, JSON.stringify(config)]
+                `INSERT INTO alert_channels (id, name, type, config, team_id) VALUES (?, ?, ?, ?, ?)`,
+                [id, name, type, JSON.stringify(config), teamId]
               );
               res.end(JSON.stringify({ success: true, id, name, type }));
             } catch (err: any) {
@@ -559,7 +569,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           });
           return;
         }
-        const result = db.exec('SELECT id, name, type, enabled, team_id, created_at FROM alert_channels ORDER BY created_at DESC');
+        const tenantScope = tenantFilter('team_id', teamId);
+        const result = db.exec(`SELECT id, name, type, enabled, team_id, created_at FROM alert_channels WHERE ${tenantScope.clause} ORDER BY created_at DESC`, tenantScope.params);
         const channels = result.length > 0 ? result[0].values.map((row: any) => ({
           id: row[0], name: row[1], type: row[2], enabled: row[3] === 1, teamId: row[4], createdAt: row[5],
         })) : [];
@@ -570,6 +581,11 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       if (path.startsWith('/api/alerting/channels/') && req.method === 'DELETE') {
         const channelId = path.split('/').pop();
         if (!channelId) { res.writeHead(400); res.end(JSON.stringify({ error: 'Channel ID required' })); return; }
+        if (!rowBelongsToTenant(db, 'alert_channels', channelId, teamId)) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: 'Channel not found' }));
+          return;
+        }
         db.run('DELETE FROM alert_rules WHERE channel_id = ?', [channelId]);
         db.run('DELETE FROM alert_channels WHERE id = ?', [channelId]);
         res.end(JSON.stringify({ success: true }));
@@ -591,7 +607,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
             if (updates.length > 0) {
               updates.push("updated_at = datetime('now')");
-              db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ?`, [...params, channelId]);
+              const tenantScope = tenantFilter('team_id', teamId);
+              db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${tenantScope.clause}`, [...params, channelId, ...tenantScope.params]);
             }
             res.end(JSON.stringify({ success: true }));
           } catch (err: any) {
@@ -614,10 +631,15 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
                 res.end(JSON.stringify({ error: 'name, channelId, and failureTypes are required' }));
                 return;
               }
+              if (!rowBelongsToTenant(db, 'alert_channels', channelId, teamId)) {
+                res.writeHead(404);
+                res.end(JSON.stringify({ error: 'Channel not found' }));
+                return;
+              }
               const id = uuidv4();
               db.run(
-                `INSERT INTO alert_rules (id, name, channel_id, failure_types, min_severity) VALUES (?, ?, ?, ?, ?)`,
-                [id, name, channelId, JSON.stringify(failureTypes), minSeverity || 'info']
+                `INSERT INTO alert_rules (id, name, channel_id, failure_types, min_severity, team_id) VALUES (?, ?, ?, ?, ?, ?)`,
+                [id, name, channelId, JSON.stringify(failureTypes), minSeverity || 'info', teamId]
               );
               res.end(JSON.stringify({ success: true, id, name, channelId, failureTypes, minSeverity: minSeverity || 'info' }));
             } catch (err: any) {
@@ -627,10 +649,14 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           });
           return;
         }
+        const ruleScope = tenantFilter('ar.team_id', teamId);
+        const channelScope = tenantFilter('ac.team_id', teamId);
         const result = db.exec(
           `SELECT ar.id, ar.name, ar.channel_id, ar.failure_types, ar.min_severity, ar.enabled, ac.name as channel_name, ac.type as channel_type
            FROM alert_rules ar LEFT JOIN alert_channels ac ON ar.channel_id = ac.id
-           ORDER BY ar.created_at DESC`
+           WHERE ${ruleScope.clause} AND ${channelScope.clause}
+           ORDER BY ar.created_at DESC`,
+          [...ruleScope.params, ...channelScope.params],
         );
         const rules = result.length > 0 ? result[0].values.map((row: any) => ({
           id: row[0], name: row[1], channelId: row[2],
@@ -645,7 +671,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       if (path.startsWith('/api/alerting/rules/') && req.method === 'DELETE') {
         const ruleId = path.split('/').pop();
         if (!ruleId) { res.writeHead(400); res.end(JSON.stringify({ error: 'Rule ID required' })); return; }
-        db.run('DELETE FROM alert_rules WHERE id = ?', [ruleId]);
+        const tenantScope = tenantFilter('team_id', teamId);
+        db.run(`DELETE FROM alert_rules WHERE id = ? AND ${tenantScope.clause}`, [ruleId, ...tenantScope.params]);
         res.end(JSON.stringify({ success: true }));
         return;
       }
@@ -658,6 +685,11 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         req.on('end', () => {
           try {
             const { name, channelId, failureTypes, minSeverity, enabled } = JSON.parse(body);
+            if (channelId !== undefined && !rowBelongsToTenant(db, 'alert_channels', channelId, teamId)) {
+              res.writeHead(404);
+              res.end(JSON.stringify({ error: 'Channel not found' }));
+              return;
+            }
             const updates: string[] = [];
             const params: any[] = [];
             if (name !== undefined) { updates.push('name = ?'); params.push(name); }
@@ -667,7 +699,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
             if (updates.length > 0) {
               updates.push("updated_at = datetime('now')");
-              db.run(`UPDATE alert_rules SET ${updates.join(', ')} WHERE id = ?`, [...params, ruleId]);
+              const tenantScope = tenantFilter('team_id', teamId);
+              db.run(`UPDATE alert_rules SET ${updates.join(', ')} WHERE id = ? AND ${tenantScope.clause}`, [...params, ruleId, ...tenantScope.params]);
             }
             res.end(JSON.stringify({ success: true }));
           } catch (err: any) {
@@ -681,13 +714,16 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       if (path === '/api/alerting/log' || path === '/api/alerting/log/') {
         const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit') || '50', 10), 200);
         const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
+        const ruleScope = tenantFilter('ar.team_id', teamId);
+        const channelScope = tenantFilter('ac.team_id', teamId);
         const result = db.exec(
           `SELECT al.id, al.rule_id, al.channel_id, al.failure_event_id, al.failure_type, al.severity, al.channel_type, al.status, al.error_message, al.sent_at, ar.name as rule_name, ac.name as channel_name
            FROM alert_log al
            LEFT JOIN alert_rules ar ON al.rule_id = ar.id
            LEFT JOIN alert_channels ac ON al.channel_id = ac.id
+           WHERE ${ruleScope.clause} AND ${channelScope.clause}
            ORDER BY al.sent_at DESC LIMIT ? OFFSET ?`,
-          [limit, offset]
+          [...ruleScope.params, ...channelScope.params, limit, offset]
         );
         const logs = result.length > 0 ? result[0].values.map((row: any) => ({
           id: row[0], ruleId: row[1], channelId: row[2], failureEventId: row[3],
@@ -871,8 +907,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             for (let i = 0; i < results.length; i++) {
               const postId = uuidv4();
               db.run(
-                `INSERT INTO x_scheduled_posts (id, tweet_text, position, tweet_id, status, posted_at) VALUES (?, ?, ?, ?, 'posted', datetime('now'))`,
-                [postId, results[i].text, i + 1, results[i].tweetId]
+                `INSERT INTO x_scheduled_posts (id, tweet_text, position, tweet_id, status, posted_at, team_id) VALUES (?, ?, ?, ?, 'posted', datetime('now'), ?)`,
+                [postId, results[i].text, i + 1, results[i].tweetId, teamId]
               );
             }
 
@@ -919,8 +955,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             for (let i = 0; i < tweets.length; i++) {
               const postId = uuidv4();
               db.run(
-                `INSERT INTO x_scheduled_posts (id, tweet_text, position, scheduled_at, status) VALUES (?, ?, ?, ?, 'pending')`,
-                [postId, tweets[i], i + 1, scheduled.toISOString()]
+                `INSERT INTO x_scheduled_posts (id, tweet_text, position, scheduled_at, status, team_id) VALUES (?, ?, ?, ?, 'pending', ?)`,
+                [postId, tweets[i], i + 1, scheduled.toISOString(), teamId]
               );
               ids.push(postId);
             }
@@ -980,8 +1016,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             for (let i = 0; i < tweets.length; i++) {
               const postId = uuidv4();
               db.run(
-                `INSERT INTO x_scheduled_posts (id, tweet_text, position, scheduled_at, status) VALUES (?, ?, ?, ?, 'pending')`,
-                [postId, tweets[i], i + 1, scheduled.toISOString()]
+                `INSERT INTO x_scheduled_posts (id, tweet_text, position, scheduled_at, status, team_id) VALUES (?, ?, ?, ?, 'pending', ?)`,
+                [postId, tweets[i], i + 1, scheduled.toISOString(), teamId]
               );
               ids.push(postId);
             }
@@ -1002,8 +1038,10 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       }
 
       if (path === '/api/x/posts' || path === '/api/x/posts/') {
+        const tenantScope = tenantFilter('team_id', teamId);
         const result = db.exec(
-          'SELECT id, tweet_text, position, tweet_id, status, error, posted_at, created_at FROM x_scheduled_posts ORDER BY position ASC'
+          `SELECT id, tweet_text, position, tweet_id, status, error, posted_at, created_at FROM x_scheduled_posts WHERE ${tenantScope.clause} ORDER BY position ASC`,
+          tenantScope.params,
         );
         const posts = result.length > 0 ? result[0].values.map((row: any) => ({
           id: row[0],
@@ -1031,8 +1069,9 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
           const enabled = parsedUrl.searchParams.get('enabled');
 
-          let sql = 'SELECT id, source, name, config, enabled, created_at, updated_at FROM checks WHERE 1=1';
-          const params: any[] = [];
+          const tenantScope = tenantFilter('team_id', teamId);
+          let sql = `SELECT id, source, name, config, enabled, created_at, updated_at FROM checks WHERE ${tenantScope.clause}`;
+          const params: any[] = [...tenantScope.params];
 
           if (enabled !== null) {
             sql += ' AND enabled = ?';
@@ -1069,13 +1108,15 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         const status = parsedUrl.searchParams.get('status');
         const severity = parsedUrl.searchParams.get('severity');
 
+        const eventScope = tenantFilter('fe.team_id', teamId);
+        const checkScope = tenantFilter('c.team_id', teamId);
         let sql = `SELECT fe.id, fe.check_id, fe.failure_type, fe.severity, fe.title, fe.description, 
                           fe.raw_data, fe.detected_at, fe.acknowledged,
                           c.name as check_name, c.source as check_source
                    FROM failure_events fe
                    LEFT JOIN checks c ON fe.check_id = c.id
-                   WHERE 1=1`;
-        const params: any[] = [];
+                   WHERE ${eventScope.clause} AND ${checkScope.clause}`;
+        const params: any[] = [...eventScope.params, ...checkScope.params];
 
         if (status === 'acknowledged') {
           sql += ' AND fe.acknowledged = 1';
@@ -1117,6 +1158,10 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             res.end(cached);
             return;
           }
+          const dependencyScope = tenantFilter('d.team_id', teamId);
+          const updateScope = tenantFilter('du.team_id', teamId);
+          const updateOneScope = tenantFilter('du1.team_id', teamId);
+          const updateTwoScope = tenantFilter('du2.team_id', teamId);
           const result = db.exec(`
           SELECT d.id, d.name, d.current_version, d.specified_range, d.is_dev, d.created_at, d.updated_at,
                  COALESCE(du_stats.breaking_count, 0) as breaking_updates,
@@ -1131,17 +1176,23 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
                    SUM(is_breaking) as breaking_count,
                    MAX(available_version) as latest_version,
                    MAX(detected_at) as latest_detected_at
-            FROM dependency_updates
+            FROM dependency_updates du WHERE ${updateScope.clause}
             GROUP BY dependency_id
           ) du_stats ON d.id = du_stats.dependency_id
           LEFT JOIN (
             SELECT du1.dependency_id, du1.change_type
             FROM dependency_updates du1
-            WHERE du1.detected_at = (SELECT MAX(du2.detected_at) FROM dependency_updates du2 WHERE du2.dependency_id = du1.dependency_id)
+            WHERE ${updateOneScope.clause} AND du1.detected_at = (SELECT MAX(du2.detected_at) FROM dependency_updates du2 WHERE ${updateTwoScope.clause} AND du2.dependency_id = du1.dependency_id)
             GROUP BY du1.dependency_id, du1.change_type
           ) du_latest ON d.id = du_latest.dependency_id
+          WHERE ${dependencyScope.clause}
           ORDER BY breaking_updates DESC, total_updates DESC
-        `);
+        `, [
+          ...updateScope.params,
+          ...updateOneScope.params,
+          ...updateTwoScope.params,
+          ...dependencyScope.params,
+        ]);
 
         const dependencyHealth = result.length > 0 ? result[0].values.map((row: any) => ({
           id: row[0],
@@ -1177,12 +1228,15 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         const activities: any[] = [];
 
         if (!type || type === 'check_result') {
+          const crScope = tenantFilter('cr.team_id', teamId);
+          const checkScope = tenantFilter('c.team_id', teamId);
           const crResult = db.exec(`
             SELECT cr.id, cr.check_id, cr.status, cr.summary, cr.executed_at, c.name as check_name, c.source
             FROM check_results cr
             LEFT JOIN checks c ON cr.check_id = c.id
+            WHERE ${crScope.clause} AND ${checkScope.clause}
             ORDER BY cr.executed_at DESC LIMIT ? OFFSET ?
-          `, [limit, offset]);
+          `, [...crScope.params, ...checkScope.params, limit, offset]);
 
           if (crResult.length > 0) {
             crResult[0].values.forEach((row: any) => {
@@ -1201,12 +1255,15 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         }
 
         if (!type || type === 'failure_event') {
+          const feScope = tenantFilter('fe.team_id', teamId);
+          const checkScope = tenantFilter('c.team_id', teamId);
           const feResult = db.exec(`
             SELECT fe.id, fe.check_id, fe.failure_type, fe.severity, fe.title, fe.detected_at, c.name as check_name, c.source
             FROM failure_events fe
             LEFT JOIN checks c ON fe.check_id = c.id
+            WHERE ${feScope.clause} AND ${checkScope.clause}
             ORDER BY fe.detected_at DESC LIMIT ? OFFSET ?
-          `, [limit, offset]);
+          `, [...feScope.params, ...checkScope.params, limit, offset]);
 
           if (feResult.length > 0) {
             feResult[0].values.forEach((row: any) => {
@@ -1226,12 +1283,15 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         }
 
         if (!type || type === 'dependency_update') {
+          const updateScope = tenantFilter('du.team_id', teamId);
+          const dependencyScope = tenantFilter('d.team_id', teamId);
           const duResult = db.exec(`
             SELECT du.id, du.dependency_id, du.available_version, du.current_version, du.change_type, du.is_breaking, du.detected_at, d.name as dependency_name
             FROM dependency_updates du
             LEFT JOIN dependencies d ON du.dependency_id = d.id
+            WHERE ${updateScope.clause} AND ${dependencyScope.clause}
             ORDER BY du.detected_at DESC LIMIT ? OFFSET ?
-          `, [limit, offset]);
+          `, [...updateScope.params, ...dependencyScope.params, limit, offset]);
 
           if (duResult.length > 0) {
             duResult[0].values.forEach((row: any) => {

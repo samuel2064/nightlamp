@@ -4,6 +4,7 @@ import { Database } from 'sql.js';
 import { Server } from 'http';
 import assert from 'assert';
 import { v4 as uuidv4 } from 'uuid';
+import { createTestToken, TEST_CLERK_USER_ID, TEST_LOCAL_USER_ID } from './setup';
 
 describe('Playbook Builder API', () => {
   let db: Database;
@@ -14,8 +15,12 @@ describe('Playbook Builder API', () => {
   before(async () => {
     db = await createDatabase();
     teamId = uuidv4();
+    db.run('INSERT OR IGNORE INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)',
+      [TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID, 'owner@example.com', 'Owner']);
     db.run('INSERT INTO teams (id, name, slug, owner_id, plan) VALUES (?, ?, ?, ?, ?)',
-      [teamId, 'Test Team', 'test-team', 'user-1', 'free']);
+      [teamId, 'Test Team', 'test-team', TEST_LOCAL_USER_ID, 'free']);
+    db.run('INSERT INTO memberships (id, team_id, user_id, role) VALUES (?, ?, ?, ?)',
+      [uuidv4(), teamId, TEST_LOCAL_USER_ID, 'owner']);
     server = startApiServer(db, { port: 0 });
     const addr = server.address() as any;
     port = addr.port;
@@ -28,7 +33,10 @@ describe('Playbook Builder API', () => {
 
   const api = (path: string, opts?: RequestInit) =>
     fetch(`http://127.0.0.1:${port}${path}`, {
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${createTestToken({ org_id: teamId })}`,
+      },
       ...opts,
     });
 
@@ -48,20 +56,20 @@ describe('Playbook Builder API', () => {
       playbookId = data.id;
     });
 
-    it('POST /api/playbooks/custom requires teamId and name', async () => {
+    it('POST /api/playbooks/custom requires a name', async () => {
       const res = await api('/api/playbooks/custom', {
         method: 'POST',
-        body: JSON.stringify({ name: 'No team' }),
+        body: JSON.stringify({ description: 'No name' }),
       });
       assert.strictEqual(res.status, 400);
     });
 
-    it('POST /api/playbooks/custom requires valid team', async () => {
+    it('POST /api/playbooks/custom rejects another organization teamId', async () => {
       const res = await api('/api/playbooks/custom', {
         method: 'POST',
         body: JSON.stringify({ teamId: 'nonexistent', name: 'Bad' }),
       });
-      assert.strictEqual(res.status, 404);
+      assert.strictEqual(res.status, 403);
     });
 
     it('GET /api/playbooks/custom lists playbooks', async () => {

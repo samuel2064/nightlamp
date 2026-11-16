@@ -1,6 +1,8 @@
 import { Database } from 'sql.js';
 import { IncomingMessage, ServerResponse } from 'http';
 import { v4 as uuidv4 } from 'uuid';
+import { AuthContext } from '../api/auth';
+import { tenantFilter } from '../api/tenant';
 
 type OnboardingStep = 'app-detection' | 'monitor-selection' | 'alert-config' | 'team-invite';
 
@@ -11,12 +13,13 @@ const VALID_STEPS = new Set<string>(STEP_ORDER);
 export class OnboardingApi {
   constructor(private db: Database) {}
 
-  handle(req: IncomingMessage, res: ServerResponse): boolean {
+  handle(req: IncomingMessage, res: ServerResponse, auth: AuthContext | null = null): boolean {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = parsedUrl.pathname;
+    const teamId = auth ? auth.teamId : null;
 
     if (path === '/api/onboarding/start' || path === '/api/onboarding/start/') {
-      if (req.method === 'POST') { this.handleStart(req, res); return true; }
+      if (req.method === 'POST') { this.handleStart(req, res, auth, teamId); return true; }
       res.writeHead(405);
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return true;
@@ -34,21 +37,21 @@ export class OnboardingApi {
       }
 
       if (subPath === '/status') {
-        if (req.method === 'GET') { this.handleStatus(sessionId, res); return true; }
+        if (req.method === 'GET') { this.handleStatus(sessionId, res, teamId); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
       }
 
       if (subPath === '/step') {
-        if (req.method === 'POST') { this.handleStep(req, sessionId, res); return true; }
+        if (req.method === 'POST') { this.handleStep(req, sessionId, res, teamId); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
       }
 
       if (subPath === '/complete') {
-        if (req.method === 'POST') { this.handleComplete(sessionId, res); return true; }
+        if (req.method === 'POST') { this.handleComplete(sessionId, res, teamId); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
@@ -62,7 +65,7 @@ export class OnboardingApi {
     return false;
   }
 
-  private handleStart(req: IncomingMessage, res: ServerResponse): void {
+  private handleStart(req: IncomingMessage, res: ServerResponse, auth: AuthContext | null, teamId: string | null): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
@@ -74,9 +77,10 @@ export class OnboardingApi {
           return;
         }
 
+        const scope = tenantFilter('team_id', teamId);
         const existing = this.db.exec(
-          'SELECT id, current_step FROM onboarding_sessions WHERE user_id = ? AND completed_at IS NULL ORDER BY created_at DESC LIMIT 1',
-          [userId]
+          `SELECT id, current_step FROM onboarding_sessions WHERE user_id = ? AND ${scope.clause} AND completed_at IS NULL ORDER BY created_at DESC LIMIT 1`,
+          [userId, ...scope.params]
         );
         if (existing.length > 0 && existing[0].values.length > 0) {
           const row = existing[0].values[0];
@@ -91,8 +95,8 @@ export class OnboardingApi {
 
         const id = uuidv4();
         this.db.run(
-          `INSERT INTO onboarding_sessions (id, user_id, current_step, step_data) VALUES (?, ?, 'app-detection', '{}')`,
-          [id, userId]
+          `INSERT INTO onboarding_sessions (id, user_id, current_step, step_data, team_id) VALUES (?, ?, 'app-detection', '{}', ?)`,
+          [id, userId, teamId]
         );
 
         res.end(JSON.stringify({
@@ -109,10 +113,11 @@ export class OnboardingApi {
     });
   }
 
-  private handleStatus(sessionId: string, res: ServerResponse): void {
+  private handleStatus(sessionId: string, res: ServerResponse, teamId: string | null): void {
+    const scope = tenantFilter('team_id', teamId);
     const result = this.db.exec(
-      'SELECT id, user_id, current_step, step_data, completed_at, created_team_id, created_at, updated_at FROM onboarding_sessions WHERE id = ?',
-      [sessionId]
+      `SELECT id, user_id, current_step, step_data, completed_at, created_team_id, created_at, updated_at FROM onboarding_sessions WHERE id = ? AND ${scope.clause}`,
+      [sessionId, ...scope.params]
     );
 
     if (result.length === 0 || result[0].values.length === 0) {
@@ -139,14 +144,15 @@ export class OnboardingApi {
     }));
   }
 
-  private handleStep(req: IncomingMessage, sessionId: string, res: ServerResponse): void {
+  private handleStep(req: IncomingMessage, sessionId: string, res: ServerResponse, teamId: string | null): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {
+        const scope = tenantFilter('team_id', teamId);
         const sessionResult = this.db.exec(
-          'SELECT id, current_step, completed_at FROM onboarding_sessions WHERE id = ?',
-          [sessionId]
+          `SELECT id, current_step, completed_at FROM onboarding_sessions WHERE id = ? AND ${scope.clause}`,
+          [sessionId, ...scope.params]
         );
 
         if (sessionResult.length === 0 || sessionResult[0].values.length === 0) {
@@ -192,8 +198,8 @@ export class OnboardingApi {
         }
 
         const existingData = this.db.exec(
-          'SELECT step_data FROM onboarding_sessions WHERE id = ?',
-          [sessionId]
+          `SELECT step_data FROM onboarding_sessions WHERE id = ? AND ${scope.clause}`,
+          [sessionId, ...scope.params]
         );
         const currentData = existingData.length > 0 && existingData[0].values.length > 0
           ? JSON.parse(existingData[0].values[0][0] as string)
@@ -202,8 +208,8 @@ export class OnboardingApi {
         currentData[step] = data || {};
 
         this.db.run(
-          `UPDATE onboarding_sessions SET current_step = ?, step_data = ?, updated_at = datetime('now') WHERE id = ?`,
-          [step, JSON.stringify(currentData), sessionId]
+          `UPDATE onboarding_sessions SET current_step = ?, step_data = ?, updated_at = datetime('now') WHERE id = ? AND ${scope.clause}`,
+          [step, JSON.stringify(currentData), sessionId, ...scope.params]
         );
 
         res.end(JSON.stringify({
@@ -220,11 +226,12 @@ export class OnboardingApi {
     });
   }
 
-  private handleComplete(sessionId: string, res: ServerResponse): void {
+  private handleComplete(sessionId: string, res: ServerResponse, teamId: string | null): void {
     try {
+      const scope = tenantFilter('team_id', teamId);
       const sessionResult = this.db.exec(
-        'SELECT id, current_step, completed_at FROM onboarding_sessions WHERE id = ?',
-        [sessionId]
+        `SELECT id, current_step, completed_at FROM onboarding_sessions WHERE id = ? AND ${scope.clause}`,
+        [sessionId, ...scope.params]
       );
 
       if (sessionResult.length === 0 || sessionResult[0].values.length === 0) {
@@ -252,28 +259,28 @@ export class OnboardingApi {
         return;
       }
 
-      const teamId = uuidv4();
+      const newTeamId = uuidv4();
       const workspaceId = uuidv4();
 
       this.db.run(
         `INSERT INTO teams (id, name, slug, owner_id, plan) VALUES (?, ?, ?, ?, 'free')`,
-        [teamId, `Team-${sessionId.slice(0, 8)}`, `team-${sessionId.slice(0, 8)}`, sessionId]
+        [newTeamId, `Team-${sessionId.slice(0, 8)}`, `team-${sessionId.slice(0, 8)}`, sessionId]
       );
 
       this.db.run(
         'INSERT INTO team_workspaces (id, team_id) VALUES (?, ?)',
-        [workspaceId, teamId]
+        [workspaceId, newTeamId]
       );
 
       this.db.run(
-        `UPDATE onboarding_sessions SET completed_at = datetime('now'), created_team_id = ?, updated_at = datetime('now') WHERE id = ?`,
-        [teamId, sessionId]
+        `UPDATE onboarding_sessions SET completed_at = datetime('now'), created_team_id = ?, updated_at = datetime('now') WHERE id = ? AND ${scope.clause}`,
+        [newTeamId, sessionId, ...scope.params]
       );
 
       res.end(JSON.stringify({
         success: true,
         sessionId,
-        teamId,
+        teamId: newTeamId,
         workspaceId,
         completedAt: new Date().toISOString(),
       }));

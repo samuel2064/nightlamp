@@ -1,6 +1,8 @@
 import { Database } from 'sql.js';
 import { IncomingMessage, ServerResponse } from 'http';
 import { v4 as uuidv4 } from 'uuid';
+import type { AuthContext } from '../api/auth';
+import { tenantFilter } from '../api/tenant';
 
 export type PlaybookNodeType = 'trigger' | 'condition' | 'action' | 'notification';
 export type PlaybookStatus = 'draft' | 'published';
@@ -58,13 +60,14 @@ export interface PlaybookVersion {
 export class PlaybookBuilderApi {
   constructor(private db: Database) {}
 
-  handle(req: IncomingMessage, res: ServerResponse): boolean {
+  handle(req: IncomingMessage, res: ServerResponse, auth?: AuthContext | null): boolean {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = parsedUrl.pathname;
+    const teamId = auth ? auth.teamId : null;
 
     if (path === '/api/playbooks/custom' || path === '/api/playbooks/custom/') {
-      if (req.method === 'GET') { this.handleListPlaybooks(res); return true; }
-      if (req.method === 'POST') { this.handleCreatePlaybook(req, res); return true; }
+      if (req.method === 'GET') { this.handleListPlaybooks(res, teamId); return true; }
+      if (req.method === 'POST') { this.handleCreatePlaybook(req, res, teamId); return true; }
       res.writeHead(405);
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return true;
@@ -76,22 +79,22 @@ export class PlaybookBuilderApi {
       const subPath = (playbookMatch[2] || '').replace(/\/+$/, '');
 
       if (subPath === '/publish') {
-        if (req.method === 'POST') { this.handlePublishPlaybook(playbookId, res); return true; }
+        if (req.method === 'POST') { this.handlePublishPlaybook(playbookId, res, teamId); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
       }
 
       if (subPath === '/nodes') {
-        if (req.method === 'GET') { this.handleGetNodes(playbookId, res); return true; }
-        if (req.method === 'PATCH') { this.handleUpdateNodes(req, playbookId, res); return true; }
+        if (req.method === 'GET') { this.handleGetNodes(playbookId, res, teamId); return true; }
+        if (req.method === 'PATCH') { this.handleUpdateNodes(req, playbookId, res, teamId); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
       }
 
       if (subPath === '/versions') {
-        if (req.method === 'GET') { this.handleListVersions(playbookId, res); return true; }
+        if (req.method === 'GET') { this.handleListVersions(playbookId, res, teamId); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
@@ -100,16 +103,16 @@ export class PlaybookBuilderApi {
       const versionMatch = subPath.match(/^\/versions\/([a-zA-Z0-9-]+)$/);
       if (versionMatch) {
         const versionId = versionMatch[1];
-        if (req.method === 'GET') { this.handleGetVersion(versionId, res); return true; }
+        if (req.method === 'GET') { this.handleGetVersion(versionId, res, teamId); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
       }
 
       if (!subPath) {
-        if (req.method === 'GET') { this.handleGetPlaybook(playbookId, res); return true; }
-        if (req.method === 'PATCH') { this.handleUpdatePlaybook(req, playbookId, res); return true; }
-        if (req.method === 'DELETE') { this.handleDeletePlaybook(playbookId, res); return true; }
+        if (req.method === 'GET') { this.handleGetPlaybook(playbookId, res, teamId); return true; }
+        if (req.method === 'PATCH') { this.handleUpdatePlaybook(req, playbookId, res, teamId); return true; }
+        if (req.method === 'DELETE') { this.handleDeletePlaybook(playbookId, res, teamId); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
@@ -123,9 +126,27 @@ export class PlaybookBuilderApi {
     return false;
   }
 
-  private handleListPlaybooks(res: ServerResponse): void {
+  private playbookScope(teamId: string | null): { clause: string; params: any[] } {
+    return tenantFilter('team_id', teamId);
+  }
+
+  private findPlaybook(playbookId: string, teamId: string | null): any[] | null {
+    const scope = this.playbookScope(teamId);
     const result = this.db.exec(
-      'SELECT id, team_id, name, description, status, version, created_at, updated_at FROM custom_playbooks ORDER BY updated_at DESC'
+      `SELECT id, team_id, name, description, status, version, created_at, updated_at
+       FROM custom_playbooks WHERE id = ? AND ${scope.clause}`,
+      [playbookId, ...scope.params],
+    );
+    if (result.length === 0 || result[0].values.length === 0) return null;
+    return result[0].values[0];
+  }
+
+  private handleListPlaybooks(res: ServerResponse, teamId: string | null): void {
+    const scope = this.playbookScope(teamId);
+    const result = this.db.exec(
+      `SELECT id, team_id, name, description, status, version, created_at, updated_at
+       FROM custom_playbooks WHERE ${scope.clause} ORDER BY updated_at DESC`,
+      scope.params,
     );
     const playbooks = result.length > 0 ? result[0].values.map((row: any) => ({
       id: row[0],
@@ -140,23 +161,31 @@ export class PlaybookBuilderApi {
     res.end(JSON.stringify({ playbooks, count: playbooks.length }));
   }
 
-  private handleCreatePlaybook(req: IncomingMessage, res: ServerResponse): void {
+  private handleCreatePlaybook(req: IncomingMessage, res: ServerResponse, teamId: string | null): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {
-        const { teamId, name, description } = JSON.parse(body);
-        if (!teamId || !name) {
+        const { teamId: requestedTeamId, name, description } = JSON.parse(body);
+        if (!name) {
           res.writeHead(400);
-          res.end(JSON.stringify({ error: 'teamId and name are required' }));
+          res.end(JSON.stringify({ error: 'name is required' }));
           return;
         }
 
-        const teamExists = this.db.exec('SELECT id FROM teams WHERE id = ?', [teamId]);
-        if (teamExists.length === 0 || teamExists[0].values.length === 0) {
-          res.writeHead(404);
-          res.end(JSON.stringify({ error: 'Team not found' }));
+        if (requestedTeamId && requestedTeamId !== teamId) {
+          res.writeHead(403);
+          res.end(JSON.stringify({ error: 'Cannot create a playbook for another organization' }));
           return;
+        }
+
+        if (teamId) {
+          const teamExists = this.db.exec('SELECT id FROM teams WHERE id = ?', [teamId]);
+          if (teamExists.length === 0 || teamExists[0].values.length === 0) {
+            res.writeHead(404);
+            res.end(JSON.stringify({ error: 'Team not found' }));
+            return;
+          }
         }
 
         const id = uuidv4();
@@ -178,17 +207,13 @@ export class PlaybookBuilderApi {
     });
   }
 
-  private handleGetPlaybook(playbookId: string, res: ServerResponse): void {
-    const result = this.db.exec(
-      'SELECT id, team_id, name, description, status, version, created_at, updated_at FROM custom_playbooks WHERE id = ?',
-      [playbookId]
-    );
-    if (result.length === 0 || result[0].values.length === 0) {
+  private handleGetPlaybook(playbookId: string, res: ServerResponse, teamId: string | null): void {
+    const row = this.findPlaybook(playbookId, teamId);
+    if (!row) {
       res.writeHead(404);
       res.end(JSON.stringify({ error: 'Playbook not found' }));
       return;
     }
-    const row = result[0].values[0];
     res.end(JSON.stringify({
       playbook: {
         id: row[0],
@@ -203,7 +228,7 @@ export class PlaybookBuilderApi {
     }));
   }
 
-  private handleUpdatePlaybook(req: IncomingMessage, playbookId: string, res: ServerResponse): void {
+  private handleUpdatePlaybook(req: IncomingMessage, playbookId: string, res: ServerResponse, teamId: string | null): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
@@ -221,10 +246,17 @@ export class PlaybookBuilderApi {
           return;
         }
 
+        if (!this.findPlaybook(playbookId, teamId)) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: 'Playbook not found' }));
+          return;
+        }
+
+        const scope = this.playbookScope(teamId);
         updates.push("updated_at = datetime('now')");
         this.db.run(
-          `UPDATE custom_playbooks SET ${updates.join(', ')} WHERE id = ?`,
-          [...params, playbookId]
+          `UPDATE custom_playbooks SET ${updates.join(', ')} WHERE id = ? AND ${scope.clause}`,
+          [...params, playbookId, ...scope.params]
         );
         res.end(JSON.stringify({ success: true }));
       } catch (err: any) {
@@ -234,7 +266,13 @@ export class PlaybookBuilderApi {
     });
   }
 
-  private handleDeletePlaybook(playbookId: string, res: ServerResponse): void {
+  private handleDeletePlaybook(playbookId: string, res: ServerResponse, teamId: string | null): void {
+    if (!this.findPlaybook(playbookId, teamId)) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'Playbook not found' }));
+      return;
+    }
+
     this.db.run('DELETE FROM playbook_versions WHERE playbook_id = ?', [playbookId]);
     this.db.run('DELETE FROM playbook_edges WHERE playbook_id = ?', [playbookId]);
     this.db.run('DELETE FROM playbook_nodes WHERE playbook_id = ?', [playbookId]);
@@ -242,18 +280,13 @@ export class PlaybookBuilderApi {
     res.end(JSON.stringify({ success: true }));
   }
 
-  private handlePublishPlaybook(playbookId: string, res: ServerResponse): void {
-    const result = this.db.exec(
-      'SELECT id, team_id, name, description, status, version FROM custom_playbooks WHERE id = ?',
-      [playbookId]
-    );
-    if (result.length === 0 || result[0].values.length === 0) {
+  private handlePublishPlaybook(playbookId: string, res: ServerResponse, teamId: string | null): void {
+    const row = this.findPlaybook(playbookId, teamId);
+    if (!row) {
       res.writeHead(404);
       res.end(JSON.stringify({ error: 'Playbook not found' }));
       return;
     }
-
-    const row = result[0].values[0];
     const currentVersion = row[5] as number;
     const newVersion = currentVersion + 1;
 
@@ -295,9 +328,8 @@ export class PlaybookBuilderApi {
     res.end(JSON.stringify({ success: true, playbookId, version: newVersion, status: 'published' }));
   }
 
-  private handleGetNodes(playbookId: string, res: ServerResponse): void {
-    const playbookResult = this.db.exec('SELECT id FROM custom_playbooks WHERE id = ?', [playbookId]);
-    if (playbookResult.length === 0 || playbookResult[0].values.length === 0) {
+  private handleGetNodes(playbookId: string, res: ServerResponse, teamId: string | null): void {
+    if (!this.findPlaybook(playbookId, teamId)) {
       res.writeHead(404);
       res.end(JSON.stringify({ error: 'Playbook not found' }));
       return;
@@ -309,13 +341,12 @@ export class PlaybookBuilderApi {
     res.end(JSON.stringify({ nodes, edges, nodeCount: nodes.length, edgeCount: edges.length }));
   }
 
-  private handleUpdateNodes(req: IncomingMessage, playbookId: string, res: ServerResponse): void {
+  private handleUpdateNodes(req: IncomingMessage, playbookId: string, res: ServerResponse, teamId: string | null): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {
-        const playbookResult = this.db.exec('SELECT id FROM custom_playbooks WHERE id = ?', [playbookId]);
-        if (playbookResult.length === 0 || playbookResult[0].values.length === 0) {
+        if (!this.findPlaybook(playbookId, teamId)) {
           res.writeHead(404);
           res.end(JSON.stringify({ error: 'Playbook not found' }));
           return;
@@ -391,7 +422,13 @@ export class PlaybookBuilderApi {
     });
   }
 
-  private handleListVersions(playbookId: string, res: ServerResponse): void {
+  private handleListVersions(playbookId: string, res: ServerResponse, teamId: string | null): void {
+    if (!this.findPlaybook(playbookId, teamId)) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'Playbook not found' }));
+      return;
+    }
+
     const result = this.db.exec(
       'SELECT id, playbook_id, version, name, description, created_at FROM playbook_versions WHERE playbook_id = ? ORDER BY version DESC',
       [playbookId]
@@ -407,10 +444,14 @@ export class PlaybookBuilderApi {
     res.end(JSON.stringify({ versions, count: versions.length }));
   }
 
-  private handleGetVersion(versionId: string, res: ServerResponse): void {
+  private handleGetVersion(versionId: string, res: ServerResponse, teamId: string | null): void {
+    const scope = this.playbookScope(teamId);
     const result = this.db.exec(
-      'SELECT id, playbook_id, version, name, description, node_snapshot, edge_snapshot, created_at FROM playbook_versions WHERE id = ?',
-      [versionId]
+      `SELECT pv.id, pv.playbook_id, pv.version, pv.name, pv.description, pv.node_snapshot, pv.edge_snapshot, pv.created_at
+       FROM playbook_versions pv
+       JOIN custom_playbooks cp ON cp.id = pv.playbook_id
+       WHERE pv.id = ? AND cp.${scope.clause}`,
+      [versionId, ...scope.params]
     );
     if (result.length === 0 || result[0].values.length === 0) {
       res.writeHead(404);
