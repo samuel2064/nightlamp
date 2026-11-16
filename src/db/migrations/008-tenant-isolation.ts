@@ -16,6 +16,8 @@ const TENANT_TABLES = [
   'alert_rules',
   'onboarding_sessions',
   'x_scheduled_posts',
+  'usage_records',
+  'webhook_events',
 ] as const;
 
 function tableExists(db: Database, table: string): boolean {
@@ -79,6 +81,8 @@ export function up(db: Database): void {
   db.run('CREATE INDEX IF NOT EXISTS idx_alert_rules_team ON alert_rules(team_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_onboarding_sessions_team ON onboarding_sessions(team_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_x_scheduled_posts_team ON x_scheduled_posts(team_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_usage_records_team ON usage_records(team_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_webhook_events_team ON webhook_events(team_id)');
 }
 
 export function down(db: Database): void {
@@ -98,6 +102,8 @@ export function down(db: Database): void {
     'idx_alert_rules_team',
     'idx_onboarding_sessions_team',
     'idx_x_scheduled_posts_team',
+    'idx_usage_records_team',
+    'idx_webhook_events_team',
   ];
 
   for (const index of indexes) {

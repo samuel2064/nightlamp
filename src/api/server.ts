@@ -94,10 +94,10 @@ function buildEventsPayload(db: Database, params: URLSearchParams, teamId: strin
   const offset = parseInt(params.get('offset') || '0', 10);
   const type = params.get('type') || '';
   const severity = params.get('severity') || '';
-  const scope = tenantFilter('team_id', teamId);
+  const tenantScope = tenantFilter('team_id', teamId);
 
-  let sql = `SELECT id, check_id, failure_type, severity, title, description, detected_at, acknowledged FROM failure_events WHERE ${scope.clause}`;
-  const queryParams: any[] = [...scope.params];
+  let sql = `SELECT id, check_id, failure_type, severity, title, description, detected_at, acknowledged FROM failure_events WHERE ${tenantScope.clause}`;
+  const queryParams: any[] = [...tenantScope.params];
 
   if (type) {
     sql += ' AND failure_type = ?';
@@ -130,10 +130,10 @@ function buildCheckResultsPayload(db: Database, params: URLSearchParams, teamId:
   const limit = Math.min(parseInt(params.get('limit') || '50', 10), 200);
   const offset = parseInt(params.get('offset') || '0', 10);
   const status = params.get('status') || '';
-  const scope = tenantFilter('team_id', teamId);
+  const tenantScope = tenantFilter('team_id', teamId);
 
-  let sql = `SELECT id, check_id, status, summary, executed_at FROM check_results WHERE ${scope.clause}`;
-  const queryParams: any[] = [...scope.params];
+  let sql = `SELECT id, check_id, status, summary, executed_at FROM check_results WHERE ${tenantScope.clause}`;
+  const queryParams: any[] = [...tenantScope.params];
 
   if (status) {
     sql += ' AND status = ?';
@@ -232,7 +232,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         }
       }
 
-      const scope = auth ? auth.userId : 'public';
+      const scope = auth ? `${auth.userId}:${auth.teamId || 'personal'}` : 'public';
       const teamId = auth ? auth.teamId : null;
 
       if (path === '/api/performance/latency' || path === '/api/performance/latency/') {
@@ -285,10 +285,10 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             res.end(cached);
             return;
           }
-          const scope = tenantFilter('team_id', teamId);
+          const tenantScope = tenantFilter('team_id', teamId);
           const result = db.exec(
-            `SELECT id, failure_type, title, first_seen_at, last_occurrence_at, occurrence_count FROM playbook_entries WHERE ${scope.clause} ORDER BY last_occurrence_at DESC`,
-            scope.params,
+            `SELECT id, failure_type, title, first_seen_at, last_occurrence_at, occurrence_count FROM playbook_entries WHERE ${tenantScope.clause} ORDER BY last_occurrence_at DESC`,
+            tenantScope.params,
           );
           const entries = result.length > 0 ? result[0].values.map((row: any) => ({
             id: row[0],
@@ -315,10 +315,10 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           res.end(JSON.stringify({ entries: [], count: 0, query: q }));
           return;
         }
-        const scope = tenantFilter('team_id', teamId);
+        const tenantScope = tenantFilter('team_id', teamId);
         const result = db.exec(
-          `SELECT id, failure_type, title, first_seen_at, last_occurrence_at, occurrence_count FROM playbook_entries WHERE ${scope.clause} AND (LOWER(title) LIKE ? OR LOWER(failure_type) LIKE ?) ORDER BY last_occurrence_at DESC`,
-          [...scope.params, `%${q}%`, `%${q}%`]
+          `SELECT id, failure_type, title, first_seen_at, last_occurrence_at, occurrence_count FROM playbook_entries WHERE ${tenantScope.clause} AND (LOWER(title) LIKE ? OR LOWER(failure_type) LIKE ?) ORDER BY last_occurrence_at DESC`,
+          [...tenantScope.params, `%${q}%`, `%${q}%`]
         );
         const entries = result.length > 0 ? result[0].values.map((row: any) => ({
           id: row[0],
@@ -388,8 +388,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       }
 
       if (path === '/api/dependencies' || path === '/api/dependencies/') {
-        const scope = tenantFilter('team_id', teamId);
-        const result = db.exec(`SELECT id, name, current_version, specified_range, is_dev, created_at, updated_at FROM dependencies WHERE ${scope.clause} ORDER BY name ASC`, scope.params);
+        const tenantScope = tenantFilter('team_id', teamId);
+        const result = db.exec(`SELECT id, name, current_version, specified_range, is_dev, created_at, updated_at FROM dependencies WHERE ${tenantScope.clause} ORDER BY name ASC`, tenantScope.params);
         const dependencies = result.length > 0 ? result[0].values.map((row: any) => ({
           id: row[0],
           name: row[1],
@@ -569,8 +569,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           });
           return;
         }
-        const scope = tenantFilter('team_id', teamId);
-        const result = db.exec(`SELECT id, name, type, enabled, team_id, created_at FROM alert_channels WHERE ${scope.clause} ORDER BY created_at DESC`, scope.params);
+        const tenantScope = tenantFilter('team_id', teamId);
+        const result = db.exec(`SELECT id, name, type, enabled, team_id, created_at FROM alert_channels WHERE ${tenantScope.clause} ORDER BY created_at DESC`, tenantScope.params);
         const channels = result.length > 0 ? result[0].values.map((row: any) => ({
           id: row[0], name: row[1], type: row[2], enabled: row[3] === 1, teamId: row[4], createdAt: row[5],
         })) : [];
@@ -607,8 +607,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
             if (updates.length > 0) {
               updates.push("updated_at = datetime('now')");
-              const scope = tenantFilter('team_id', teamId);
-              db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${scope.clause}`, [...params, channelId, ...scope.params]);
+              const tenantScope = tenantFilter('team_id', teamId);
+              db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${tenantScope.clause}`, [...params, channelId, ...tenantScope.params]);
             }
             res.end(JSON.stringify({ success: true }));
           } catch (err: any) {
@@ -671,8 +671,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       if (path.startsWith('/api/alerting/rules/') && req.method === 'DELETE') {
         const ruleId = path.split('/').pop();
         if (!ruleId) { res.writeHead(400); res.end(JSON.stringify({ error: 'Rule ID required' })); return; }
-        const scope = tenantFilter('team_id', teamId);
-        db.run(`DELETE FROM alert_rules WHERE id = ? AND ${scope.clause}`, [ruleId, ...scope.params]);
+        const tenantScope = tenantFilter('team_id', teamId);
+        db.run(`DELETE FROM alert_rules WHERE id = ? AND ${tenantScope.clause}`, [ruleId, ...tenantScope.params]);
         res.end(JSON.stringify({ success: true }));
         return;
       }
@@ -699,8 +699,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
             if (updates.length > 0) {
               updates.push("updated_at = datetime('now')");
-              const scope = tenantFilter('team_id', teamId);
-              db.run(`UPDATE alert_rules SET ${updates.join(', ')} WHERE id = ? AND ${scope.clause}`, [...params, ruleId, ...scope.params]);
+              const tenantScope = tenantFilter('team_id', teamId);
+              db.run(`UPDATE alert_rules SET ${updates.join(', ')} WHERE id = ? AND ${tenantScope.clause}`, [...params, ruleId, ...tenantScope.params]);
             }
             res.end(JSON.stringify({ success: true }));
           } catch (err: any) {
@@ -1038,10 +1038,10 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       }
 
       if (path === '/api/x/posts' || path === '/api/x/posts/') {
-        const scope = tenantFilter('team_id', teamId);
+        const tenantScope = tenantFilter('team_id', teamId);
         const result = db.exec(
-          `SELECT id, tweet_text, position, tweet_id, status, error, posted_at, created_at FROM x_scheduled_posts WHERE ${scope.clause} ORDER BY position ASC`,
-          scope.params,
+          `SELECT id, tweet_text, position, tweet_id, status, error, posted_at, created_at FROM x_scheduled_posts WHERE ${tenantScope.clause} ORDER BY position ASC`,
+          tenantScope.params,
         );
         const posts = result.length > 0 ? result[0].values.map((row: any) => ({
           id: row[0],
@@ -1069,9 +1069,9 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
           const enabled = parsedUrl.searchParams.get('enabled');
 
-          const scope = tenantFilter('team_id', teamId);
-          let sql = `SELECT id, source, name, config, enabled, created_at, updated_at FROM checks WHERE ${scope.clause}`;
-          const params: any[] = [...scope.params];
+          const tenantScope = tenantFilter('team_id', teamId);
+          let sql = `SELECT id, source, name, config, enabled, created_at, updated_at FROM checks WHERE ${tenantScope.clause}`;
+          const params: any[] = [...tenantScope.params];
 
           if (enabled !== null) {
             sql += ' AND enabled = ?';
@@ -1283,12 +1283,15 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         }
 
         if (!type || type === 'dependency_update') {
+          const updateScope = tenantFilter('du.team_id', teamId);
+          const dependencyScope = tenantFilter('d.team_id', teamId);
           const duResult = db.exec(`
             SELECT du.id, du.dependency_id, du.available_version, du.current_version, du.change_type, du.is_breaking, du.detected_at, d.name as dependency_name
             FROM dependency_updates du
             LEFT JOIN dependencies d ON du.dependency_id = d.id
+            WHERE ${updateScope.clause} AND ${dependencyScope.clause}
             ORDER BY du.detected_at DESC LIMIT ? OFFSET ?
-          `, [limit, offset]);
+          `, [...updateScope.params, ...dependencyScope.params, limit, offset]);
 
           if (duResult.length > 0) {
             duResult[0].values.forEach((row: any) => {
