@@ -105,6 +105,37 @@ jobs:
             sleep 20
           done
           test "$STATUS" = "200" && echo "Backend healthy" || { echo "Backend smoke failed"; exit 1; }
+      - name: Check backend authorization gate (protected route must answer 401)
+        run: |
+          # A protected backend route must answer 401 for an anonymous caller.
+          # 200 means the P0 gate is not deployed (the old build is serving).
+          # 503 with AUTH_NOT_CONFIGURED means the gate is live but
+          # CLERK_JWT_ISSUER / CLERK_JWT_PUBLIC_KEY are missing on
+          # nightlamp-api - fix forward and redeploy, do not roll back.
+          # Any other 5xx is a Render cold start, so keep retrying.
+          for i in $(seq 1 6); do
+            STATUS=$(curl -s -o /tmp/gate_body -w "%{http_code}" \
+              "https://nightlamp-api.onrender.com/api/events" || true)
+            BODY=$(head -c 200 /tmp/gate_body)
+            echo "Attempt $i: /api/events HTTP $STATUS :: $BODY"
+            if [ "$STATUS" = "200" ] || [ "$STATUS" = "401" ]; then break; fi
+            if [ "$STATUS" = "503" ] && echo "$BODY" | grep -qi "AUTH_NOT_CONFIGURED"; then break; fi
+            sleep 20
+          done
+          if [ "$STATUS" = "200" ]; then
+            echo "::error::Protected backend route answered 200 - the P0 authorization gate is not deployed"
+            exit 1
+          fi
+          if echo "$BODY" | grep -qi "AUTH_NOT_CONFIGURED"; then
+            echo "::error::Protected backend route answered 503 AUTH_NOT_CONFIGURED - the Clerk JWT variables are missing on nightlamp-api"
+            exit 1
+          fi
+          if [ "$STATUS" = "401" ]; then
+            echo "Backend authorization gate live (anonymous request refused)"
+          else
+            echo "::error::Protected backend route returned $STATUS after retries :: $BODY"
+            exit 1
+          fi
       - name: Check frontend root
         run: |
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://nightlamp-frontend.onrender.com/" || true)
