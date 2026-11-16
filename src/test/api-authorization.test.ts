@@ -23,6 +23,9 @@ describe('P0 API authorization', () => {
   let port: number;
   let teamId: string;
   let otherTeamId: string;
+  const stripeCalls: { operation: string; id?: string; params?: any }[] = [];
+  let stripeFailure = false;
+  let mismatchedStripeCustomer = false;
 
   before(async () => {
     db = await createDatabase();
@@ -52,7 +55,25 @@ describe('P0 API authorization', () => {
       stripeClient: {
         stripe: {
           checkout: { sessions: { create: async (params: any) => ({ id: 'cs_test', url: 'https://checkout.stripe.com/test', ...params }) } },
-          billingPortal: { sessions: { create: async (params: any) => ({ id: 'bps_test', url: 'https://billing.stripe.com/test', ...params }) } },
+          billingPortal: { sessions: { create: async (params: any) => {
+            stripeCalls.push({ operation: 'portal', params });
+            return { id: 'bps_test', url: 'https://billing.stripe.com/test', ...params };
+          } } },
+          invoices: { list: async (params: any) => {
+            stripeCalls.push({ operation: 'invoices', params });
+            return { data: [{ id: `in_${params.customer}`, amount_paid: 9900 }], has_more: false };
+          } },
+          subscriptions: {
+            retrieve: async (id: string) => {
+              stripeCalls.push({ operation: 'retrieve', id });
+              return { id, customer: id === 'sub_own' && !mismatchedStripeCustomer ? 'cus_own' : 'cus_foreign', items: { data: [{ id: 'si_own' }] } };
+            },
+            update: async (id: string, params: any) => {
+              stripeCalls.push({ operation: 'update', id, params });
+              if (stripeFailure) throw new Error('Stripe unavailable');
+              return { id, ...params };
+            },
+          },
           webhooks: { constructEvent: (payload: string) => JSON.parse(payload) },
         },
         priceIds: { basic: 'price_basic', advanced: 'price_advanced', white_glove: 'price_white_glove' },
@@ -487,9 +508,165 @@ describe('P0 API authorization', () => {
 
     it('does not return another tenant billing customer or subscription', async () => {
       const subscription = await getJson(`/api/billing/subscription?customerId=${foreignCustomerId}`);
-      assert.strictEqual(subscription.subscription, null);
+      assert.match(subscription.error, /authentication/);
       const usage = await getJson(`/api/billing/usage?customerId=${foreignCustomerId}`);
-      assert.strictEqual(usage.usage.monitors, 0);
+      assert.match(usage.error, /authentication/);
+    });
+
+    describe('tenant-scoped billing API', () => {
+      before(() => {
+        db.run("INSERT INTO users (id, clerk_user_id, email) VALUES ('billing-member', 'billing-member-clerk', 'member@example.com')");
+        db.run("INSERT INTO memberships (id, team_id, user_id, role) VALUES ('billing-member-membership', ?, 'billing-member', 'member')", [teamId]);
+        db.run("UPDATE customers SET stripe_customer_id = 'cus_own' WHERE id = ?", [ownCustomerId]);
+        db.run("UPDATE customers SET stripe_customer_id = 'cus_foreign' WHERE id = ?", [foreignCustomerId]);
+        db.run("UPDATE subscriptions SET stripe_subscription_id = 'sub_own', current_period_end = '2026-12-01' WHERE id = ?", [ownSubscriptionId]);
+        db.run("UPDATE subscriptions SET stripe_subscription_id = 'sub_foreign' WHERE id = ?", [foreignSubscriptionId]);
+      });
+
+      beforeEach(() => { stripeCalls.length = 0; stripeFailure = false; mismatchedStripeCustomer = false; });
+
+      async function billingRequest(path: string, method = 'GET', body?: any, sub = TEST_CLERK_USER_ID) {
+        return fetchWithoutAuth(`http://127.0.0.1:${port}/api/billing/${path}`, {
+          method, headers: { Authorization: `Bearer ${createTestToken({ sub })}`, 'Content-Type': 'application/json' },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+      }
+
+      it('lets members read their own subscription, price, next billing date and usage without customer IDs', async () => {
+        const subscription = await (await billingRequest('subscription', 'GET', undefined, 'billing-member-clerk')).json() as any;
+        assert.strictEqual(subscription.subscription.id, ownSubscriptionId);
+        assert.strictEqual(subscription.subscription.price, 99);
+        assert.strictEqual(subscription.subscription.nextBillingDate, '2026-12-01');
+        const usage = await (await billingRequest('usage', 'GET', undefined, 'billing-member-clerk')).json() as any;
+        assert.strictEqual(usage.usage.monitors, 7);
+        assert.strictEqual(usage.limits.monitors, 5);
+      });
+
+      for (const endpoint of ['subscription', 'usage', 'invoices', 'portal']) {
+        it(`rejects foreign customer selectors on ${endpoint} without calling Stripe`, async () => {
+          const response = await billingRequest(`${endpoint}?customerId=${foreignCustomerId}`);
+          assert.strictEqual(response.status, 400);
+          assert.strictEqual(stripeCalls.length, 0);
+        });
+      }
+
+      it('lists invoices for the member authenticated customer only', async () => {
+        const response = await billingRequest('invoices', 'GET', undefined, 'billing-member-clerk');
+        assert.strictEqual(response.status, 200);
+        const data = await response.json() as any;
+        assert.strictEqual(data.invoices[0].id, 'in_cus_own');
+        assert.deepStrictEqual(stripeCalls, [{ operation: 'invoices', params: { customer: 'cus_own', limit: 50 } }]);
+      });
+
+      it('resolves another authenticated tenant to its own subscription, usage and invoices', async () => {
+        const subscription = await (await billingRequest('subscription', 'GET', undefined, 'other-clerk-user')).json() as any;
+        assert.strictEqual(subscription.subscription.id, foreignSubscriptionId);
+        const usage = await (await billingRequest('usage', 'GET', undefined, 'other-clerk-user')).json() as any;
+        assert.strictEqual(usage.usage.monitors, 99);
+        const invoices = await (await billingRequest('invoices', 'GET', undefined, 'other-clerk-user')).json() as any;
+        assert.strictEqual(invoices.invoices[0].id, 'in_cus_foreign');
+        assert.strictEqual(stripeCalls[0].params.customer, 'cus_foreign');
+      });
+
+      it('rejects forged tenant and Stripe selectors on checkout and customer creation', async () => {
+        for (const endpoint of ['create-checkout-session', 'customer']) {
+          for (const selector of [{ teamId: otherTeamId }, { orgId: otherTeamId }, { stripeCustomerId: 'cus_foreign' }]) {
+            const response = await billingRequest(endpoint, 'POST', { ...selector, email: 'attacker@example.com', planTier: 'basic' });
+            assert.strictEqual(response.status, 400);
+          }
+        }
+        assert.strictEqual(stripeCalls.length, 0);
+      });
+
+      it('returns empty billing data for a personal user without a linked customer', async () => {
+        const subscription = await (await billingRequest('subscription', 'GET', undefined, 'personal-clerk-user')).json() as any;
+        const usage = await (await billingRequest('usage', 'GET', undefined, 'personal-clerk-user')).json() as any;
+        const invoices = await (await billingRequest('invoices', 'GET', undefined, 'personal-clerk-user')).json() as any;
+        assert.strictEqual(subscription.subscription, null);
+        assert.strictEqual(usage.usage.monitors, 0);
+        assert.deepStrictEqual(invoices.invoices, []);
+        assert.strictEqual(stripeCalls.length, 0);
+      });
+
+      it('requires authentication on every customer billing endpoint', async () => {
+        for (const [endpoint, method] of [['subscription', 'GET'], ['usage', 'GET'], ['invoices', 'GET'], ['portal', 'GET'], ['change-plan', 'POST'], ['cancel', 'POST']]) {
+          const response = await fetchWithoutAuth(`http://127.0.0.1:${port}/api/billing/${endpoint}`, { method });
+          assert.strictEqual(response.status, 401);
+        }
+        assert.strictEqual(stripeCalls.length, 0);
+      });
+
+      it('creates the portal session for the authenticated tenant with a server-controlled return URL', async () => {
+        const response = await billingRequest('portal');
+        assert.strictEqual(response.status, 200);
+        assert.strictEqual(stripeCalls[0].params.customer, 'cus_own');
+        assert.ok(stripeCalls[0].params.return_url.endsWith('/dashboard/billing'));
+      });
+
+      for (const endpoint of ['change-plan', 'cancel']) {
+        it(`rejects foreign identity fields on ${endpoint} and preserves both tenants`, async () => {
+          const response = await billingRequest(endpoint, 'POST', { customerId: foreignCustomerId, planTier: 'advanced' });
+          assert.strictEqual(response.status, 400);
+          assert.strictEqual(stripeCalls.length, 0);
+          const rows = db.exec('SELECT plan_tier, cancel_at_period_end FROM subscriptions WHERE id = ?', [foreignSubscriptionId]);
+          assert.deepStrictEqual(rows[0].values[0], ['advanced', 0]);
+        });
+      }
+
+      for (const [endpoint, method] of [['change-plan', 'POST'], ['cancel', 'POST'], ['portal', 'GET'], ['create-checkout-session', 'POST'], ['customer', 'POST']]) {
+        it(`denies member and no-membership access to ${endpoint}`, async () => {
+          for (const sub of ['billing-member-clerk', 'personal-clerk-user']) {
+            const response = await billingRequest(endpoint, method, method === 'POST' ? { planTier: 'advanced' } : undefined, sub);
+            assert.strictEqual(response.status, 403);
+          }
+          assert.strictEqual(stripeCalls.length, 0);
+        });
+      }
+
+      it('leaves local billing state unchanged when Stripe rejects a plan change', async () => {
+        stripeFailure = true;
+        const response = await billingRequest('change-plan', 'POST', { planTier: 'white_glove' });
+        assert.strictEqual(response.status, 502);
+        assert.strictEqual(db.exec('SELECT plan_tier FROM subscriptions WHERE id = ?', [ownSubscriptionId])[0].values[0][0], 'basic');
+      });
+
+      it('refuses mutations when the stored Stripe subscription belongs to a different customer', async () => {
+        mismatchedStripeCustomer = true;
+        for (const endpoint of ['change-plan', 'cancel']) {
+          const response = await billingRequest(endpoint, 'POST', { planTier: 'advanced' });
+          assert.strictEqual(response.status, 502);
+        }
+        assert.ok(stripeCalls.every(call => call.operation === 'retrieve'));
+        assert.deepStrictEqual(db.exec('SELECT plan_tier, cancel_at_period_end FROM subscriptions WHERE id = ?', [ownSubscriptionId])[0].values[0], ['basic', 0]);
+      });
+
+      it('changes only the authenticated tenant plan while retaining Stripe proration defaults', async () => {
+        const response = await billingRequest('change-plan', 'POST', { planTier: 'advanced' });
+        assert.strictEqual(response.status, 200);
+        assert.deepStrictEqual(stripeCalls[1], { operation: 'update', id: 'sub_own', params: {
+          items: [{ id: 'si_own', price: 'price_advanced' }], payment_behavior: 'error_if_incomplete',
+        } });
+        const body = await response.json() as any;
+        assert.strictEqual(body.subscription.price, 299);
+      });
+
+      it('schedules cancellation only for the authenticated tenant and preserves status', async () => {
+        const response = await billingRequest('cancel', 'POST', {});
+        assert.strictEqual(response.status, 200);
+        assert.deepStrictEqual(stripeCalls[1], { operation: 'update', id: 'sub_own', params: { cancel_at_period_end: true } });
+        const body = await response.json() as any;
+        assert.strictEqual(body.subscription.cancelAtPeriodEnd, true);
+        assert.strictEqual(body.subscription.status, 'active');
+        assert.strictEqual(body.subscription.nextBillingDate, null);
+        assert.strictEqual(db.exec('SELECT cancel_at_period_end FROM subscriptions WHERE id = ?', [foreignSubscriptionId])[0].values[0][0], 0);
+      });
+
+      it('rejects invalid plan tiers before calling Stripe', async () => {
+        for (const planTier of ['enterprise', 'toString', '__proto__']) {
+          assert.strictEqual((await billingRequest('change-plan', 'POST', { planTier })).status, 400);
+        }
+        assert.strictEqual(stripeCalls.length, 0);
+      });
     });
 
     it('does not return another tenant onboarding session', async () => {

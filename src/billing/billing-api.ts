@@ -5,7 +5,7 @@ import { StripeClient, createCheckoutSession, createCustomerPortalSession, const
 import { SubscriptionModel, PlanTier, Subscription, PLAN_TIERS } from './subscription';
 import { TierEnforcer } from './tier-enforcer';
 import { UsageTracker } from './usage';
-import { AuthContext } from '../api/auth';
+import { AuthContext, requireRole } from '../api/auth';
 import { tenantFilter } from '../api/tenant';
 
 interface BillingApiDeps {
@@ -30,14 +30,50 @@ export class BillingApi {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = parsedUrl.pathname;
     const teamId = auth ? auth.teamId : null;
+    const routes = ['create-checkout-session', 'portal', 'webhook', 'webhook-events', 'subscription',
+      'usage', 'plans', 'customer', 'summary', 'subscriptions', 'invoices', 'change-plan', 'cancel'];
+    if (!routes.some(route => path === `/api/billing/${route}`)) return false;
+
+    // Webhooks have their own signature verification. Every customer-facing
+    // operation requires the server's verified auth context, even when called directly.
+    if (path !== '/api/billing/webhook') {
+      if (!auth) {
+        res.writeHead(401);
+        res.end(JSON.stringify({ error: 'Authentication required' }));
+        return true;
+      }
+      if (['customerId', 'teamId', 'orgId', 'stripeCustomerId', 'subscriptionId'].some(key => parsedUrl.searchParams.has(key))) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Billing identity is resolved from authentication' }));
+        return true;
+      }
+      if (req.method !== 'GET' || path === '/api/billing/portal') {
+        try {
+          requireRole(auth, ['owner', 'admin']);
+        } catch {
+          res.writeHead(403);
+          res.end(JSON.stringify({ error: 'This operation requires elevated permissions' }));
+          return true;
+        }
+      }
+    }
+
+    if (path === '/api/billing/invoices' && req.method === 'GET') {
+      this.handleInvoices(res, auth!);
+      return true;
+    }
+    if ((path === '/api/billing/change-plan' || path === '/api/billing/cancel') && req.method === 'POST') {
+      this.handleSubscriptionMutation(req, res, auth!, path.endsWith('/cancel'));
+      return true;
+    }
 
     if (path === '/api/billing/create-checkout-session' && req.method === 'POST') {
-      this.handleCreateCheckout(req, res, teamId);
+      this.handleCreateCheckout(req, res, auth!);
       return true;
     }
 
     if (path === '/api/billing/portal' && req.method === 'GET') {
-      this.handlePortalRedirect(req, res, teamId);
+      this.handlePortalRedirect(req, res, auth!);
       return true;
     }
 
@@ -53,12 +89,12 @@ export class BillingApi {
     }
 
     if (path === '/api/billing/subscription' && req.method === 'GET') {
-      this.handleGetSubscription(req, res, teamId);
+      this.handleGetSubscription(req, res, auth!);
       return true;
     }
 
     if (path === '/api/billing/usage' && req.method === 'GET') {
-      this.handleGetUsage(req, res, teamId);
+      this.handleGetUsage(req, res, auth!);
       return true;
     }
 
@@ -68,7 +104,7 @@ export class BillingApi {
     }
 
     if (path === '/api/billing/customer' && req.method === 'POST') {
-      this.handleCreateCustomer(req, res, teamId);
+      this.handleCreateCustomer(req, res, auth!);
       return true;
     }
 
@@ -97,18 +133,118 @@ export class BillingApi {
     res.end(JSON.stringify({ plans }));
   }
 
-  private handleCreateCustomer(req: IncomingMessage, res: ServerResponse, teamId: string | null): void {
+  private rejectIdentity(input: Record<string, unknown>, res: ServerResponse): boolean {
+    if (['customerId', 'teamId', 'orgId', 'stripeCustomerId', 'subscriptionId'].some(key => Object.hasOwn(input, key))) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: 'Billing identity is resolved from authentication' }));
+      return true;
+    }
+    return false;
+  }
+
+  private resolveCustomer(auth: AuthContext) {
+    const scope = tenantFilter('team_id', auth.teamId);
+    // Legacy personal customers have no team; bind those to the verified local
+    // user's email rather than allowing one personal user to select another.
+    const personal = auth.teamId === null ? ' AND email = ?' : '';
+    const rows = this.deps.db.exec(
+      `SELECT id FROM customers WHERE ${scope.clause}${personal} ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [...scope.params, ...(auth.teamId === null ? [auth.email] : [])],
+    );
+    return rows.length ? this.subscriptions.getCustomer(rows[0].values[0][0] as string, auth.teamId) : null;
+  }
+
+  private async handleInvoices(res: ServerResponse, auth: AuthContext): Promise<void> {
+    try {
+      const customer = this.resolveCustomer(auth);
+      if (!customer?.stripeCustomerId) {
+        res.end(JSON.stringify({ invoices: [], hasMore: false }));
+        return;
+      }
+      const result = await this.deps.stripeClient.stripe.invoices.list({ customer: customer.stripeCustomerId, limit: 50 });
+      const invoices = result.data.map((invoice: any) => ({
+        id: invoice.id, number: invoice.number, status: invoice.status, currency: invoice.currency,
+        amountDue: invoice.amount_due, amountPaid: invoice.amount_paid, created: invoice.created,
+        invoiceUrl: invoice.hosted_invoice_url, pdfUrl: invoice.invoice_pdf,
+      }));
+      res.end(JSON.stringify({ invoices, hasMore: result.has_more }));
+    } catch {
+      res.writeHead(502);
+      res.end(JSON.stringify({ error: 'Unable to load billing history' }));
+    }
+  }
+
+  private handleSubscriptionMutation(req: IncomingMessage, res: ServerResponse, auth: AuthContext, cancel: boolean): void {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      let input: Record<string, unknown>;
+      try {
+        input = JSON.parse(body || '{}');
+        if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error();
+      } catch {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Invalid JSON object' }));
+        return;
+      }
+      if (this.rejectIdentity(input, res)) return;
+      if (!cancel && (typeof input.planTier !== 'string' || !Object.hasOwn(PLAN_TIERS, input.planTier))) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Invalid plan tier' }));
+        return;
+      }
+      try {
+        const customer = this.resolveCustomer(auth);
+        const sub = customer ? this.subscriptions.getSubscriptionByCustomer(customer.id, auth.teamId) : null;
+        if (!customer?.stripeCustomerId || !sub?.stripeSubscriptionId || !['active', 'trialing', 'past_due'].includes(sub.status)) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: 'No current subscription' }));
+          return;
+        }
+        const stripe = this.deps.stripeClient.stripe;
+        const remote = await stripe.subscriptions.retrieve(sub.stripeSubscriptionId);
+        const remoteCustomer = typeof remote.customer === 'string' ? remote.customer : remote.customer?.id;
+        if (remoteCustomer !== customer.stripeCustomerId) throw new Error('Subscription customer mismatch');
+        if (cancel) {
+          await stripe.subscriptions.update(sub.stripeSubscriptionId, { cancel_at_period_end: true });
+          const scope = tenantFilter('team_id', auth.teamId);
+          this.deps.db.run(`UPDATE subscriptions SET cancel_at_period_end = 1, updated_at = datetime('now') WHERE id = ? AND ${scope.clause}`, [sub.id, ...scope.params]);
+        } else {
+          const planTier = input.planTier as PlanTier;
+          const price = this.deps.stripeClient.priceIds[planTier];
+          if (!price || remote.items?.data?.length !== 1) throw new Error('Unsupported subscription configuration');
+          // Leave proration_behavior unspecified: retain Stripe's configured/default
+          // policy rather than accepting a client-controlled billing policy.
+          await stripe.subscriptions.update(sub.stripeSubscriptionId, {
+            items: [{ id: remote.items.data[0].id, price }], payment_behavior: 'error_if_incomplete',
+          });
+          const scope = tenantFilter('team_id', auth.teamId);
+          this.deps.db.run(`UPDATE subscriptions SET plan_tier = ?, updated_at = datetime('now') WHERE id = ? AND ${scope.clause}`, [planTier, sub.id, ...scope.params]);
+        }
+        this.handleGetSubscription(req, res, auth);
+      } catch {
+        res.writeHead(502);
+        res.end(JSON.stringify({ error: 'Unable to update subscription' }));
+      }
+    });
+  }
+
+  private handleCreateCustomer(req: IncomingMessage, res: ServerResponse, auth: AuthContext): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {
-        const { email, name } = JSON.parse(body);
+        const input = JSON.parse(body);
+        if (this.rejectIdentity(input, res)) return;
+        const { email, name } = input;
         if (!email) {
           res.writeHead(400);
           res.end(JSON.stringify({ error: 'email is required' }));
           return;
         }
-        const customer = this.subscriptions.createCustomer(email, name, teamId);
+        const customer = this.resolveCustomer(auth) || this.subscriptions.createCustomer(
+          auth.teamId === null ? auth.email : email, name, auth.teamId,
+        );
         res.end(JSON.stringify({ customer }));
       } catch (err: any) {
         res.writeHead(400);
@@ -117,26 +253,29 @@ export class BillingApi {
     });
   }
 
-  private handleCreateCheckout(req: IncomingMessage, res: ServerResponse, teamId: string | null): void {
+  private handleCreateCheckout(req: IncomingMessage, res: ServerResponse, auth: AuthContext): void {
+    const teamId = auth.teamId;
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', async () => {
       try {
-        const { customerId, planTier } = JSON.parse(body);
-        if (!customerId || !planTier) {
+        const input = JSON.parse(body);
+        const { planTier } = input;
+        if (this.rejectIdentity(input, res)) return;
+        if (!planTier) {
           res.writeHead(400);
-          res.end(JSON.stringify({ error: 'customerId and planTier are required' }));
+          res.end(JSON.stringify({ error: 'planTier is required' }));
           return;
         }
 
-        const customer = this.subscriptions.getCustomer(customerId, teamId);
-        if (!customer) {
+        const customer = this.resolveCustomer(auth);
+        if (!customer?.stripeCustomerId) {
           res.writeHead(404);
           res.end(JSON.stringify({ error: 'Customer not found' }));
           return;
         }
 
-        if (!PLAN_TIERS[planTier as PlanTier]) {
+        if (!Object.hasOwn(PLAN_TIERS, planTier)) {
           res.writeHead(400);
           res.end(JSON.stringify({ error: `Invalid plan tier: ${planTier}` }));
           return;
@@ -145,16 +284,15 @@ export class BillingApi {
         const successUrl = `${this.deps.baseUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`;
         const cancelUrl = `${this.deps.baseUrl}/billing/cancel`;
 
-        const sub = this.subscriptions.createSubscription(customerId, planTier as PlanTier, teamId);
-
         const session = await createCheckoutSession(
           this.deps.stripeClient,
-          customer.stripeCustomerId || undefined as any,
+          customer.stripeCustomerId,
           planTier,
           successUrl,
           cancelUrl,
         );
 
+        const sub = this.subscriptions.createSubscription(customer.id, planTier as PlanTier, teamId);
         this.subscriptions.updateStripeSubscriptionId(sub.id, session.id, 'incomplete', teamId);
 
         res.end(JSON.stringify({ url: session.url, sessionId: session.id, subscriptionId: sub.id }));
@@ -165,17 +303,8 @@ export class BillingApi {
     });
   }
 
-  private handlePortalRedirect(req: IncomingMessage, res: ServerResponse, teamId: string | null): void {
-    const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
-    const customerId = parsedUrl.searchParams.get('customerId');
-
-    if (!customerId) {
-      res.writeHead(400);
-      res.end(JSON.stringify({ error: 'customerId is required' }));
-      return;
-    }
-
-    const customer = this.subscriptions.getCustomer(customerId, teamId);
+  private handlePortalRedirect(req: IncomingMessage, res: ServerResponse, auth: AuthContext): void {
+    const customer = this.resolveCustomer(auth);
     if (!customer || !customer.stripeCustomerId) {
       res.writeHead(404);
       res.end(JSON.stringify({ error: 'Customer not found or no Stripe customer ID' }));
@@ -185,7 +314,7 @@ export class BillingApi {
     createCustomerPortalSession(
       this.deps.stripeClient,
       customer.stripeCustomerId,
-      `${this.deps.baseUrl}/billing/portal`,
+      `${this.deps.baseUrl}/dashboard/billing`,
     ).then((session) => {
       res.end(JSON.stringify({ url: session.url }));
     }).catch((err) => {
@@ -357,38 +486,23 @@ export class BillingApi {
     }));
   }
 
-  private handleGetSubscription(req: IncomingMessage, res: ServerResponse, teamId: string | null): void {
-    const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
-    const customerId = parsedUrl.searchParams.get('customerId');
-
-    if (!customerId) {
-      res.writeHead(400);
-      res.end(JSON.stringify({ error: 'customerId is required' }));
-      return;
-    }
-
-    const sub = this.subscriptions.getSubscriptionByCustomer(customerId, teamId);
+  private handleGetSubscription(req: IncomingMessage, res: ServerResponse, auth: AuthContext): void {
+    const customer = this.resolveCustomer(auth);
+    const sub = customer ? this.subscriptions.getSubscriptionByCustomer(customer.id, auth.teamId) : null;
     if (!sub) {
       res.end(JSON.stringify({ subscription: null }));
       return;
     }
 
     const limits = this.tierEnforcer.getLimits(sub.planTier);
-    res.end(JSON.stringify({ subscription: { ...sub, limits } }));
+    res.end(JSON.stringify({ subscription: { ...sub, limits, price: PLAN_TIERS[sub.planTier].price,
+      currency: 'usd', billingPeriod: 'month', nextBillingDate: sub.cancelAtPeriodEnd ? null : sub.currentPeriodEnd } }));
   }
 
-  private handleGetUsage(req: IncomingMessage, res: ServerResponse, teamId: string | null): void {
-    const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
-    const customerId = parsedUrl.searchParams.get('customerId');
-
-    if (!customerId) {
-      res.writeHead(400);
-      res.end(JSON.stringify({ error: 'customerId is required' }));
-      return;
-    }
-
-    const usage = this.usage.getCurrentUsage(customerId, teamId);
-    const sub = this.subscriptions.getSubscriptionByCustomer(customerId, teamId);
+  private handleGetUsage(req: IncomingMessage, res: ServerResponse, auth: AuthContext): void {
+    const customer = this.resolveCustomer(auth);
+    const usage = customer ? this.usage.getCurrentUsage(customer.id, auth.teamId) : { monitors: 0, reports: 0, storageMb: 0 };
+    const sub = customer ? this.subscriptions.getSubscriptionByCustomer(customer.id, auth.teamId) : null;
     const limits = this.tierEnforcer.getLimits(sub?.planTier || null);
 
     res.end(JSON.stringify({
