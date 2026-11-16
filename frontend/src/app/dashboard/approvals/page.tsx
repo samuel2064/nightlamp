@@ -20,31 +20,27 @@ import { Spinner } from '@/components/ui/spinner'
 import { OfflineBanner } from '@/components/dashboard/OfflineBanner'
 import { useLiveConnection } from '@/components/dashboard/connection-indicator'
 
+interface PendingRun {
+  id: string
+  action_name: string
+  status: string
+  failure_type?: string | null
+  affected_resource?: string | null
+  severity?: string | null
+  created_at: string
+}
+
 export default function ApprovalsPage() {
   const utils = trpc.useUtils()
-  const { data: runs, isLoading, isError, refetch } = trpc.remediation.listRuns.useQuery({ status: 'pending_approval' })
+  const { data: runs, isLoading, isError, error, refetch } = trpc.remediation.listRuns.useQuery({ status: 'pending' })
   const { status: connectionStatus } = useLiveConnection()
   const isOffline = connectionStatus === 'disconnected'
 
   const approveRun = trpc.remediation.approveRun.useMutation({
-    onMutate: async ({ id }) => {
-      await utils.remediation.listRuns.cancel()
-      const prev = utils.remediation.listRuns.getData({ status: 'pending_approval' })
-      if (prev?.runs) {
-        utils.remediation.listRuns.setData({ status: 'pending_approval' }, {
-          ...prev,
-          runs: prev.runs.filter((r: any) => r.id !== id),
-        })
-      }
-      return { prev }
-    },
     onSuccess: () => {
       toast.success('Run approved and executed')
     },
-    onError: (err, { id }, context) => {
-      if (context?.prev) {
-        utils.remediation.listRuns.setData({ status: 'pending_approval' }, context.prev)
-      }
+    onError: (err) => {
       toast.error(`Failed to approve: ${err.message}`)
     },
     onSettled: () => {
@@ -53,24 +49,10 @@ export default function ApprovalsPage() {
   })
 
   const rejectRun = trpc.remediation.rejectRun.useMutation({
-    onMutate: async ({ id }) => {
-      await utils.remediation.listRuns.cancel()
-      const prev = utils.remediation.listRuns.getData({ status: 'pending_approval' })
-      if (prev?.runs) {
-        utils.remediation.listRuns.setData({ status: 'pending_approval' }, {
-          ...prev,
-          runs: prev.runs.filter((r: any) => r.id !== id),
-        })
-      }
-      return { prev }
-    },
     onSuccess: () => {
       toast.success('Run rejected')
     },
-    onError: (err, { id }, context) => {
-      if (context?.prev) {
-        utils.remediation.listRuns.setData({ status: 'pending_approval' }, context.prev)
-      }
+    onError: (err) => {
       toast.error(`Failed to reject: ${err.message}`)
     },
     onSettled: () => {
@@ -111,9 +93,11 @@ export default function ApprovalsPage() {
     return (
       <div className="space-y-6">
         <h1 className="text-2xl font-semibold">Approvals</h1>
-        <div className="flex items-center gap-2">
-          <p className="text-sm text-destructive">Failed to load pending approvals.</p>
-          <Button variant="outline" size="sm" onClick={() => refetch()}>
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-destructive">
+            Failed to load pending approvals: {error?.message || 'the backend request failed'}
+          </p>
+          <Button variant="outline" size="sm" onClick={() => refetch()} className="w-fit">
             <RefreshCw className="size-3 mr-1" /> Retry
           </Button>
         </div>
@@ -139,7 +123,7 @@ export default function ApprovalsPage() {
             <EmptyState
               icon={ClipboardCheck}
               title="No pending approvals"
-              description="All remediation actions have been reviewed."
+              description="There are no remediation actions awaiting approval."
             />
           </CardContent>
         </Card>
@@ -158,11 +142,11 @@ export default function ApprovalsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {runs.runs.map((run: any) => (
-                <TableRow key={run.id as string}>
-                  <TableCell className="font-medium">{run.failure_type as string || (run.action_name as string)}</TableCell>
-                  <TableCell>{run.action_name as string}</TableCell>
-                  <TableCell>{run.affected_resource as string || '-'}</TableCell>
+              {(runs.runs as PendingRun[]).map((run) => (
+                <TableRow key={run.id}>
+                  <TableCell className="font-medium">{run.failure_type || run.action_name}</TableCell>
+                  <TableCell>{run.action_name}</TableCell>
+                  <TableCell>{run.affected_resource || '-'}</TableCell>
                   <TableCell>
                     {run.severity ? (
                       <Badge
@@ -171,14 +155,14 @@ export default function ApprovalsPage() {
                           run.severity === 'high' ? 'default' : 'secondary'
                         }
                       >
-                        {run.severity as string}
+                        {run.severity}
                       </Badge>
                     ) : (
                       <span className="text-xs text-muted-foreground">-</span>
                     )}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
-                    {new Date(run.created_at as string).toLocaleString()}
+                    {new Date(run.created_at).toLocaleString()}
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-1">
@@ -186,7 +170,7 @@ export default function ApprovalsPage() {
                         size="sm"
                         variant="outline"
                         className="text-green-600 border-green-300 hover:bg-green-50"
-                        onClick={() => approveRun.mutate({ id: run.id as string })}
+                        onClick={() => approveRun.mutate({ id: run.id })}
                         disabled={isMutating || isOffline}
                         aria-disabled={isOffline}
                       >
@@ -197,7 +181,7 @@ export default function ApprovalsPage() {
                         size="sm"
                         variant="outline"
                         className="text-red-600 border-red-300 hover:bg-red-50"
-                        onClick={() => rejectRun.mutate({ id: run.id as string })}
+                        onClick={() => rejectRun.mutate({ id: run.id })}
                         disabled={isMutating || isOffline}
                         aria-disabled={isOffline}
                       >

@@ -170,6 +170,24 @@ function normalizeHealthStatus(raw: string | undefined): HealthStatus {
   }
 }
 
+export interface RemediationRun {
+  id: string
+  playbook_entry_id?: string | null
+  action_name: string
+  status: string
+  initiated_by?: string | null
+  approved_by?: string | null
+  output?: string | null
+  error?: string | null
+  created_at: string
+  started_at?: string | null
+  completed_at?: string | null
+  affected_resource?: string | null
+  failure_type?: string | null
+  description?: string | null
+  severity?: string | null
+}
+
 export interface BackendClient {
   events: {
     list: (params?: { limit?: number; offset?: number; type?: string; severity?: string }) => Promise<{ events: FailureEvent[]; count: number }>
@@ -194,7 +212,7 @@ export interface BackendClient {
     portalUrl: () => Promise<{ url: string }>
   }
   remediation: {
-    listRuns: (input?: { status?: string; limit?: number; offset?: number }) => Promise<{ runs: any[]; count: number }>
+    listRuns: (input?: { status?: string; limit?: number; offset?: number }) => Promise<{ runs: RemediationRun[]; count: number }>
     approveRun: (id: string) => Promise<{ success: boolean }>
     rejectRun: (id: string) => Promise<{ success: boolean }>
     retryRun: (id: string) => Promise<{ success: boolean }>
@@ -275,10 +293,15 @@ export function createBackendClient(token: string | null): BackendClient {
         apiFetch<{ url: string }>('/api/billing/portal'),
     },
     remediation: {
-      listRuns: (input?: { status?: string; limit?: number; offset?: number }) =>
-        apiFetch<{ runs: any[]; count: number }>(
-          `/api/playbook/remediation-logs?${new URLSearchParams((input || {}) as Record<string, string>).toString()}`
-        ),
+      listRuns: (input?: { status?: string; limit?: number; offset?: number }) => {
+        const params = new URLSearchParams()
+        if (input?.status) params.set('status', input.status)
+        if (input?.limit !== undefined) params.set('limit', String(input.limit))
+        if (input?.offset !== undefined) params.set('offset', String(input.offset))
+        return apiFetch<{ runs: RemediationRun[]; count: number }>(
+          `/api/remediation/runs?${params.toString()}`
+        )
+      },
       approveRun: (id: string) =>
         apiFetchPost<{ success: boolean }>('/api/remediation/approve', { id }),
       rejectRun: (id: string) =>
