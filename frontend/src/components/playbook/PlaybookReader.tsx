@@ -62,43 +62,43 @@ export function PlaybookReader({ playbookId, onExit }: PlaybookReaderProps) {
   useEffect(() => {
     if (entryData) {
       setPlaybookEntry(entryData)
-      setLoading(false)
+      setLoading((prev) => prev && false)
     }
   }, [entryData])
 
   useEffect(() => {
     if (entryError) {
       setError('Failed to load playbook')
-      setLoading(false)
+      setLoading((prev) => prev && false)
     }
   }, [entryError])
 
   // Simulate SSE connection (replace with real SSE when backend is ready)
   useEffect(() => {
     if (!execution?.id) return
-    setSseConnected(true)
+    setSseConnected((prev) => prev || true)
   }, [execution?.id])
 
   // Poll execution state when running
   useEffect(() => {
     if (!execution?.id || execution.status !== 'running' || polling) return
 
-    setPolling(true)
+    setPolling((prev) => prev || true)
     const interval = setInterval(async () => {
       try {
         const updated = await utils.playbook.getExecution.fetch({ executionId: execution.id })
         setExecution(updated)
         if (updated.status !== 'running') {
-          setPolling(false)
+          setPolling((prev) => prev && false)
         }
       } catch {
-        setPolling(false)
+        setPolling((prev) => prev && false)
       }
     }, 2000)
 
     return () => {
       clearInterval(interval)
-      setPolling(false)
+      setPolling((prev) => prev && false)
     }
   }, [execution?.id, execution?.status, utils])
 

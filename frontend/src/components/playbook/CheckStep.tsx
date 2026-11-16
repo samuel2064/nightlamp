@@ -43,8 +43,8 @@ export function CheckStep({
       const timer = setInterval(() => setElapsed((e) => e + 1), 1000)
       return () => clearInterval(timer)
     }
-    setElapsed(0)
-    setOutputLines([])
+    setElapsed((e) => (e !== 0 ? 0 : e))
+    setOutputLines((prev) => (prev.length !== 0 ? [] : prev))
   }, [status])
 
   useEffect(() => {

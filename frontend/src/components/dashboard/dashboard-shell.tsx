@@ -19,7 +19,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const [navOpen, setNavOpen] = useState(false)
 
   useEffect(() => {
-    setNavOpen(false)
+    setNavOpen((prev) => prev && false)
   }, [pathname])
 
   useEffect(() => {
