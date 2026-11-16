@@ -62,11 +62,8 @@ jobs:
             echo "::error::the Render API answered HTTP $STATUS for the service list"
             exit 1
           fi
-          echo "response top-level type: $(jq -r 'type' /tmp/services.json)" >> /tmp/diag.log
-          echo "response top-level keys: $(jq -r 'if type=="object" then (keys|join(",")) else "n/a" end' /tmp/services.json)" >> /tmp/diag.log
           echo "workspace services (name | slug | type | id):" >> /tmp/services-list.txt
           jq -r '.. | objects | select(has("slug")) | [(.name//"?"), .slug, (.type//"?"), (.id//"?")] | join(" | ")' /tmp/services.json | sort -u >> /tmp/services-list.txt
-          echo "first element keys: $(jq -r 'if type=="array" and (.[0]|type)=="object" then (.[0]|keys|join(",")) else "n/a" end' /tmp/services.json)" >> /tmp/diag.log
           cat /tmp/services-list.txt
 
       - name: Resolve the service identities
@@ -130,7 +127,6 @@ jobs:
             echo "::error::the Render API answered HTTP $BACKEND_STATUS for the backend env vars"
             exit 1
           fi
-          echo "backend env var response type: $(jq -r 'type' /tmp/backend-envvars.json)" >> /tmp/diag.log
           jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/backend-envvars.json | sort | tee -a /tmp/backend-keys.txt
           if [ -n "$TARGET_FRONTEND_ID" ]; then
             FRONTEND_STATUS=$(curl -sS -o /tmp/frontend-envvars.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$TARGET_FRONTEND_ID/env-vars")
@@ -140,104 +136,20 @@ jobs:
             fi
           fi
 
-      - name: Configure nightlamp-api
+      - name: Configure the Clerk auth variables
         run: |
           set -uo pipefail
           : > /tmp/actions.log
-          echo "backend env var object keys: $(jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[0] | (if . == null then "empty" else (keys|join(",")) end)' /tmp/backend-envvars.json)" >> /tmp/diag.log
-          jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | [.key, (if .value == null then "NOVALUE" else (.value|tostring) end)] | @tsv' /tmp/backend-envvars.json | sort > /tmp/backend-values-before.txt
-          MISSING=$(awk -F'\t' '$2=="NOVALUE"{print $1}' /tmp/backend-values-before.txt | tr '\n' ',')
-          echo "variables whose value the API did not return: ${MISSING:-none}" >> /tmp/diag.log
-          if [ -n "$MISSING" ]; then
-            echo "::warning::a bulk replace would drop the variables listed above, refusing to run it"
-            echo "refused the bulk replace (the API did not return every value)" >> /tmp/actions.log
-            exit 0
+          node ops/render-auth-configure.js > /tmp/configure-output.txt 2>&1
+          CONFIGURE_STATUS=$?
+          echo "configure exit -> $CONFIGURE_STATUS" >> /tmp/diag.log
+          cat /tmp/configure-output.txt >> /tmp/diag.log
+          if [ -f /tmp/configure-result.json ]; then
+            node -e "const r=require('/tmp/configure-result.json');for (const a of r.actions) console.log(a);" >> /tmp/actions.log
           fi
-          while IFS=$'\t' read -r k v; do printf '%s\t%s\n' "$k" "$(printf '%s' "$v" | sha256sum | cut -c1-16)"; done < /tmp/backend-values-before.txt | sort > /tmp/backend-hashes-before.txt
-          jq -n --arg issuer "$CLERK_ISSUER" --arg pubkey "$CLERK_JWT_PUBLIC_KEY" --slurpfile current /tmp/backend-envvars.json \
-            '($current[0] | (if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | map(select(.key != "CLERK_JWT_ISSUER" and .key != "CLERK_JWT_PUBLIC_KEY")) | map({key:.key, value:(.value|tostring)} + (if .type then {type:.type} else {} end)))) + [{key:"CLERK_JWT_ISSUER", value:$issuer}, {key:"CLERK_JWT_PUBLIC_KEY", value:$pubkey}]' > /tmp/backend-envvars-put.json
-          jq -n --arg issuer "$CLERK_ISSUER" --arg pubkey "$CLERK_JWT_PUBLIC_KEY" --slurpfile current /tmp/backend-envvars.json \
-            '($current[0] | (if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | map(select(.key != "CLERK_JWT_ISSUER" and .key != "CLERK_JWT_PUBLIC_KEY")) | map({key:.key, value:(.value|tostring)}))) + [{key:"CLERK_JWT_ISSUER", value:$issuer}, {key:"CLERK_JWT_PUBLIC_KEY", value:$pubkey}]' > /tmp/backend-envvars-put-notype.json
-          STATUS=$(curl -sS -o /tmp/put.json -w "%{http_code}" -X PUT -H "Authorization: Bearer $RENDER_API_KEY" -H "Content-Type: application/json" --data-binary @/tmp/backend-envvars-put.json "$RENDER_API/services/$TARGET_BACKEND_ID/env-vars")
-          echo "PUT env-vars (with type) -> HTTP $STATUS" >> /tmp/diag.log
-          if [ "$STATUS" != "200" ] && [ "$STATUS" != "201" ]; then
-            STATUS2=$(curl -sS -o /tmp/put2.json -w "%{http_code}" -X PUT -H "Authorization: Bearer $RENDER_API_KEY" -H "Content-Type: application/json" --data-binary @/tmp/backend-envvars-put-notype.json "$RENDER_API/services/$TARGET_BACKEND_ID/env-vars")
-            echo "PUT env-vars (without type) -> HTTP $STATUS2" >> /tmp/diag.log
-            STATUS=$STATUS2
-          fi
-          if [ "$STATUS" != "200" ] && [ "$STATUS" != "201" ]; then
-            echo "::error::the Render API answered HTTP $STATUS for the bulk replace"
-            echo "failed the bulk replace (HTTP $STATUS)" >> /tmp/actions.log
-            exit 1
-          fi
-          echo "added CLERK_JWT_ISSUER and CLERK_JWT_PUBLIC_KEY to the backend service" >> /tmp/actions.log
-          sleep 3
-          AFTER_STATUS=$(curl -sS -o /tmp/backend-envvars-after.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$TARGET_BACKEND_ID/env-vars")
-          echo "GET env-vars (after the replace) -> HTTP $AFTER_STATUS" >> /tmp/diag.log
-          jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | [.key, (if .value == null then "NOVALUE" else (.value|tostring) end)] | @tsv' /tmp/backend-envvars-after.json | sort > /tmp/backend-values-after.txt
-          while IFS=$'\t' read -r k v; do printf '%s\t%s\n' "$k" "$(printf '%s' "$v" | sha256sum | cut -c1-16)"; done < /tmp/backend-values-after.txt | sort > /tmp/backend-hashes-after.txt
-          grep -v -e '^CLERK_JWT_ISSUER' -e '^CLERK_JWT_PUBLIC_KEY' /tmp/backend-hashes-after.txt > /tmp/backend-hashes-after-existing.txt
-          if diff -q /tmp/backend-hashes-before.txt /tmp/backend-hashes-after-existing.txt > /dev/null 2>&1; then
-            echo "every pre-existing variable kept exactly the same value (verified by hash)" >> /tmp/diag.log
-            echo "all pre-existing variables verified unchanged" >> /tmp/actions.log
-          else
-            echo "::warning::the hash of at least one pre-existing variable changed"
-            diff /tmp/backend-hashes-before.txt /tmp/backend-hashes-after-existing.txt >> /tmp/diag.log
-            echo "a pre-existing variable changed value" >> /tmp/actions.log
-          fi
-
-      - name: Configure nightlamp-frontend when a variable is missing
-        run: |
-          set -uo pipefail
-          if [ -z "$TARGET_FRONTEND_ID" ]; then
-            echo "no frontend service with the slug nightlamp-frontend, skipping"
-            exit 0
-          fi
-          decode_clerk_instance() {
-            printf '%s' "$1" | python3 -c "import sys,base64;s=sys.stdin.read().strip();p=s.split('_',2);b=''.join(c for c in p[2] if c.isalnum() or c in '-_') if len(p)>2 else '';b=b+'='*(-len(b)%4);print(base64.urlsafe_b64decode(b).decode('utf-8','replace') if b else '')"
-          }
-          PUB_INSTANCE=$(decode_clerk_instance "$GITHUB_CLERK_PUBLISHABLE_KEY")
-          SEC_INSTANCE=$(decode_clerk_instance "$GITHUB_CLERK_SECRET_KEY")
-          echo "github publishable key instance: ${PUB_INSTANCE:-unknown}" >> /tmp/diag.log
-          echo "github secret key instance: ${SEC_INSTANCE:-unknown}" >> /tmp/diag.log
-          apply_frontend_var() {
-            local key="$1" value="$2"
-            local id status
-            id=$(jq -r --arg k "$key" '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | map(select(.key==$k)) | .[0].id // ""' /tmp/frontend-envvars.json)
-            if [ -n "$id" ]; then
-              echo "$key: already present on the frontend service, left untouched"
-              echo "present $key" >> /tmp/actions.log
-              return 0
-            fi
-            if [ -z "$value" ]; then
-              echo "::warning::$key is missing on the frontend service and no repository value is available"
-              echo "missing $key" >> /tmp/actions.log
-              return 0
-            fi
-            status=$(curl -sS -o "/tmp/post-$key.json" -w "%{http_code}" -X POST \
-              -H "Authorization: Bearer $RENDER_API_KEY" \
-              -H "Content-Type: application/json" \
-              -d "$(jq -n --arg k "$key" --arg v "$value" '{key:$k,value:$v}')" \
-              "$RENDER_API/services/$TARGET_FRONTEND_ID/env-vars")
-            echo "POST frontend $key -> HTTP $status" >> /tmp/diag.log
-            if [ "$status" != "200" ] && [ "$status" != "201" ]; then
-              echo "::error::the Render API answered HTTP $status when creating $key on the frontend service"
-              return 1
-            fi
-            echo "$key: created on the frontend service"
-            echo "created $key" >> /tmp/actions.log
-          }
-          if [ -z "$PUB_INSTANCE" ] || [ "$PUB_INSTANCE" != "$CLERK_INSTANCE" ]; then
-            echo "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY not copied (instance mismatch)"
-            echo "refused NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY (instance mismatch)" >> /tmp/actions.log
-          else
-            apply_frontend_var NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY "$GITHUB_CLERK_PUBLISHABLE_KEY" || echo "failed NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" >> /tmp/actions.log
-          fi
-          if [ -z "$SEC_INSTANCE" ] || [ "$SEC_INSTANCE" != "$CLERK_INSTANCE" ]; then
-            echo "CLERK_SECRET_KEY not copied (instance mismatch)"
-            echo "refused CLERK_SECRET_KEY (instance mismatch)" >> /tmp/actions.log
-          else
-            apply_frontend_var CLERK_SECRET_KEY "$GITHUB_CLERK_SECRET_KEY" || echo "failed CLERK_SECRET_KEY" >> /tmp/actions.log
+          if [ "$CONFIGURE_STATUS" != "0" ]; then
+            echo "::error::the configuration script failed with exit code $CONFIGURE_STATUS"
+            exit "$CONFIGURE_STATUS"
           fi
 
       - name: Re-read the environment variable keys
