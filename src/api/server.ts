@@ -239,6 +239,46 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         res.end(JSON.stringify({ latency: latencyTracker.summary() }));
         return;
       }
+      if (path === '/api/events/acknowledge' || path === '/api/events/acknowledge/') {
+        if (req.method !== 'POST') {
+          res.writeHead(405);
+          res.end(JSON.stringify({ error: 'Method not allowed' }));
+          return;
+        }
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', () => {
+          let id: unknown;
+          try {
+            id = JSON.parse(body).id;
+          } catch {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+            return;
+          }
+          if (typeof id !== 'string' || !id.trim()) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: 'id must be a non-empty string' }));
+            return;
+          }
+          const event = db.exec('SELECT fe.team_id, c.team_id, c.id FROM failure_events fe LEFT JOIN checks c ON c.id = fe.check_id WHERE fe.id = ?', [id]);
+          if (!event.length) {
+            res.writeHead(404);
+            res.end(JSON.stringify({ error: 'Event not found' }));
+            return;
+          }
+          const [eventTeamId, checkTeamId, checkId] = event[0].values[0];
+          if (!checkId || eventTeamId !== teamId || checkTeamId !== teamId) {
+            res.writeHead(403);
+            res.end(JSON.stringify({ error: 'Forbidden' }));
+            return;
+          }
+          db.run('UPDATE failure_events SET acknowledged = 1 WHERE id = ?', [id]);
+          hotCache.clear();
+          res.end(JSON.stringify({ success: true, id }));
+        });
+        return;
+      }
       if (path === '/api/events' || path === '/api/events/') {
         if (req.method === 'GET') {
           const ck = cacheKey(scope, path, parsedUrl.searchParams.toString());

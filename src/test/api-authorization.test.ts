@@ -439,6 +439,28 @@ describe('P0 API authorization', () => {
       return res.json() as Promise<any>;
     }
 
+    it('authenticates and scopes event acknowledgements and invalidates cached reads', async () => {
+      const url = `http://127.0.0.1:${port}/api/events/acknowledge`;
+      const post = (id: string, token?: string) => fetchWithoutAuth(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ id }),
+      });
+      const token = createTestToken();
+      assert.strictEqual((await post(ownEventId)).status, 401);
+      assert.strictEqual((await post(foreignEventId, token)).status, 403);
+      assert.strictEqual(db.exec('SELECT acknowledged FROM failure_events WHERE id = ?', [foreignEventId])[0].values[0][0], 0);
+      assert.strictEqual((await post('missing-event', token)).status, 404);
+      const before = await getJson('/api/events?type=own_type');
+      assert.strictEqual(before.events.find((event: any) => event.id === ownEventId).acknowledged, false);
+      const res = await post(ownEventId, token);
+      assert.strictEqual(res.status, 200);
+      assert.deepStrictEqual(await res.json(), { success: true, id: ownEventId });
+      assert.strictEqual(db.exec('SELECT acknowledged FROM failure_events WHERE id = ?', [ownEventId])[0].values[0][0], 1);
+      const after = await getJson('/api/events?type=own_type');
+      assert.strictEqual(after.events.find((event: any) => event.id === ownEventId).acknowledged, true);
+    });
+
     const protectedEndpoints = [
       '/api/events',
       '/api/check-results',
