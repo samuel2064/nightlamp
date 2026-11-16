@@ -1,5 +1,7 @@
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'
 
+import type { DiagnosticEntry, PlaybookExecution } from '@/components/playbook/types'
+
 export interface FailureEvent {
   id: string
   checkId: string
@@ -17,79 +19,6 @@ export interface CheckResult {
   status: string
   summary: string
   executedAt: string
-}
-
-export interface PlaybookEntry {
-  id: string
-  failureType: string
-  title: string
-  firstSeenAt: string
-  lastOccurrenceAt: string
-  occurrenceCount: number
-}
-
-export interface PlaybookStep {
-  id: string
-  index: number
-  title: string
-  type: 'QUESTION' | 'CHECK' | 'ACTION' | 'INFO' | 'BRANCH' | 'RESOLUTION'
-  status: 'pending' | 'current' | 'completed' | 'skipped'
-  question?: {
-    text: string
-    options: Array<{ value: string; label: string; description?: string }>
-    allowMultiple: boolean
-    allowCustom: boolean
-  }
-  check?: {
-    id: string
-    name: string
-    target: string
-    type: 'HTTP' | 'TCP' | 'CUSTOM'
-    timeout: number
-  }
-  action?: {
-    instructions: string
-    confirmLabel: string
-    requireConfirmation: boolean
-  }
-  info?: {
-    content: string
-  }
-  branch?: {
-    condition: string
-    result: boolean
-    truePath: string
-    falsePath: string
-    skippedSteps: string[]
-  }
-  resolution?: {
-    outcome: 'success' | 'partial' | 'escalation'
-    rootCause: string
-    actionsTaken: string[]
-    prevention: string[]
-  }
-}
-
-export interface Playbook {
-  id: string
-  title: string
-  version: string
-  estimatedDuration: number
-  successRate: number
-  steps: PlaybookStep[]
-}
-
-export interface PlaybookExecution {
-  id: string
-  playbookId: string
-  playbook: Playbook
-  currentStepIndex: number
-  completedIndices: number[]
-  skippedIndices: number[]
-  answers: Record<string, string[]>
-  status: 'running' | 'completed' | 'paused'
-  startedAt: string
-  updatedAt: string
 }
 
 export interface BillingData {
@@ -117,7 +46,7 @@ export interface DependencyUpdateData {
   availableVersion: string
   currentVersion: string
   changeType: string
-  isBreaking: boolean
+  breakingChange: boolean
   changelogUrl: string | null
   detectedAt: string
 }
@@ -196,11 +125,11 @@ export interface BackendClient {
     list: (params?: { limit?: number; offset?: number; status?: string }) => Promise<{ results: CheckResult[]; count: number }>
   }
   playbook: {
-    list: () => Promise<{ entries: PlaybookEntry[]; count: number }>
-    search: (q: string) => Promise<{ entries: PlaybookEntry[]; count: number }>
-    get: (id: string) => Promise<PlaybookEntry>
-    run: (id: string) => Promise<PlaybookExecution>
-    decision: (executionId: string, stepId: string, answer: string[], skipped?: boolean) => Promise<{ step: PlaybookStep | null; completed: boolean }>
+    list: () => Promise<{ entries: DiagnosticEntry[]; count: number }>
+    search: (q: string) => Promise<{ entries: DiagnosticEntry[]; count: number }>
+    get: (id: string) => Promise<DiagnosticEntry>
+    run: (playbookId: string, context?: Record<string, unknown>) => Promise<PlaybookExecution>
+    decision: (executionId: string, decision: string) => Promise<PlaybookExecution>
     getExecution: (executionId: string) => Promise<PlaybookExecution>
   }
   health: {
@@ -208,7 +137,7 @@ export interface BackendClient {
   }
   billing: {
     summary: () => Promise<BillingData>
-    listSubscriptions: () => Promise<{ subscriptions: any[] }>
+    listSubscriptions: () => Promise<{ subscriptions: unknown[] }>
     portalUrl: () => Promise<{ url: string }>
   }
   remediation: {
@@ -216,8 +145,8 @@ export interface BackendClient {
     approveRun: (id: string) => Promise<{ success: boolean }>
     rejectRun: (id: string) => Promise<{ success: boolean }>
     retryRun: (id: string) => Promise<{ success: boolean }>
-    listPolicies: () => Promise<{ policies: any[] }>
-    updatePolicy: (id: string, data: any) => Promise<{ success: boolean }>
+    listPolicies: () => Promise<{ policies: unknown[] }>
+    updatePolicy: (id: string, data: Record<string, unknown>) => Promise<{ success: boolean }>
   }
 }
 
@@ -241,7 +170,7 @@ export function createBackendClient(token: string | null): BackendClient {
     return res.json()
   }
 
-  const apiFetchPost = <T>(path: string, body: any): Promise<T> =>
+  const apiFetchPost = <T>(path: string, body: unknown): Promise<T> =>
     apiFetch<T>(path, { method: 'POST', body: JSON.stringify(body) })
 
   return {
@@ -259,24 +188,35 @@ export function createBackendClient(token: string | null): BackendClient {
     },
     playbook: {
       list: () =>
-        apiFetch<{ entries: PlaybookEntry[]; count: number }>('/api/playbook'),
+        apiFetch<{ entries: DiagnosticEntry[]; count: number }>('/api/playbook'),
       search: (q: string) =>
-        apiFetch<{ entries: PlaybookEntry[]; count: number }>(`/api/playbook/search?q=${encodeURIComponent(q)}`),
+        apiFetch<{ entries: DiagnosticEntry[]; count: number }>(`/api/playbook/search?q=${encodeURIComponent(q)}`),
       get: async (id: string) => {
-        const { entries } = await apiFetch<{ entries: PlaybookEntry[]; count: number }>('/api/playbook')
-        const entry = entries.find(e => e.id === id)
+        const { entries } = await apiFetch<{ entries: DiagnosticEntry[]; count: number }>('/api/playbook')
+        const entry = entries.find(entry => entry.id === id)
         if (!entry) throw new Error(`Playbook entry ${id} not found`)
         return entry
       },
-      run: (id: string) =>
-        apiFetchPost<PlaybookExecution>(`/api/playbooks/${id}/run`, {}),
-      decision: (executionId: string, stepId: string, answer: string[], skipped = false) =>
-        apiFetchPost<{ step: PlaybookStep | null; completed: boolean }>(
-          `/api/playbooks/${executionId}/decision`,
-          { stepId, answer, skipped }
-        ),
-      getExecution: (executionId: string) =>
-        apiFetch<PlaybookExecution>(`/api/playbooks/${executionId}`),
+      run: async (playbookId: string, context: Record<string, unknown> = {}) => {
+        const { execution } = await apiFetchPost<{ execution: PlaybookExecution }>(
+          '/api/playbook/executions',
+          { playbookId, context }
+        )
+        return execution
+      },
+      decision: async (executionId: string, decision: string) => {
+        const { execution } = await apiFetchPost<{ execution: PlaybookExecution }>(
+          `/api/playbook/executions/${encodeURIComponent(executionId)}/decision`,
+          { decision }
+        )
+        return execution
+      },
+      getExecution: async (executionId: string) => {
+        const { execution } = await apiFetch<{ execution: PlaybookExecution }>(
+          `/api/playbook/executions/${encodeURIComponent(executionId)}`
+        )
+        return execution
+      },
     },
     health: {
       get: async () => {
@@ -288,7 +228,7 @@ export function createBackendClient(token: string | null): BackendClient {
       summary: () =>
         apiFetch<BillingData>('/api/billing/summary'),
       listSubscriptions: () =>
-        apiFetch<{ subscriptions: any[] }>('/api/billing/subscriptions'),
+        apiFetch<{ subscriptions: unknown[] }>('/api/billing/subscriptions'),
       portalUrl: () =>
         apiFetch<{ url: string }>('/api/billing/portal'),
     },
@@ -309,8 +249,8 @@ export function createBackendClient(token: string | null): BackendClient {
       retryRun: (id: string) =>
         apiFetchPost<{ success: boolean }>('/api/remediation/retry', { id }),
       listPolicies: () =>
-        apiFetch<{ policies: any[] }>('/api/remediation/policies'),
-      updatePolicy: (id: string, data: any) =>
+        apiFetch<{ policies: unknown[] }>('/api/remediation/policies'),
+      updatePolicy: (id: string, data: Record<string, unknown>) =>
         apiFetchPost<{ success: boolean }>('/api/remediation/policies', { id, ...data }),
     },
   }

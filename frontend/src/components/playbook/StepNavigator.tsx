@@ -58,9 +58,10 @@ export function StepNavigator({
   onNavigate,
   onExitSave,
 }: StepNavigatorProps) {
-  const progress = ((completedIndices.length + (currentIndex < playbook.steps.length ? 1 : 0)) / playbook.steps.length) * 100
-  const remainingSteps = playbook.steps.length - currentIndex
-  const estimatedRemaining = `${Math.ceil(remainingSteps * 0.75)} min`
+  const progress = playbook.steps.length > 0
+    ? ((completedIndices.length + (currentIndex < playbook.steps.length ? 1 : 0)) / playbook.steps.length) * 100
+    : 0
+  const remainingSteps = Math.max(0, playbook.steps.length - currentIndex)
 
   return (
     <div className="flex h-full w-64 flex-col border-r border-border bg-surface-secondary/40">
@@ -78,17 +79,23 @@ export function StepNavigator({
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <h3 className="font-semibold truncate">{playbook.title}</h3>
-              <Badge variant="secondary" className="text-[10px]">
-                v{playbook.version}
-              </Badge>
+              {playbook.version && (
+                <Badge variant="secondary" className="text-[10px]">
+                  v{playbook.version}
+                </Badge>
+              )}
             </div>
-            <div className="text-xs text-muted-foreground">
-              ~{playbook.estimatedDuration} min • {playbook.successRate}% success
-            </div>
+            {(playbook.estimatedDuration !== undefined || playbook.successRate !== undefined) && (
+              <div className="text-xs text-muted-foreground">
+                {playbook.estimatedDuration !== undefined && `~${playbook.estimatedDuration} min`}
+                {playbook.estimatedDuration !== undefined && playbook.successRate !== undefined && ' • '}
+                {playbook.successRate !== undefined && `${playbook.successRate}% success`}
+              </div>
+            )}
             <Progress value={progress} className="h-1.5" />
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span>Step {currentIndex + 1} of {playbook.steps.length}</span>
-              <span>~{estimatedRemaining} remaining</span>
+              <span>{remainingSteps} steps remaining</span>
             </div>
           </div>
         </div>

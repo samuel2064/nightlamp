@@ -8,12 +8,10 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from '@/components/ui/alert-dialog'
-import type { ReactNode } from 'react'
+import type { ActionDefinition } from './types'
 
 interface ActionStepProps {
-  instructions: string
-  confirmLabel: string
-  requireConfirmation: boolean
+  action: ActionDefinition
   onComplete: () => void
   onPrevious: () => void
   disabled?: boolean
@@ -30,14 +28,13 @@ function MarkdownRenderer({ content }: { content: string }) {
 }
 
 export function ActionStep({
-  instructions,
-  confirmLabel,
-  requireConfirmation,
+  action,
   onComplete,
   onPrevious,
   disabled,
 }: ActionStepProps) {
   const [confirmed, setConfirmed] = useState(false)
+  const { instructions, confirmLabel, requireConfirmation } = action
 
   const handleComplete = () => {
     if (requireConfirmation) {

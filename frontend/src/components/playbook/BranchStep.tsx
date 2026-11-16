@@ -7,29 +7,23 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible'
+import type { BranchDefinition } from './types'
 
 interface BranchStepProps {
-  condition: string
-  result: boolean
-  truePath: string
-  falsePath: string
-  skippedSteps: string[]
+  branch: BranchDefinition
   onContinue: () => void
   onPrevious: () => void
   disabled?: boolean
 }
 
 export function BranchStep({
-  condition,
-  result,
-  truePath,
-  falsePath,
-  skippedSteps,
+  branch,
   onContinue,
   onPrevious,
   disabled,
 }: BranchStepProps) {
   const [showSkipped, setShowSkipped] = useState(false)
+  const { condition, result, truePath, falsePath, skippedSteps } = branch
 
   return (
     <div className="space-y-6">
