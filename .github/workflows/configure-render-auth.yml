@@ -14,8 +14,8 @@ env:
   CLERK_ISSUER: https://capable-goldfish-98.clerk.accounts.dev
   CLERK_INSTANCE: capable-goldfish-98.clerk.accounts.dev
   REPORT_BRANCH: ops/render-auth-report
-  EXPECTED_BACKEND_NAME: nightlamp-api
-  EXPECTED_FRONTEND_NAME: nightlamp-frontend
+  EXPECTED_BACKEND_SLUG: nightlamp-api
+  EXPECTED_FRONTEND_SLUG: nightlamp-frontend
 
 jobs:
   configure:
@@ -51,46 +51,52 @@ jobs:
           test -n "$BACKEND_SERVICE_ID" || { echo "::error::RENDER_BACKEND_SERVICE_ID secret is missing or empty"; exit 1; }
           echo "preflight ok"
 
-      - name: Resolve the service identities
+      - name: List the Render services
         run: |
           set -uo pipefail
           : > /tmp/diag.log
-          BACKEND_STATUS=$(curl -sS -o /tmp/backend-service.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$BACKEND_SERVICE_ID")
-          echo "GET /services/<backend> -> HTTP $BACKEND_STATUS" >> /tmp/diag.log
-          if [ "$BACKEND_STATUS" != "200" ]; then
-            echo "::error::the Render API answered HTTP $BACKEND_STATUS for the backend service id"
+          : > /tmp/services-list.txt
+          STATUS=$(curl -sS -o /tmp/services.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services")
+          echo "GET /services -> HTTP $STATUS" >> /tmp/diag.log
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::the Render API answered HTTP $STATUS for the service list"
             exit 1
           fi
-          echo "backend response top-level keys: $(jq -r 'if type=="object" then (keys|join(",")) else type end' /tmp/backend-service.json 2>>/tmp/diag.log)" >> /tmp/diag.log
-          BACKEND_NAME=$(jq -r 'if .service then .service.name else .name end' /tmp/backend-service.json 2>>/tmp/diag.log)
-          BACKEND_TYPE=$(jq -r 'if .service then .service.type else .type end' /tmp/backend-service.json 2>>/tmp/diag.log)
-          echo "backend service: $BACKEND_NAME ($BACKEND_TYPE)" >> /tmp/diag.log
-          if [ -z "$BACKEND_NAME" ] || [ "$BACKEND_NAME" = "null" ]; then
-            echo "::error::no service name in the Render response"
+          echo "workspace services (name | slug | type | id):" >> /tmp/services-list.txt
+          jq -r '(if type=="array" then . elif .service then .service else [] end) | .[] | [(.name//"?"),(.slug//"?"),(.type//"?"),(.id//"?")] | join(" | ")' /tmp/services.json >> /tmp/services-list.txt
+          cat /tmp/services-list.txt
+
+      - name: Resolve the service identities
+        run: |
+          set -uo pipefail
+          service_id_by_slug() {
+            jq -r --arg slug "$1" '(if type=="array" then . elif .service then .service else [] end) | map(select(.slug==$slug)) | .[0].id // ""' /tmp/services.json
+          }
+          service_field_by_id() {
+            jq -r --arg id "$1" --arg field "$2" '(if type=="array" then . elif .service then .service else [] end) | map(select(.id==$id)) | .[0][$field] // ""' /tmp/services.json
+          }
+          TARGET_BACKEND_ID=$(service_id_by_slug "$EXPECTED_BACKEND_SLUG")
+          TARGET_FRONTEND_ID=$(service_id_by_slug "$EXPECTED_FRONTEND_SLUG")
+          SECRET_BACKEND_NAME=$(service_field_by_id "$BACKEND_SERVICE_ID" name)
+          SECRET_BACKEND_SLUG=$(service_field_by_id "$BACKEND_SERVICE_ID" slug)
+          SECRET_FRONTEND_NAME=$(service_field_by_id "$FRONTEND_SERVICE_ID" name)
+          SECRET_FRONTEND_SLUG=$(service_field_by_id "$FRONTEND_SERVICE_ID" slug)
+          echo "repository secret backend service id: name=$SECRET_BACKEND_NAME slug=$SECRET_BACKEND_SLUG" >> /tmp/diag.log
+          echo "repository secret frontend service id: name=$SECRET_FRONTEND_NAME slug=$SECRET_FRONTEND_SLUG" >> /tmp/diag.log
+          echo "selected backend service id: ${TARGET_BACKEND_ID:-none}" >> /tmp/diag.log
+          echo "selected frontend service id: ${TARGET_FRONTEND_ID:-none}" >> /tmp/diag.log
+          if [ -z "$TARGET_BACKEND_ID" ]; then
+            echo "::error::no service with the slug '$EXPECTED_BACKEND_SLUG' was found; the workspace service list is in the report"
             exit 1
           fi
-          if [ "$BACKEND_NAME" != "$EXPECTED_BACKEND_NAME" ]; then
-            echo "::error::refusing to configure a service named '$BACKEND_NAME', expected '$EXPECTED_BACKEND_NAME'"
-            exit 1
+          if [ "$TARGET_BACKEND_ID" != "$BACKEND_SERVICE_ID" ]; then
+            echo "::warning::the repository secret points at service $BACKEND_SERVICE_ID (slug '$SECRET_BACKEND_SLUG') while the product hostname needs the service with the slug '$EXPECTED_BACKEND_SLUG' ($TARGET_BACKEND_ID)"
+            echo "the repository deploy secret and the product hostname point at different services" >> /tmp/diag.log
           fi
-          echo "$BACKEND_NAME" > /tmp/backend-name.txt
-          if [ -n "$FRONTEND_SERVICE_ID" ]; then
-            FRONTEND_STATUS=$(curl -sS -o /tmp/frontend-service.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$FRONTEND_SERVICE_ID")
-            echo "GET /services/<frontend> -> HTTP $FRONTEND_STATUS" >> /tmp/diag.log
-            if [ "$FRONTEND_STATUS" = "200" ]; then
-              FRONTEND_NAME=$(jq -r 'if .service then .service.name else .name end' /tmp/frontend-service.json 2>>/tmp/diag.log)
-              echo "frontend service: $FRONTEND_NAME" >> /tmp/diag.log
-              if [ "$FRONTEND_NAME" != "$EXPECTED_FRONTEND_NAME" ]; then
-                echo "::error::unexpected frontend service '$FRONTEND_NAME'"
-                exit 1
-              fi
-              echo "$FRONTEND_NAME" > /tmp/frontend-name.txt
-            else
-              echo "no frontend service id secret" > /tmp/frontend-name.txt
-            fi
-          else
-            echo "no frontend service id secret" > /tmp/frontend-name.txt
-          fi
+          echo "TARGET_BACKEND_ID=$TARGET_BACKEND_ID" >> "$GITHUB_ENV"
+          echo "TARGET_FRONTEND_ID=$TARGET_FRONTEND_ID" >> "$GITHUB_ENV"
+          echo "$EXPECTED_BACKEND_SLUG ($TARGET_BACKEND_ID)" > /tmp/backend-name.txt
+          echo "${EXPECTED_FRONTEND_SLUG} (${TARGET_FRONTEND_ID:-not found})" > /tmp/frontend-name.txt
 
       - name: Verify the signing key against the live Clerk JWKS
         run: |
@@ -115,7 +121,7 @@ jobs:
           set -uo pipefail
           : > /tmp/backend-keys.txt
           : > /tmp/frontend-keys.txt
-          BACKEND_STATUS=$(curl -sS -o /tmp/backend-envvars.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$BACKEND_SERVICE_ID/env-vars")
+          BACKEND_STATUS=$(curl -sS -o /tmp/backend-envvars.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$TARGET_BACKEND_ID/env-vars")
           echo "GET /services/<backend>/env-vars -> HTTP $BACKEND_STATUS" >> /tmp/diag.log
           if [ "$BACKEND_STATUS" != "200" ]; then
             echo "::error::the Render API answered HTTP $BACKEND_STATUS for the backend env vars"
@@ -123,8 +129,8 @@ jobs:
           fi
           echo "backend env var response type: $(jq -r 'type' /tmp/backend-envvars.json)" >> /tmp/diag.log
           jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/backend-envvars.json | sort | tee -a /tmp/backend-keys.txt
-          if [ -n "$FRONTEND_SERVICE_ID" ]; then
-            FRONTEND_STATUS=$(curl -sS -o /tmp/frontend-envvars.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$FRONTEND_SERVICE_ID/env-vars")
+          if [ -n "$TARGET_FRONTEND_ID" ]; then
+            FRONTEND_STATUS=$(curl -sS -o /tmp/frontend-envvars.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$TARGET_FRONTEND_ID/env-vars")
             echo "GET /services/<frontend>/env-vars -> HTTP $FRONTEND_STATUS" >> /tmp/diag.log
             if [ "$FRONTEND_STATUS" = "200" ]; then
               jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/frontend-envvars.json | sort | tee -a /tmp/frontend-keys.txt
@@ -173,14 +179,14 @@ jobs:
               echo "created $key" >> /tmp/actions.log
             fi
           }
-          apply_env_var "$BACKEND_SERVICE_ID" /tmp/backend-envvars.json CLERK_JWT_ISSUER "$CLERK_ISSUER" || exit 1
-          apply_env_var "$BACKEND_SERVICE_ID" /tmp/backend-envvars.json CLERK_JWT_PUBLIC_KEY "$CLERK_JWT_PUBLIC_KEY" || exit 1
+          apply_env_var "$TARGET_BACKEND_ID" /tmp/backend-envvars.json CLERK_JWT_ISSUER "$CLERK_ISSUER" || exit 1
+          apply_env_var "$TARGET_BACKEND_ID" /tmp/backend-envvars.json CLERK_JWT_PUBLIC_KEY "$CLERK_JWT_PUBLIC_KEY" || exit 1
 
       - name: Configure nightlamp-frontend when a variable is missing
         run: |
           set -uo pipefail
-          if [ -z "$FRONTEND_SERVICE_ID" ]; then
-            echo "no frontend service id secret, skipping"
+          if [ -z "$TARGET_FRONTEND_ID" ]; then
+            echo "no frontend service with the slug nightlamp-frontend, skipping"
             exit 0
           fi
           decode_clerk_instance() {
@@ -208,7 +214,7 @@ jobs:
               -H "Authorization: Bearer $RENDER_API_KEY" \
               -H "Content-Type: application/json" \
               -d "$(jq -n --arg k "$key" --arg v "$value" '{key:$k,value:$v}')" \
-              "$RENDER_API/services/$FRONTEND_SERVICE_ID/env-vars")
+              "$RENDER_API/services/$TARGET_FRONTEND_ID/env-vars")
             echo "POST frontend $key -> HTTP $status" >> /tmp/diag.log
             if [ "$status" != "200" ] && [ "$status" != "201" ]; then
               echo "::error::the Render API answered HTTP $status when creating $key on the frontend service"
@@ -235,13 +241,13 @@ jobs:
           set -uo pipefail
           : > /tmp/backend-keys-after.txt
           : > /tmp/frontend-keys-after.txt
-          BACKEND_STATUS=$(curl -sS -o /tmp/backend-envvars-after.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$BACKEND_SERVICE_ID/env-vars")
+          BACKEND_STATUS=$(curl -sS -o /tmp/backend-envvars-after.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$TARGET_BACKEND_ID/env-vars")
           echo "GET /services/<backend>/env-vars (after) -> HTTP $BACKEND_STATUS" >> /tmp/diag.log
           if [ "$BACKEND_STATUS" = "200" ]; then
             jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/backend-envvars-after.json | sort | tee -a /tmp/backend-keys-after.txt
           fi
-          if [ -n "$FRONTEND_SERVICE_ID" ]; then
-            FRONTEND_STATUS=$(curl -sS -o /tmp/frontend-envvars-after.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$FRONTEND_SERVICE_ID/env-vars")
+          if [ -n "$TARGET_FRONTEND_ID" ]; then
+            FRONTEND_STATUS=$(curl -sS -o /tmp/frontend-envvars-after.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$TARGET_FRONTEND_ID/env-vars")
             echo "GET /services/<frontend>/env-vars (after) -> HTTP $FRONTEND_STATUS" >> /tmp/diag.log
             if [ "$FRONTEND_STATUS" = "200" ]; then
               jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/frontend-envvars-after.json | sort | tee -a /tmp/frontend-keys-after.txt
@@ -264,12 +270,13 @@ jobs:
             --arg backendName "$BACKEND_NAME" \
             --arg frontendName "$FRONTEND_NAME" \
             --arg diag "$DIAG" \
+            --arg services "$(tr '\n' ';' < /tmp/services-list.txt 2>/dev/null || echo '')" \
             --arg actions "$(tr '\n' ';' < /tmp/actions.log 2>/dev/null || echo '')" \
             --arg backendBefore "$(tr '\n' ',' < /tmp/backend-keys.txt 2>/dev/null || echo '')" \
             --arg backendAfter "$(tr '\n' ',' < /tmp/backend-keys-after.txt 2>/dev/null || echo '')" \
             --arg frontendBefore "$(tr '\n' ',' < /tmp/frontend-keys.txt 2>/dev/null || echo '')" \
             --arg frontendAfter "$(tr '\n' ',' < /tmp/frontend-keys-after.txt 2>/dev/null || echo '')" \
-            '{run:$run,sha:$sha,branch:$branch,backendService:$backendName,frontendService:$frontendName,jwksKid:$kid,diagnostics:$diag,actions:$actions,backendEnvVarKeysBefore:$backendBefore,backendEnvVarKeysAfter:$backendAfter,frontendEnvVarKeysBefore:$frontendBefore,frontendEnvVarKeysAfter:$frontendAfter,valuesIncluded:false}' > /tmp/report.json
+            '{run:$run,sha:$sha,branch:$branch,backendService:$backendName,frontendService:$frontendName,jwksKid:$kid,diagnostics:$diag,workspaceServices:$services,actions:$actions,backendEnvVarKeysBefore:$backendBefore,backendEnvVarKeysAfter:$backendAfter,frontendEnvVarKeysBefore:$frontendBefore,frontendEnvVarKeysAfter:$frontendAfter,valuesIncluded:false}' > /tmp/report.json
           cat /tmp/report.json
           {
             echo "## Render auth configuration report"
