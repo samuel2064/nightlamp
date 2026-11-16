@@ -225,6 +225,7 @@ export function rejectRun(id: string, teamId: string | null = null): any {
   const db = getDb();
   const scope = tenantFilter('team_id', teamId);
   db.run(`UPDATE remediation_runs SET status = 'rejected', completed_at = datetime('now') WHERE id = ? AND ${scope.clause}`, [id, ...scope.params]);
+  if (db.getRowsModified() === 0) throw new Error('Run not found');
   return { id, status: 'rejected' };
 }
 

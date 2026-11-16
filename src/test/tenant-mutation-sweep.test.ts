@@ -134,21 +134,24 @@ describe('cross-tenant mutation sweep', () => {
         clerkId: TEAM_B_CLERK,
         body: { name: 'hijacked', enabled: false },
       });
-      assert.ok(res.status === 404 || res.status === 403 || res.status === 200, `unexpected status ${res.status}`);
+      assert.strictEqual(res.status, 404);
+      assert.strictEqual(res.payload.error, 'Channel not found');
       assert.strictEqual(scalar('SELECT name FROM alert_channels WHERE id = ?', [channelId]), 'Tenant A channel');
       assert.strictEqual(scalar('SELECT enabled FROM alert_channels WHERE id = ?', [channelId]), 1);
     });
 
     it('refuses to delete or edit another tenant\'s rule', async () => {
       const del = await call('DELETE', `/api/alerting/rules/${ruleId}`, { clerkId: TEAM_B_CLERK });
-      assert.ok(del.status === 404 || del.status === 403 || del.status === 200, `unexpected status ${del.status}`);
+      assert.strictEqual(del.status, 404);
+      assert.strictEqual(del.payload.error, 'Rule not found');
       assert.strictEqual(scalar('SELECT COUNT(*) FROM alert_rules WHERE id = ?', [ruleId]), 1);
 
       const put = await call('PUT', `/api/alerting/rules/${ruleId}`, {
         clerkId: TEAM_B_CLERK,
         body: { name: 'hijacked', enabled: false },
       });
-      assert.ok(put.status === 404 || put.status === 403 || put.status === 200, `unexpected status ${put.status}`);
+      assert.strictEqual(put.status, 404);
+      assert.strictEqual(put.payload.error, 'Rule not found');
       assert.strictEqual(scalar('SELECT name FROM alert_rules WHERE id = ?', [ruleId]), 'Tenant A rule');
       assert.strictEqual(scalar('SELECT enabled FROM alert_rules WHERE id = ?', [ruleId]), 1);
     });
@@ -162,6 +165,21 @@ describe('cross-tenant mutation sweep', () => {
       assert.ok(res.status === 404 || res.status === 403, `expected 404 or 403, got ${res.status}`);
       assert.strictEqual(scalar('SELECT COUNT(*) FROM alert_rules WHERE channel_id = ?', [channelId]), before);
     });
+
+    it('lets the owning tenant update its channel', async () => {
+      const ownerChannelId = uuidv4();
+      db.run('INSERT INTO alert_channels (id, name, type, config, enabled, team_id) VALUES (?, ?, ?, ?, ?, ?)',
+        [ownerChannelId, 'Owner channel', 'slack', '{"url":"https://example.invalid"}', 1, teamA]);
+
+      const res = await call('PUT', `/api/alerting/channels/${ownerChannelId}`, {
+        clerkId: TEAM_A_CLERK,
+        body: { name: 'Updated channel', enabled: false },
+      });
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(scalar('SELECT name FROM alert_channels WHERE id = ?', [ownerChannelId]), 'Updated channel');
+      assert.strictEqual(scalar('SELECT enabled FROM alert_channels WHERE id = ?', [ownerChannelId]), 0);
+    });
   });
 
   describe('remediation runs', () => {
@@ -172,7 +190,10 @@ describe('cross-tenant mutation sweep', () => {
       const retry = await call('POST', '/api/remediation/retry', { clerkId: TEAM_B_CLERK, body: { id: runId } });
       assert.notStrictEqual(retry.status, 200, 'retry must not report success for a foreign run');
 
-      await call('POST', '/api/remediation/reject', { clerkId: TEAM_B_CLERK, body: { id: runId } });
+      const reject = await call('POST', '/api/remediation/reject', { clerkId: TEAM_B_CLERK, body: { id: runId } });
+      assert.notStrictEqual(reject.status, 200, 'reject must not report success for a foreign run');
+      assert.strictEqual(reject.status, 400);
+      assert.strictEqual(reject.payload.error, 'Run not found');
 
       assert.strictEqual(scalar('SELECT status FROM remediation_runs WHERE id = ?', [runId]), 'pending');
       assert.strictEqual(scalar('SELECT output FROM remediation_runs WHERE id = ?', [runId]), null);
@@ -184,6 +205,21 @@ describe('cross-tenant mutation sweep', () => {
       assert.notStrictEqual(approve.status, 200);
       await call('POST', '/api/remediation/reject', { clerkId: LONELY_CLERK, body: { id: runId } });
       assert.strictEqual(scalar('SELECT status FROM remediation_runs WHERE id = ?', [runId]), 'pending');
+    });
+
+    it('lets the owning tenant reject its run', async () => {
+      const ownerRunId = uuidv4();
+      db.run('INSERT INTO remediation_runs (id, playbook_entry_id, action_name, status, initiated_by, team_id) VALUES (?, ?, ?, ?, ?, ?)',
+        [ownerRunId, entryId, 'restart-service', 'pending', 'sweep-user-a', teamA]);
+
+      const res = await call('POST', '/api/remediation/reject', {
+        clerkId: TEAM_A_CLERK,
+        body: { id: ownerRunId },
+      });
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.payload.success, true);
+      assert.strictEqual(scalar('SELECT status FROM remediation_runs WHERE id = ?', [ownerRunId]), 'rejected');
     });
   });
 
