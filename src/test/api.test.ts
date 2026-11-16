@@ -4,6 +4,7 @@ import { Database } from 'sql.js';
 import { Server } from 'http';
 import assert from 'assert';
 import { getOrCreatePlaybookEntry } from '../playbook';
+import { TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID } from './setup';
 
 describe('API Server', () => {
   let db: Database;
@@ -12,6 +13,10 @@ describe('API Server', () => {
 
   before(async () => {
     db = await createDatabase();
+    db.run('INSERT INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)',
+      [TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID, 'owner@example.com', 'Owner']);
+    db.run("INSERT INTO teams (id, name, slug, owner_id) VALUES ('api-team', 'API Team', 'api-team', ?)", [TEST_LOCAL_USER_ID]);
+    db.run("INSERT INTO memberships (id, team_id, user_id, role) VALUES ('api-owner', 'api-team', ?, 'owner')", [TEST_LOCAL_USER_ID]);
 
     db.run('INSERT INTO failure_events (id, check_id, failure_type, severity, title, description) VALUES (?, ?, ?, ?, ?, ?)',
       ['f-api-1', 'c1', 'expired_token', 'critical', 'Token expired', 'desc']);
@@ -23,6 +28,10 @@ describe('API Server', () => {
       ['p-api-1', 'expired_token', 'Expired Token', 'body with token symptoms']);
     db.run('INSERT INTO playbook_entries (id, failure_type, title, body) VALUES (?, ?, ?, ?)',
       ['p-api-2', 'broken_webhook', 'Broken Webhook', 'body with 5xx symptoms']);
+
+    for (const table of ['failure_events', 'check_results', 'playbook_entries']) {
+      db.run(`UPDATE ${table} SET team_id = 'api-team'`);
+    }
 
     server = startApiServer(db, { port: 0 });
     const addr = server.address() as any;

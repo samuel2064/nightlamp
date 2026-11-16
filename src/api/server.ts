@@ -218,7 +218,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           }
         }
 
-        if (matchesEndpoint(path, req.method, ADMIN_ENDPOINTS) && auth.teamId) {
+        if (matchesEndpoint(path, req.method, ADMIN_ENDPOINTS)) {
           try {
             requireRole(auth, ['owner', 'admin']);
           } catch (err: any) {
