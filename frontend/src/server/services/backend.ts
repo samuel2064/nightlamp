@@ -173,7 +173,6 @@ function normalizeHealthStatus(raw: string | undefined): HealthStatus {
 export interface BackendClient {
   events: {
     list: (params?: { limit?: number; offset?: number; type?: string; severity?: string }) => Promise<{ events: FailureEvent[]; count: number }>
-    acknowledge: (id: string) => Promise<{ success: boolean; id: string }>
   }
   checkResults: {
     list: (params?: { limit?: number; offset?: number; status?: string }) => Promise<{ results: CheckResult[]; count: number }>
@@ -233,8 +232,6 @@ export function createBackendClient(token: string | null): BackendClient {
         apiFetch<{ events: FailureEvent[]; count: number }>(
           `/api/events?${new URLSearchParams(params as Record<string, string>).toString()}`
         ),
-      acknowledge: (id: string) =>
-        apiFetchPost<{ success: boolean; id: string }>('/api/events/acknowledge', { id }),
     },
     checkResults: {
       list: (params?: { limit?: number; offset?: number; status?: string }) =>
