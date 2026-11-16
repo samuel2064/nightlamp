@@ -665,10 +665,17 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             if (name !== undefined) { updates.push('name = ?'); params.push(name); }
             if (config !== undefined) { updates.push('config = ?'); params.push(JSON.stringify(config)); }
             if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
+            let affectedRows = 0;
             if (updates.length > 0) {
               updates.push("updated_at = datetime('now')");
               const tenantScope = tenantFilter('team_id', teamId);
               db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${tenantScope.clause}`, [...params, channelId, ...tenantScope.params]);
+              affectedRows = db.getRowsModified();
+            }
+            if (affectedRows === 0) {
+              res.writeHead(404);
+              res.end(JSON.stringify({ error: 'Channel not found' }));
+              return;
             }
             res.end(JSON.stringify({ success: true }));
           } catch (err: any) {
@@ -733,6 +740,11 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         if (!ruleId) { res.writeHead(400); res.end(JSON.stringify({ error: 'Rule ID required' })); return; }
         const tenantScope = tenantFilter('team_id', teamId);
         db.run(`DELETE FROM alert_rules WHERE id = ? AND ${tenantScope.clause}`, [ruleId, ...tenantScope.params]);
+        if (db.getRowsModified() === 0) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: 'Rule not found' }));
+          return;
+        }
         res.end(JSON.stringify({ success: true }));
         return;
       }
@@ -757,10 +769,17 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             if (failureTypes !== undefined) { updates.push('failure_types = ?'); params.push(JSON.stringify(failureTypes)); }
             if (minSeverity !== undefined) { updates.push('min_severity = ?'); params.push(minSeverity); }
             if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
+            let affectedRows = 0;
             if (updates.length > 0) {
               updates.push("updated_at = datetime('now')");
               const tenantScope = tenantFilter('team_id', teamId);
               db.run(`UPDATE alert_rules SET ${updates.join(', ')} WHERE id = ? AND ${tenantScope.clause}`, [...params, ruleId, ...tenantScope.params]);
+              affectedRows = db.getRowsModified();
+            }
+            if (affectedRows === 0) {
+              res.writeHead(404);
+              res.end(JSON.stringify({ error: 'Rule not found' }));
+              return;
             }
             res.end(JSON.stringify({ success: true }));
           } catch (err: any) {
