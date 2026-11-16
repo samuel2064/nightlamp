@@ -62,18 +62,21 @@ jobs:
             echo "::error::the Render API answered HTTP $STATUS for the service list"
             exit 1
           fi
+          echo "response top-level type: $(jq -r 'type' /tmp/services.json)" >> /tmp/diag.log
+          echo "response top-level keys: $(jq -r 'if type=="object" then (keys|join(",")) else "n/a" end' /tmp/services.json)" >> /tmp/diag.log
           echo "workspace services (name | slug | type | id):" >> /tmp/services-list.txt
-          jq -r '(if type=="array" then . elif .service then .service else [] end) | .[] | [(.name//"?"),(.slug//"?"),(.type//"?"),(.id//"?")] | join(" | ")' /tmp/services.json >> /tmp/services-list.txt
+          jq -r '.. | objects | select(has("slug")) | [(.name//"?"), .slug, (.type//"?"), (.id//"?")] | join(" | ")' /tmp/services.json | sort -u >> /tmp/services-list.txt
+          echo "first element keys: $(jq -r 'if type=="array" and (.[0]|type)=="object" then (.[0]|keys|join(",")) else "n/a" end' /tmp/services.json)" >> /tmp/diag.log
           cat /tmp/services-list.txt
 
       - name: Resolve the service identities
         run: |
           set -uo pipefail
           service_id_by_slug() {
-            jq -r --arg slug "$1" '(if type=="array" then . elif .service then .service else [] end) | map(select(.slug==$slug)) | .[0].id // ""' /tmp/services.json
+            jq -r --arg slug "$1" '.. | objects | select(.slug==$slug) | .id // empty' /tmp/services.json | head -n 1
           }
           service_field_by_id() {
-            jq -r --arg id "$1" --arg field "$2" '(if type=="array" then . elif .service then .service else [] end) | map(select(.id==$id)) | .[0][$field] // ""' /tmp/services.json
+            jq -r --arg id "$1" --arg field "$2" '.. | objects | select(.id==$id) | .[$field] // empty' /tmp/services.json | head -n 1
           }
           TARGET_BACKEND_ID=$(service_id_by_slug "$EXPECTED_BACKEND_SLUG")
           TARGET_FRONTEND_ID=$(service_id_by_slug "$EXPECTED_FRONTEND_SLUG")
