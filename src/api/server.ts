@@ -2,7 +2,7 @@ import * as http from 'http';
 import { Database } from 'sql.js';
 import { BillingApi } from '../billing/billing-api';
 import { StripeClient } from '../billing/stripe-client';
-import { runRemediation, getRemediationLogs, listRuns, approveRun, rejectRun, retryRun, listPolicies, updatePolicy } from '../remediation/engine';
+import { runRemediation, getRemediationLogs, getRemediationRuns, approveRun, rejectRun, retryRun, listPolicies, updatePolicy } from '../remediation/engine';
 import { getOrCreatePlaybookEntry } from '../playbook';
 import { FailureType } from '../classifier';
 import { matchPlaybookEntries, getCorrelatedPatterns } from '../playbook/matcher';
@@ -426,6 +426,26 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           detectedAt: row[7],
         })) : [];
         res.end(JSON.stringify({ updates, count: updates.length }));
+        return;
+      }
+
+      if (normalizePath(path) === '/api/remediation/runs' && req.method === 'GET') {
+        const limitValue = parsedUrl.searchParams.get('limit') ?? '50';
+        const offsetValue = parsedUrl.searchParams.get('offset') ?? '0';
+        const limit = Number(limitValue);
+        const offset = Number(offsetValue);
+        if (!/^\d+$/.test(limitValue) || !Number.isSafeInteger(limit) || limit < 1 ||
+            !/^\d+$/.test(offsetValue) || !Number.isSafeInteger(offset)) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'limit must be a positive integer and offset a non-negative integer' }));
+          return;
+        }
+        res.end(JSON.stringify(getRemediationRuns(db, {
+          status: parsedUrl.searchParams.get('status') || 'pending',
+          limit: Math.min(limit, 200),
+          offset,
+          teamId,
+        })));
         return;
       }
 
@@ -1565,7 +1585,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       }
 
       res.writeHead(404);
-      res.end(JSON.stringify({ error: 'Not found', available: ['/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules', '/api/alerting/log', '/api/alerting/escalation', '/api/notifications/channels', '/api/notifications/send', '/api/notifications/deliver', '/api/x/auth', '/api/x/callback', '/api/x/status', '/api/x/refresh', '/api/x/schedule', '/api/x/schedule-thread', '/api/x/post', '/api/x/posts', '/api/leads', '/api/health', '/api/monitors', '/api/incidents', '/api/dependency-health', '/api/activity', '/api/webhooks/clerk', '/api/teams', '/api/teams/:id', '/api/teams/:id/members', '/api/teams/:id/members/:userId', '/api/teams/:id/workspace', '/api/teams/:id/invitations', '/api/invitations/:token', '/api/invitations/:token/accept', '/api/onboarding/start', '/api/onboarding/:sessionId/status', '/api/onboarding/:sessionId/step', '/api/onboarding/:sessionId/complete', '/api/playbooks/custom', '/api/playbooks/custom/:id', '/api/playbooks/custom/:id/publish', '/api/playbooks/custom/:id/nodes', '/api/playbooks/custom/:id/versions', '/api/playbooks/custom/:id/versions/:versionId', '/api/reports/incident-trends', '/api/reports/uptime-stats', '/api/reports/playbook-effectiveness', '/api/reports/team-summary', '/api/performance/latency', '/api/alerting/escalation', '/api/alerting/self-monitor'] }));
+      res.end(JSON.stringify({ error: 'Not found', available: ['/api/remediation/runs', '/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules', '/api/alerting/log', '/api/alerting/escalation', '/api/notifications/channels', '/api/notifications/send', '/api/notifications/deliver', '/api/x/auth', '/api/x/callback', '/api/x/status', '/api/x/refresh', '/api/x/schedule', '/api/x/schedule-thread', '/api/x/post', '/api/x/posts', '/api/leads', '/api/health', '/api/monitors', '/api/incidents', '/api/dependency-health', '/api/activity', '/api/webhooks/clerk', '/api/teams', '/api/teams/:id', '/api/teams/:id/members', '/api/teams/:id/members/:userId', '/api/teams/:id/workspace', '/api/teams/:id/invitations', '/api/invitations/:token', '/api/invitations/:token/accept', '/api/onboarding/start', '/api/onboarding/:sessionId/status', '/api/onboarding/:sessionId/step', '/api/onboarding/:sessionId/complete', '/api/playbooks/custom', '/api/playbooks/custom/:id', '/api/playbooks/custom/:id/publish', '/api/playbooks/custom/:id/nodes', '/api/playbooks/custom/:id/versions', '/api/playbooks/custom/:id/versions/:versionId', '/api/reports/incident-trends', '/api/reports/uptime-stats', '/api/reports/playbook-effectiveness', '/api/reports/team-summary', '/api/performance/latency', '/api/alerting/escalation', '/api/alerting/self-monitor'] }));
     } catch (err: any) {
       res.writeHead(500);
       res.end(JSON.stringify({ error: err.message }));
