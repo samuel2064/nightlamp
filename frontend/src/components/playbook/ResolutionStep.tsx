@@ -6,13 +6,10 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import type { Step } from './types'
+import type { ResolutionDefinition } from './types'
 
 interface ResolutionStepProps {
-  outcome: 'success' | 'partial' | 'escalation'
-  rootCause: string
-  actionsTaken: string[]
-  prevention: string[]
+  resolution: ResolutionDefinition
   onExport: () => void
   onMarkResolved: () => void
   onPostMortem: () => void
@@ -45,16 +42,14 @@ const OUTCOME_CONFIG = {
 }
 
 export function ResolutionStep({
-  outcome,
-  rootCause,
-  actionsTaken,
-  prevention,
+  resolution,
   onExport,
   onMarkResolved,
   onPostMortem,
   onClose,
   disabled,
 }: ResolutionStepProps) {
+  const { outcome, rootCause, actionsTaken, prevention } = resolution
   const config = OUTCOME_CONFIG[outcome]
   const Icon = config.icon
 

@@ -3,9 +3,10 @@
 import { ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import type { InfoDefinition } from './types'
 
 interface InfoStepProps {
-  content: string
+  info: InfoDefinition
   onContinue: () => void
   onPrevious: () => void
   disabled?: boolean
@@ -74,7 +75,7 @@ function MarkdownRenderer({ content }: { content: string }) {
 }
 
 export function InfoStep({
-  content,
+  info,
   onContinue,
   onPrevious,
   disabled,
@@ -83,7 +84,7 @@ export function InfoStep({
     <div className="space-y-6">
       <Card>
         <CardContent className="pt-4">
-          <MarkdownRenderer content={content} />
+          <MarkdownRenderer content={info.content} />
         </CardContent>
       </Card>
 

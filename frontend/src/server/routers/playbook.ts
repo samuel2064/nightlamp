@@ -15,17 +15,18 @@ export const playbookRouter = router({
     .query(({ ctx, input }) => createBackendClient(ctx.token).playbook.get(input.id)),
 
   run: protectedProcedure
-    .input(z.object({ id: z.string() }))
-    .mutation(({ ctx, input }) => createBackendClient(ctx.token).playbook.run(input.id)),
+    .input(z.object({
+      id: z.string(),
+      context: z.record(z.string(), z.unknown()).optional(),
+    }))
+    .mutation(({ ctx, input }) => createBackendClient(ctx.token).playbook.run(input.id, input.context)),
 
   decision: protectedProcedure
     .input(z.object({
       executionId: z.string(),
-      stepId: z.string(),
-      answer: z.array(z.string()),
-      skipped: z.boolean().optional(),
+      decision: z.string(),
     }))
-    .mutation(({ ctx, input }) => createBackendClient(ctx.token).playbook.decision(input.executionId, input.stepId, input.answer, input.skipped)),
+    .mutation(({ ctx, input }) => createBackendClient(ctx.token).playbook.decision(input.executionId, input.decision)),
 
   getExecution: protectedProcedure
     .input(z.object({ executionId: z.string() }))

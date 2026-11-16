@@ -21,16 +21,16 @@ import { ResolutionStep } from './ResolutionStep'
 import { AutomationPanel } from './AutomationPanel'
 import { trpc } from '@/lib/trpc'
 import { toast } from 'sonner'
-import type { Playbook, Step, StepType, PlaybookExecution, ActiveUser, RunningCheck, RightPanelTab } from './types'
-
-const STEP_COMPONENTS: Record<StepType, React.ComponentType<any>> = {
-  QUESTION: QuestionStep,
-  CHECK: CheckStep,
-  ACTION: ActionStep,
-  INFO: InfoStep,
-  BRANCH: BranchStep,
-  RESOLUTION: ResolutionStep,
-}
+import type {
+  DiagnosticEntry,
+  PlaybookExecution,
+  ActiveUser,
+  RunningCheck,
+  RightPanelTab,
+  CheckStatus,
+  CheckResult,
+} from './types'
+import { mapDiagnosticToExecutable } from './types'
 
 interface PlaybookReaderProps {
   playbookId: string
@@ -39,7 +39,7 @@ interface PlaybookReaderProps {
 
 export function PlaybookReader({ playbookId, onExit }: PlaybookReaderProps) {
   const [execution, setExecution] = useState<PlaybookExecution | null>(null)
-  const [playbookEntry, setPlaybookEntry] = useState<{ id: string; title: string; failureType: string } | null>(null)
+  const [playbookEntry, setPlaybookEntry] = useState<DiagnosticEntry | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [sseConnected, setSseConnected] = useState(false)

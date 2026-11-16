@@ -9,13 +9,10 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import type { Option } from './types'
+import type { QuestionDefinition } from './types'
 
 interface QuestionStepProps {
-  question: string
-  options: Option[]
-  allowMultiple: boolean
-  allowCustom: boolean
+  question: QuestionDefinition
   onAnswer: (values: string[]) => void
   disabled?: boolean
   previousValues?: string[]
@@ -23,15 +20,13 @@ interface QuestionStepProps {
 
 export function QuestionStep({
   question,
-  options,
-  allowMultiple,
-  allowCustom,
   onAnswer,
   disabled,
   previousValues = [],
 }: QuestionStepProps) {
   const [selectedValues, setSelectedValues] = useState<string[]>(previousValues)
   const [customValue, setCustomValue] = useState('')
+  const { text, options, allowMultiple, allowCustom } = question
 
   const handleSelect = (value: string) => {
     if (allowMultiple) {
@@ -60,7 +55,7 @@ export function QuestionStep({
   return (
     <div className="space-y-6">
       <div>
-        <p className="text-lg text-foreground">{question}</p>
+        <p className="text-lg text-foreground">{text}</p>
       </div>
 
       <div className="space-y-3">
