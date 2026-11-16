@@ -105,6 +105,16 @@ export default function DashboardOverview() {
     return () => clearInterval(timer)
   }, [])
 
+  // Count distinct active applications from check results (group by checkId)
+  const monitors = useMemo(() => monitorsQuery.data?.monitors ?? [], [monitorsQuery.data?.monitors])
+  const distinctApps = useMemo(() => {
+    const seen = new Set<string>()
+    for (const m of monitors) {
+      seen.add(m.id)
+    }
+    return seen.size
+  }, [monitors])
+
   const loading = healthQuery.isLoading || monitorsQuery.isLoading || incidentsQuery.isLoading || activityQuery.isLoading
 
   if (loading) {
@@ -172,16 +182,6 @@ export default function DashboardOverview() {
   const health = healthQuery.data
   const derived = deriveHealthStatus(health)
   const errorRatePct = normalizeErrorRatePct(health?.slo?.errorRate24h)
-
-  // Count distinct active applications from check results (group by checkId)
-  const monitors = monitorsQuery.data?.monitors ?? []
-  const distinctApps = useMemo(() => {
-    const seen = new Set<string>()
-    for (const m of monitors) {
-      seen.add(m.id)
-    }
-    return seen.size
-  }, [monitors])
 
   const incidents = incidentsQuery.data?.events ?? []
   const activity = activityQuery.data?.activity ?? []

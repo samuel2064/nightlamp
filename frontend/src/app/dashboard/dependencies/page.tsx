@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { RefreshCw, Package, AlertTriangle, ChevronDown, ChevronUp, ChevronRight } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
-import { cn } from '@/lib/utils'
+
 
 export default function DependenciesPage() {
   const [showBreakingOnly, setShowBreakingOnly] = useState(false)

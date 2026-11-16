@@ -2,7 +2,6 @@
 
 import { useState } from 'react'
 import { ChevronRight } from 'lucide-react'
-import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
@@ -155,7 +154,7 @@ export function QuestionStep({
           Previous
         </Button>
         <Button
-          onClick={() => {}}
+          onClick={() => onAnswer(selectedValues)}
           disabled={disabled || !isValid}
           className="ml-auto"
         >

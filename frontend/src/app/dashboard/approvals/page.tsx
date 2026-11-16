@@ -1,6 +1,6 @@
 'use client'
 
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -27,13 +27,13 @@ export default function ApprovalsPage() {
   const isOffline = connectionStatus === 'disconnected'
 
   const approveRun = trpc.remediation.approveRun.useMutation({
-    onMutate: async ({ id }) => {
+    onMutate: async ({ id: _id }) => {
       await utils.remediation.listRuns.cancel()
       const prev = utils.remediation.listRuns.getData({ status: 'pending_approval' })
       if (prev?.runs) {
         utils.remediation.listRuns.setData({ status: 'pending_approval' }, {
           ...prev,
-          runs: prev.runs.filter((r: any) => r.id !== id),
+          runs: (prev.runs as { id: string }[]).filter((r) => r.id !== _id),
         })
       }
       return { prev }
@@ -41,25 +41,25 @@ export default function ApprovalsPage() {
     onSuccess: () => {
       toast.success('Run approved and executed')
     },
-    onError: (err, { id }, context) => {
-      if (context?.prev) {
-        utils.remediation.listRuns.setData({ status: 'pending_approval' }, context.prev)
-      }
-      toast.error(`Failed to approve: ${err.message}`)
-    },
+onError: (err, { id: _id }, context) => {
+        if (context?.prev) {
+          utils.remediation.listRuns.setData({ status: 'pending_approval' }, context.prev)
+        }
+        toast.error(`Failed to approve: ${err.message}`)
+      },
     onSettled: () => {
       utils.remediation.listRuns.invalidate()
     },
   })
 
   const rejectRun = trpc.remediation.rejectRun.useMutation({
-    onMutate: async ({ id }) => {
+    onMutate: async ({ id: _id }) => {
       await utils.remediation.listRuns.cancel()
       const prev = utils.remediation.listRuns.getData({ status: 'pending_approval' })
       if (prev?.runs) {
         utils.remediation.listRuns.setData({ status: 'pending_approval' }, {
           ...prev,
-          runs: prev.runs.filter((r: any) => r.id !== id),
+          runs: (prev.runs as { id: string }[]).filter((r) => r.id !== _id),
         })
       }
       return { prev }
@@ -67,12 +67,12 @@ export default function ApprovalsPage() {
     onSuccess: () => {
       toast.success('Run rejected')
     },
-    onError: (err, { id }, context) => {
-      if (context?.prev) {
-        utils.remediation.listRuns.setData({ status: 'pending_approval' }, context.prev)
-      }
-      toast.error(`Failed to reject: ${err.message}`)
-    },
+onError: (err, { id: _id }, context) => {
+        if (context?.prev) {
+          utils.remediation.listRuns.setData({ status: 'pending_approval' }, context.prev)
+        }
+        toast.error(`Failed to reject: ${err.message}`)
+      },
     onSettled: () => {
       utils.remediation.listRuns.invalidate()
     },
@@ -158,7 +158,7 @@ export default function ApprovalsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {runs.runs.map((run: any) => (
+              {(runs.runs as { id: string; failure_type: string; action_name: string; affected_resource: string; severity?: string; created_at: string }[]).map((run) => (
                 <TableRow key={run.id as string}>
                   <TableCell className="font-medium">{run.failure_type as string || (run.action_name as string)}</TableCell>
                   <TableCell>{run.action_name as string}</TableCell>

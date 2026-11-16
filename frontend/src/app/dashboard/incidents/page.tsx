@@ -1,7 +1,7 @@
 'use client'
 
 import { trpc } from '@/lib/trpc'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
@@ -36,7 +36,7 @@ export default function IncidentsPage() {
     onSuccess: () => {
       toast.success('Incident acknowledged')
     },
-    onError: (err, { id }, context) => {
+    onError: (err, { id: _id }, context) => {
       if (context?.prev) {
         utils.incidents.list.setData({ limit: 100 }, context.prev)
       }

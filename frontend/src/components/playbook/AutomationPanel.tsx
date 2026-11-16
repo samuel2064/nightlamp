@@ -2,7 +2,6 @@
 
 import { useState } from 'react'
 import { Loader2, CheckCircle2, XCircle, Clock, Pause, Play, Trash2 } from 'lucide-react'
-import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -48,7 +47,7 @@ function formatElapsed(startTime: number) {
 export function AutomationPanel({
   runningChecks,
   recentOutput,
-  activeUsers,
+  activeUsers: _activeUsers,
   onPauseAll,
   onClearOutput,
 }: AutomationPanelProps) {

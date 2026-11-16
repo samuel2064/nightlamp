@@ -185,15 +185,25 @@ function normalizeHealthStatus(raw: string | undefined): HealthStatus {
   }
 }
 
-async function apiFetchPost<T>(path: string, body: any): Promise<T> {
+async function apiFetchPost<T>(path: string, body: unknown): Promise<T> {
   return apiFetch<T>(path, { method: 'POST', body: JSON.stringify(body) })
+}
+
+function toSearchParams(params?: Record<string, string | number | undefined>): URLSearchParams {
+  const sp = new URLSearchParams()
+  if (params) {
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined) sp.append(key, String(value))
+    }
+  }
+  return sp
 }
 
 export const backend = {
   events: {
     list: (params?: { limit?: number; offset?: number; type?: string; severity?: string }) =>
       apiFetch<{ events: FailureEvent[]; count: number }>(
-        `/api/events?${new URLSearchParams(params as Record<string, string>).toString()}`
+        `/api/events?${toSearchParams(params).toString()}`
       ),
     acknowledge: (id: string) =>
       apiFetchPost<{ success: boolean; id: string }>('/api/events/acknowledge', { id }),
@@ -201,7 +211,7 @@ export const backend = {
   checkResults: {
     list: (params?: { limit?: number; offset?: number; status?: string }) =>
       apiFetch<{ results: CheckResult[]; count: number }>(
-        `/api/check-results?${new URLSearchParams(params as Record<string, string>).toString()}`
+        `/api/check-results?${toSearchParams(params).toString()}`
       ),
   },
   playbook: {
@@ -232,14 +242,20 @@ export const backend = {
     summary: () =>
       apiFetch<BillingData>('/api/billing/summary'),
     listSubscriptions: () =>
-      apiFetch<{ subscriptions: any[] }>('/api/billing/subscriptions'),
+      apiFetch<{ subscriptions: unknown[] }>('/api/billing/subscriptions'),
     portalUrl: () =>
       apiFetch<{ url: string }>('/api/billing/portal'),
   },
+  dependencies: {
+    list: () =>
+      apiFetch<{ dependencies: DependencyData[] }>('/api/dependencies').then(res => res.dependencies),
+    updates: (breakingOnly = false) =>
+      apiFetch<{ updates: DependencyUpdateData[] }>(`/api/dependencies/updates${breakingOnly ? '?breaking=true' : ''}`).then(res => res.updates),
+  },
   remediation: {
     listRuns: (input?: { status?: string; limit?: number; offset?: number }) =>
-      apiFetch<{ logs: any[]; count: number }>(
-        `/api/playbook/remediation-logs?${new URLSearchParams((input || {}) as Record<string, string>).toString()}`
+      apiFetch<{ logs: unknown[]; count: number }>(
+        `/api/playbook/remediation-logs?${toSearchParams(input).toString()}`
       ).then(res => ({ runs: res.logs ?? [], count: res.count ?? 0 })),
     approveRun: (id: string) =>
       apiFetchPost<{ success: boolean }>('/api/remediation/approve', { id }),
@@ -248,8 +264,8 @@ export const backend = {
     retryRun: (id: string) =>
       apiFetchPost<{ success: boolean }>('/api/remediation/retry', { id }),
     listPolicies: () =>
-      apiFetch<{ policies: any[] }>('/api/remediation/policies'),
-    updatePolicy: (id: string, data: any) =>
-      apiFetchPost<{ success: boolean }>('/api/remediation/policies', { id, ...data }),
+      apiFetch<{ policies: unknown[] }>('/api/remediation/policies'),
+    updatePolicy: (id: string, data: unknown) =>
+      apiFetchPost<{ success: boolean }>('/api/remediation/policies', { id, ...(data as Record<string, unknown>) }),
   },
 }

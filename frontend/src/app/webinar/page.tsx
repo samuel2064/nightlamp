@@ -3,8 +3,7 @@
 import { useState, type FormEvent } from 'react'
 import Link from 'next/link'
 import { Calendar, Clock, Monitor, CheckCircle, ArrowRight } from 'lucide-react'
-import { Button, buttonVariants } from '@/components/ui/button'
-import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 export default function WebinarPage() {

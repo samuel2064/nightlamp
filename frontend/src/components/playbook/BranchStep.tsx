@@ -1,12 +1,11 @@
 'use client'
 
 import { useState } from 'react'
-import { ChevronRight, ChevronDown, CheckCircle2, XCircle, ArrowRight } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { ChevronRight, ChevronDown, ArrowRight, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible'
+import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible'
 
 interface BranchStepProps {
   condition: string

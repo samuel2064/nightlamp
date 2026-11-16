@@ -3,7 +3,7 @@
 import { useLiveConnection } from './connection-indicator'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { AlertCircle, WifiOff, RotateCcw } from 'lucide-react'
+import { WifiOff, RotateCcw } from 'lucide-react'
 
 export function OfflineBanner({ onRetry }: { onRetry?: () => void }) {
   const { status } = useLiveConnection()

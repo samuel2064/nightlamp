@@ -1,12 +1,10 @@
 'use client'
 
-import { ChevronRight, CheckCircle2, AlertCircle, FileText, RefreshCw, X, Lightbulb } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { CheckCircle2, AlertCircle, FileText, RefreshCw, X, Lightbulb } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { ScrollArea } from '@/components/ui/scroll-area'
-import type { Step } from './types'
+import { cn } from '@/lib/utils'
 
 interface ResolutionStepProps {
   outcome: 'success' | 'partial' | 'escalation'

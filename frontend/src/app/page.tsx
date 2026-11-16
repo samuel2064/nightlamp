@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { ArrowRight, CheckCircle, Shield, Activity, AlertTriangle, Database, Webhook, TrendingUp, Plug, Search, Wrench } from 'lucide-react'
+import { ArrowRight, CheckCircle, Shield, Activity, AlertTriangle, Database, Webhook, TrendingUp, Plug } from 'lucide-react'
 import { buttonVariants } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'

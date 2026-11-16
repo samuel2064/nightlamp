@@ -85,11 +85,82 @@ jobs:
             sleep 20
           done
           test "$STATUS" = "200" && echo "Backend healthy" || { echo "Backend smoke failed"; exit 1; }
-      - name: Check frontend
+      - name: Check frontend root
         run: |
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://nightlamp-frontend.onrender.com/" || true)
-          echo "Frontend HTTP $STATUS"
-          test "$STATUS" = "200" && echo "Frontend healthy" || { echo "Frontend smoke failed"; exit 1; }
+          echo "Frontend / HTTP $STATUS"
+          test "$STATUS" = "200" && echo "Frontend root healthy" || { echo "Frontend root smoke failed"; exit 1; }
+      - name: Check frontend dashboard (must not be 404)
+        run: |
+          # Clerk v6 serves notFound() (404) to requests that do not look like
+          # page requests, so the probe has to send a browser Accept header.
+          # A browser gets 307/308 (redirect to sign-in); a signed-in session
+          # gets 200. A 404 here means the route is really missing.
+          for i in $(seq 1 6); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+              "https://nightlamp-frontend.onrender.com/dashboard" || true)
+            echo "Attempt $i: /dashboard HTTP $STATUS"
+            if [ "$STATUS" = "200" ] || [ "$STATUS" = "307" ] || [ "$STATUS" = "308" ]; then break; fi
+            sleep 20
+          done
+          if [ "$STATUS" = "200" ] || [ "$STATUS" = "307" ] || [ "$STATUS" = "308" ]; then
+            echo "Frontend /dashboard healthy (auth redirect OK)"
+          else
+            echo "::error::Frontend /dashboard returned $STATUS - dashboard route missing or broken"
+            exit 1
+          fi
+      - name: Check frontend dashboard playbooks
+        run: |
+          for i in $(seq 1 6); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+              "https://nightlamp-frontend.onrender.com/dashboard/playbooks" || true)
+            echo "Attempt $i: /dashboard/playbooks HTTP $STATUS"
+            if [ "$STATUS" = "200" ] || [ "$STATUS" = "307" ] || [ "$STATUS" = "308" ]; then break; fi
+            sleep 20
+          done
+          if [ "$STATUS" = "200" ] || [ "$STATUS" = "307" ] || [ "$STATUS" = "308" ]; then
+            echo "Frontend /dashboard/playbooks healthy (auth redirect OK)"
+          else
+            echo "::error::Frontend /dashboard/playbooks returned $STATUS - route missing or broken"
+            exit 1
+          fi
+      - name: Check frontend tRPC endpoint
+        run: |
+          # The route is /api/trpc/[trpc], so probe a real procedure path. A
+          # mounted route answers with a JSON envelope (200, or 401 once the
+          # procedure is protected). Only an HTML 404 means the route is absent.
+          for i in $(seq 1 6); do
+            STATUS=$(curl -s -o /tmp/trpc_body -w "%{http_code}" \
+              -H "Accept: application/json" \
+              "https://nightlamp-frontend.onrender.com/api/trpc/health.status" || true)
+            BODY=$(head -c 200 /tmp/trpc_body)
+            echo "Attempt $i: /api/trpc/health.status HTTP $STATUS :: $BODY"
+            if [ "$STATUS" = "200" ] || [ "$STATUS" = "401" ]; then break; fi
+            sleep 20
+          done
+          if [ "$STATUS" = "404" ] && echo "$BODY" | grep -qi "<!DOCTYPE html>"; then
+            echo "::error::Frontend /api/trpc returned an HTML 404 - tRPC handler missing"
+            exit 1
+          fi
+          if [ "$STATUS" = "200" ] || [ "$STATUS" = "401" ]; then
+            echo "Frontend /api/trpc route mounted"
+          else
+            echo "::error::Frontend /api/trpc/health.status returned $STATUS after retries"
+            exit 1
+          fi
+      - name: Check frontend API health route
+        run: |
+          for i in $(seq 1 6); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Accept: application/json" \
+              "https://nightlamp-frontend.onrender.com/api/health" || true)
+            echo "Attempt $i: /api/health HTTP $STATUS"
+            if [ "$STATUS" = "200" ]; then break; fi
+            sleep 20
+          done
+          test "$STATUS" = "200" || { echo "::error::Frontend API health route missing (/api/health returned $STATUS)"; exit 1; }
+          curl -s -H "Accept: application/json" "https://nightlamp-frontend.onrender.com/api/health" | head -c 500; echo
 
   notify:
     name: Deployment notification
