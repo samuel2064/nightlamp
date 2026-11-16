@@ -1,0 +1,14 @@
+{
+  "run": "43974873199",
+  "sha": "8b28c97158a63d578ec273c4c55b21baaf1b9db2",
+  "branch": "ops/render-auth-config",
+  "backendService": "unknown",
+  "frontendService": "unknown",
+  "jwksKid": "unknown",
+  "actions": "",
+  "backendEnvVarKeysBefore": "",
+  "backendEnvVarKeysAfter": "",
+  "frontendEnvVarKeysBefore": "",
+  "frontendEnvVarKeysAfter": "",
+  "valuesIncluded": false
+}
