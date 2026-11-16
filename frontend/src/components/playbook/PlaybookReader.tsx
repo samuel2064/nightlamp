@@ -29,7 +29,7 @@ import type {
   ServerDiagnostic,
   Step,
 } from './types'
-import { mapDiagnosticStep } from './types'
+import { mapDiagnosticStep, mapDiagnosticToExecutable } from './types'
 
 interface ReaderExecution {
   id: string
@@ -133,6 +133,13 @@ export function PlaybookReader({ playbookId, onExit }: PlaybookReaderProps) {
     return mapped ? [mapped] : []
   }, [entry])
 
+  const executable = useMemo(() => (entry ? mapDiagnosticToExecutable(entry) : null), [entry])
+  const noExecutableDefinition = !executable
+  const unavailableReason = runUnavailable
+    ?? (noExecutableDefinition
+      ? 'This diagnostic has no automated playbook definition yet - there is nothing to execute on the server.'
+      : null)
+
   const playbook = useMemo<Playbook | null>(() => {
     if (!entry) return null
     return { id: entry.id, title: entry.title, steps }
@@ -202,9 +209,9 @@ export function PlaybookReader({ playbookId, onExit }: PlaybookReaderProps) {
   }, [serverExecution, utils])
 
   const handleRunPlaybook = useCallback(() => {
-    if (runUnavailable) return
+    if (runUnavailable || noExecutableDefinition) return
     runPlaybook.mutate({ id: playbookId, context: { source: 'nightlamp-ui' } })
-  }, [runPlaybook, playbookId, runUnavailable])
+  }, [runPlaybook, playbookId, runUnavailable, noExecutableDefinition])
 
   const handleDecision = useCallback((stepId: string, answer: string[], skipped = false) => {
     if (!execution) return
@@ -331,7 +338,7 @@ export function PlaybookReader({ playbookId, onExit }: PlaybookReaderProps) {
           {!execution && (
             <Button
               onClick={handleRunPlaybook}
-              disabled={runPlaybook.isPending || !!runUnavailable}
+              disabled={runPlaybook.isPending || !!unavailableReason}
               className="gap-2"
             >
               {runPlaybook.isPending ? (
@@ -508,9 +515,9 @@ export function PlaybookReader({ playbookId, onExit }: PlaybookReaderProps) {
                     <p className="text-sm text-muted-foreground">
                       This playbook will guide you through diagnosing and resolving the issue.
                     </p>
-                    {runUnavailable ? (
+                    {unavailableReason ? (
                       <Alert variant="destructive">
-                        <AlertDescription>{runUnavailable}</AlertDescription>
+                        <AlertDescription>{unavailableReason}</AlertDescription>
                       </Alert>
                     ) : (
                       <Button
