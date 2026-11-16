@@ -1,4 +1,5 @@
 import { Database } from 'sql.js';
+import { tenantFilter } from '../api/tenant';
 
 export interface MatchResult {
   id: string;
@@ -22,6 +23,7 @@ export function matchPlaybookEntries(
   db: Database,
   symptoms: string,
   limit: number = 20,
+  teamId: string | null = null,
 ): MatchResult[] {
   const query = symptoms.toLowerCase().trim();
   if (!query) return [];
@@ -34,6 +36,10 @@ export function matchPlaybookEntries(
     likeParams.push(pattern, pattern, pattern);
   }
 
+  const playbookScope = tenantFilter('f.team_id', teamId);
+  const latestScope = tenantFilter('team_id', teamId);
+  const eventScope = tenantFilter('e.team_id', teamId);
+
   const sql = `
     SELECT f.id, f.failure_type, f.title, f.body, f.first_seen_at, f.last_occurrence_at, f.occurrence_count,
            COALESCE(e.severity, 'warning') as severity
@@ -41,15 +47,16 @@ export function matchPlaybookEntries(
     LEFT JOIN (
       SELECT failure_type, severity, MAX(detected_at) as max_detected
       FROM failure_events
+      WHERE ${latestScope.clause}
       GROUP BY failure_type
     ) latest ON f.failure_type = latest.failure_type
-    LEFT JOIN failure_events e ON e.failure_type = latest.failure_type AND e.detected_at = latest.max_detected
-    WHERE ${likeClauses.join(' AND ')}
+    LEFT JOIN failure_events e ON e.failure_type = latest.failure_type AND e.detected_at = latest.max_detected AND ${eventScope.clause}
+    WHERE ${playbookScope.clause} AND ${likeClauses.join(' AND ')}
     ORDER BY f.occurrence_count DESC
     LIMIT ?
   `;
 
-  const result = db.exec(sql, [...likeParams, limit]);
+  const result = db.exec(sql, [...latestScope.params, ...eventScope.params, ...playbookScope.params, ...likeParams, limit]);
 
   if (result.length === 0 || result[0].values.length === 0) return [];
 
@@ -135,16 +142,19 @@ export function getCorrelatedPatterns(
   db: Database,
   failureType: string,
   limit: number = 5,
+  teamId: string | null = null,
 ): { failureType: string; coOccurrenceCount: number }[] {
+  const firstScope = tenantFilter('e1.team_id', teamId);
+  const secondScope = tenantFilter('e2.team_id', teamId);
   const result = db.exec(
     `SELECT e2.failure_type, COUNT(*) as co_count
      FROM failure_events e1
-     JOIN failure_events e2 ON e1.check_id = e2.check_id AND e1.failure_type != e2.failure_type
-     WHERE e1.failure_type = ?
+     JOIN failure_events e2 ON e1.check_id = e2.check_id AND e1.failure_type != e2.failure_type AND ${secondScope.clause}
+     WHERE ${firstScope.clause} AND e1.failure_type = ?
      GROUP BY e2.failure_type
      ORDER BY co_count DESC
      LIMIT ?`,
-    [failureType, limit],
+    [...secondScope.params, ...firstScope.params, failureType, limit],
   );
 
   if (result.length === 0 || result[0].values.length === 0) return [];

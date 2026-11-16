@@ -13,6 +13,7 @@ import { handleClearCache } from './actions/clear-cache';
 import { handleNpmUpdate } from './actions/npm-update';
 import { handleRotateToken } from './actions/rotate-token';
 import { handleRestartService } from './actions/restart-service';
+import { tenantFilter } from '../api/tenant';
 
 export interface RemediationLogEntry {
   id: string;
@@ -64,8 +65,8 @@ export async function runRemediation(
   const script = getScriptForFailureType(playbookEntry.failureType);
 
   db.run(
-    `INSERT INTO remediation_log (id, playbook_entry_id, failure_type, script, status, output) VALUES (?, ?, ?, ?, 'running', '')`,
-    [logId, playbookEntry.id, playbookEntry.failureType, script],
+    `INSERT INTO remediation_log (id, playbook_entry_id, failure_type, script, status, output, team_id) VALUES (?, ?, ?, ?, 'running', '', ?)`,
+    [logId, playbookEntry.id, playbookEntry.failureType, script, playbookEntry.teamId ?? null],
   );
 
   try {
@@ -116,9 +117,11 @@ export function getRemediationLogs(
   limit: number = 50,
   offset: number = 0,
   failureType?: string,
+  teamId: string | null = null,
 ): { logs: RemediationLogEntry[]; count: number } {
-  let sql = 'SELECT id, playbook_entry_id, failure_type, script, status, output, executed_at FROM remediation_log WHERE 1=1';
-  const params: any[] = [];
+  const scope = tenantFilter('team_id', teamId);
+  let sql = `SELECT id, playbook_entry_id, failure_type, script, status, output, executed_at FROM remediation_log WHERE ${scope.clause}`;
+  const params: any[] = [...scope.params];
 
   if (failureType) {
     sql += ' AND failure_type = ?';
@@ -128,10 +131,12 @@ export function getRemediationLogs(
   sql += ' ORDER BY executed_at DESC LIMIT ? OFFSET ?';
   params.push(limit, offset);
 
-  const countSql = failureType
-    ? 'SELECT COUNT(*) FROM remediation_log WHERE failure_type = ?'
-    : 'SELECT COUNT(*) FROM remediation_log';
-  const countParams = failureType ? [failureType] : [];
+  let countSql = `SELECT COUNT(*) FROM remediation_log WHERE ${scope.clause}`;
+  const countParams: any[] = [...scope.params];
+  if (failureType) {
+    countSql += ' AND failure_type = ?';
+    countParams.push(failureType);
+  }
   const countResult = db.exec(countSql, countParams);
   const totalCount = countResult.length > 0 && countResult[0].values.length > 0
     ? (countResult[0].values[0][0] as number) : 0;
@@ -157,10 +162,11 @@ function getDb(): Database {
   return dbInstance;
 }
 
-export function listRuns(params: { status?: string; playbook_entry_id?: string; limit?: number; offset?: number } = {}): any {
+export function listRuns(params: { status?: string; playbook_entry_id?: string; limit?: number; offset?: number; teamId?: string | null } = {}): any {
   const db = getDb();
-  let sql = 'SELECT id, playbook_entry_id, action_name, status, initiated_by, approved_by, output, error, started_at, completed_at, created_at FROM remediation_runs WHERE 1=1';
-  const q: any[] = [];
+  const scope = tenantFilter('team_id', params.teamId ?? null);
+  let sql = `SELECT id, playbook_entry_id, action_name, status, initiated_by, approved_by, output, error, started_at, completed_at, created_at FROM remediation_runs WHERE ${scope.clause}`;
+  const q: any[] = [...scope.params];
   if (params.status) { sql += ' AND status = ?'; q.push(params.status); }
   if (params.playbook_entry_id) { sql += ' AND playbook_entry_id = ?'; q.push(params.playbook_entry_id); }
   sql += ' ORDER BY created_at DESC';
@@ -170,10 +176,11 @@ export function listRuns(params: { status?: string; playbook_entry_id?: string; 
   return res.length ? res[0].values.map(r => ({ id: r[0], playbook_entry_id: r[1], action_name: r[2], status: r[3], initiated_by: r[4], approved_by: r[5], output: r[6], error: r[7], started_at: r[8], completed_at: r[9], created_at: r[10] })) : [];
 }
 
-export async function approveRun(id: string): Promise<any> {
+export async function approveRun(id: string, teamId: string | null = null): Promise<any> {
   const db = getDb();
-  db.run(`UPDATE remediation_runs SET status = 'running', started_at = datetime('now') WHERE id = ?`, [id]);
-  const run = db.exec(`SELECT * FROM remediation_runs WHERE id = ?`, [id]);
+  const scope = tenantFilter('team_id', teamId);
+  db.run(`UPDATE remediation_runs SET status = 'running', started_at = datetime('now') WHERE id = ? AND ${scope.clause}`, [id, ...scope.params]);
+  const run = db.exec(`SELECT * FROM remediation_runs WHERE id = ? AND ${scope.clause}`, [id, ...scope.params]);
   if (!run.length || !run[0].values.length) throw new Error('Run not found');
   const r = run[0].values[0];
   const actionName = r[2] as string;
@@ -186,15 +193,17 @@ export async function approveRun(id: string): Promise<any> {
   return { id, status, output: result.output };
 }
 
-export function rejectRun(id: string): any {
+export function rejectRun(id: string, teamId: string | null = null): any {
   const db = getDb();
-  db.run(`UPDATE remediation_runs SET status = 'rejected', completed_at = datetime('now') WHERE id = ?`, [id]);
+  const scope = tenantFilter('team_id', teamId);
+  db.run(`UPDATE remediation_runs SET status = 'rejected', completed_at = datetime('now') WHERE id = ? AND ${scope.clause}`, [id, ...scope.params]);
   return { id, status: 'rejected' };
 }
 
-export async function retryRun(id: string): Promise<any> {
+export async function retryRun(id: string, teamId: string | null = null): Promise<any> {
   const db = getDb();
-  const run = db.exec(`SELECT * FROM remediation_runs WHERE id = ?`, [id]);
+  const scope = tenantFilter('team_id', teamId);
+  const run = db.exec(`SELECT * FROM remediation_runs WHERE id = ? AND ${scope.clause}`, [id, ...scope.params]);
   if (!run.length || !run[0].values.length) throw new Error('Run not found');
   const r = run[0].values[0];
   const actionName = r[2] as string;
@@ -208,13 +217,18 @@ export async function retryRun(id: string): Promise<any> {
   return { id, status, output: result.output };
 }
 
-export function listPolicies(): Policy[] {
+export function listPolicies(teamId: string | null = null): Policy[] {
   const db = getDb();
-  const res = db.exec(`SELECT id, failure_type, auto_approve, require_dry_run, cooldown_minutes FROM remediation_policies`);
+  const scope = tenantFilter('team_id', teamId);
+  const res = db.exec(`SELECT id, failure_type, auto_approve, require_dry_run, cooldown_minutes FROM remediation_policies WHERE ${scope.clause}`, scope.params);
   return res.length ? res[0].values.map(r => ({ id: r[0] as string, failure_type: r[1] as string, auto_approve: r[2] as number, require_dry_run: r[3] as number, cooldown_minutes: r[4] as number })) : [];
 }
 
-export function updatePolicy(id: string, data: { auto_approve?: boolean; require_dry_run?: boolean; cooldown_minutes?: number }): Policy | null {
+export function updatePolicy(
+  id: string,
+  data: { auto_approve?: boolean; require_dry_run?: boolean; cooldown_minutes?: number },
+  teamId: string | null = null,
+): Policy | null {
   const db = getDb();
   const updates: string[] = [];
   const params: any[] = [];
@@ -222,9 +236,10 @@ export function updatePolicy(id: string, data: { auto_approve?: boolean; require
   if (data.require_dry_run !== undefined) { updates.push('require_dry_run = ?'); params.push(data.require_dry_run ? 1 : 0); }
   if (data.cooldown_minutes !== undefined) { updates.push('cooldown_minutes = ?'); params.push(data.cooldown_minutes); }
   if (!updates.length) throw new Error('No fields to update');
-  params.push(id);
-  db.run(`UPDATE remediation_policies SET ${updates.join(', ')} WHERE id = ?`, params);
-  return listPolicies().find((p: Policy) => p.id === id) ?? null;
+  const scope = tenantFilter('team_id', teamId);
+  params.push(id, ...scope.params);
+  db.run(`UPDATE remediation_policies SET ${updates.join(', ')} WHERE id = ? AND ${scope.clause}`, params);
+  return listPolicies(teamId).find((p: Policy) => p.id === id) ?? null;
 }
 
 export async function evaluatePlaybookEntries(): Promise<{ processed: number; executed: number; pending: number; errors: string[] }> {

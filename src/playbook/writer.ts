@@ -12,6 +12,7 @@ export interface PlaybookEntry {
   firstSeenAt: string;
   lastOccurrenceAt: string;
   occurrenceCount: number;
+  teamId?: string | null;
 }
 
 const PLAYBOOK_TEMPLATES: Record<FailureType, { title: string; body: string }> = {
@@ -49,10 +50,16 @@ const PLAYBOOK_TEMPLATES: Record<FailureType, { title: string; body: string }> =
   },
 };
 
-export function getOrCreatePlaybookEntry(db: Database, failureType: FailureType): PlaybookEntry {
+export function getOrCreatePlaybookEntry(
+  db: Database,
+  failureType: FailureType,
+  teamId: string | null = null,
+): PlaybookEntry {
+  const teamClause = teamId === null ? 'team_id IS NULL' : 'team_id = ?';
+  const teamParams = teamId === null ? [] : [teamId];
   const existing = db.exec(
-    `SELECT id, failure_type, title, body, first_seen_at, last_occurrence_at, occurrence_count FROM playbook_entries WHERE failure_type = ?`,
-    [failureType]
+    `SELECT id, failure_type, title, body, first_seen_at, last_occurrence_at, occurrence_count FROM playbook_entries WHERE failure_type = ? AND ${teamClause}`,
+    [failureType, ...teamParams]
   );
 
   if (existing.length > 0 && existing[0].values.length > 0) {
@@ -65,6 +72,7 @@ export function getOrCreatePlaybookEntry(db: Database, failureType: FailureType)
       firstSeenAt: row[4] as string,
       lastOccurrenceAt: row[5] as string,
       occurrenceCount: (row[6] as number) + 1,
+      teamId,
     };
 
     db.run(
@@ -84,8 +92,8 @@ export function getOrCreatePlaybookEntry(db: Database, failureType: FailureType)
   const now = new Date().toISOString();
 
   db.run(
-    `INSERT INTO playbook_entries (id, failure_type, title, body, first_seen_at, last_occurrence_at, occurrence_count) VALUES (?, ?, ?, ?, ?, ?, 1)`,
-    [id, failureType, template.title, template.body, now, now]
+    `INSERT INTO playbook_entries (id, failure_type, title, body, first_seen_at, last_occurrence_at, occurrence_count, team_id) VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
+    [id, failureType, template.title, template.body, now, now, teamId]
   );
 
   return {
@@ -96,6 +104,7 @@ export function getOrCreatePlaybookEntry(db: Database, failureType: FailureType)
     firstSeenAt: now,
     lastOccurrenceAt: now,
     occurrenceCount: 1,
+    teamId,
   };
 }
 
