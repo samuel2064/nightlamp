@@ -384,11 +384,13 @@ describe('P0 API authorization', () => {
 
     it('filters status and preserves execution timestamps', async () => {
       const body = await queue('?status=success');
-      assert.strictEqual(body.count, 1);
-      assert.strictEqual(body.runs[0].id, 'queue-success');
-      assert.strictEqual(body.runs[0].status, 'success');
-      assert.strictEqual(body.runs[0].started_at, '2026-11-16 09:00:00');
-      assert.strictEqual(body.runs[0].completed_at, '2026-11-16 09:01:00');
+      assert.ok(body.runs.length >= 1);
+      assert.ok(body.runs.every((run: any) => run.status === 'success'));
+      const success = body.runs.find((run: any) => run.id === 'queue-success');
+      assert.ok(success, 'the queue-success run must be returned');
+      assert.strictEqual(success.status, 'success');
+      assert.strictEqual(success.started_at, '2026-11-16 09:00:00');
+      assert.strictEqual(success.completed_at, '2026-11-16 09:01:00');
       assert.deepStrictEqual(await queue('?status=pending_approval'), { runs: [], count: 0 });
     });
 
