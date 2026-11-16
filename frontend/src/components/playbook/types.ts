@@ -184,7 +184,7 @@ export type SSEEvent =
   | { type: 'check_progress'; checkId: string; output: string }
   | { type: 'check_complete'; checkId: string; result: CheckResult }
   | { type: 'check_error'; checkId: string; error: string }
-  | { type: 'execution_complete'; resolution: Step['resolution'] }
+  | { type: 'execution_complete'; resolution: ResolutionDefinition }
   | { type: 'error'; message: string }
   | { type: 'active_users'; users: ActiveUser[] }
 
@@ -218,7 +218,7 @@ function inferDiagnosticType(entry: DiagnosticEntry): StepType | null {
   return null;
 }
 
-function mapDiagnosticStep(entry: DiagnosticEntry): Step | null {
+export function mapDiagnosticStep(entry: DiagnosticEntry): Step | null {
   const type = inferDiagnosticType(entry);
   const base = {
     id: entry.id,
