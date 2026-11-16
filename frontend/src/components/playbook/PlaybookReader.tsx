@@ -29,7 +29,10 @@ import type {
   ServerDiagnostic,
   Step,
 } from './types'
-import { mapDiagnosticStep } from './types'
+import { mapDiagnosticStep, mapDiagnosticToExecutable } from './types'
+
+const NO_EXECUTABLE_PLAYBOOK_MESSAGE =
+  'No executable playbook for this diagnostic yet - there is nothing automated to run on the server.'
 
 interface ReaderExecution {
   id: string
@@ -133,6 +136,14 @@ export function PlaybookReader({ playbookId, onExit }: PlaybookReaderProps) {
     return mapped ? [mapped] : []
   }, [entry])
 
+  const executable = useMemo(() => (entry ? mapDiagnosticToExecutable(entry) : null), [entry])
+
+  useEffect(() => {
+    if (entry && !executable && !runUnavailable) {
+      setRunUnavailable(NO_EXECUTABLE_PLAYBOOK_MESSAGE)
+    }
+  }, [entry, executable, runUnavailable])
+
   const playbook = useMemo<Playbook | null>(() => {
     if (!entry) return null
     return { id: entry.id, title: entry.title, steps }
@@ -156,8 +167,8 @@ export function PlaybookReader({ playbookId, onExit }: PlaybookReaderProps) {
     onError: (err) => {
       const message = err instanceof Error ? err.message : 'Failed to start playbook'
       if (message.includes('404') || message.toLowerCase().includes('not found')) {
-        setRunUnavailable('This diagnostic has no automated playbook definition yet - there is nothing to execute on the server.')
-        toast.error('No automated playbook definition for this diagnostic')
+        setRunUnavailable(NO_EXECUTABLE_PLAYBOOK_MESSAGE)
+        toast.error('No executable playbook for this diagnostic')
         return
       }
       setError(message)
@@ -202,9 +213,9 @@ export function PlaybookReader({ playbookId, onExit }: PlaybookReaderProps) {
   }, [serverExecution, utils])
 
   const handleRunPlaybook = useCallback(() => {
-    if (runUnavailable) return
-    runPlaybook.mutate({ id: playbookId, context: { source: 'nightlamp-ui' } })
-  }, [runPlaybook, playbookId, runUnavailable])
+    if (!executable || runUnavailable) return
+    runPlaybook.mutate({ id: executable.playbookId, context: { source: 'nightlamp-ui' } })
+  }, [runPlaybook, executable, runUnavailable])
 
   const handleDecision = useCallback((stepId: string, answer: string[], skipped = false) => {
     if (!execution) return
