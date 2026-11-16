@@ -439,7 +439,7 @@ function DetailsStep({ data, setData, errors }: { data: WizardData; setData: Rea
       <Card className="border-border bg-surface-secondary/50">
         <CardContent className="pt-6">
           <p className="text-sm text-muted-foreground">
-            <strong>Tip:</strong> Use the base URL of your application. We'll use this to construct health check endpoints
+            <strong>Tip:</strong> Use the base URL of your application. We&apos;ll use this to construct health check endpoints
             and for display purposes in the dashboard.
           </p>
         </CardContent>

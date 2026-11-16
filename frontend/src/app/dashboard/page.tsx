@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { trpc } from '@/lib/trpc'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -175,13 +175,7 @@ export default function DashboardOverview() {
 
   // Count distinct active applications from check results (group by checkId)
   const monitors = monitorsQuery.data?.monitors ?? []
-  const distinctApps = useMemo(() => {
-    const seen = new Set<string>()
-    for (const m of monitors) {
-      seen.add(m.id)
-    }
-    return seen.size
-  }, [monitors])
+  const distinctApps = new Set(monitors.map((m) => m.id)).size
 
   const incidents = incidentsQuery.data?.events ?? []
   const activity = activityQuery.data?.activity ?? []
