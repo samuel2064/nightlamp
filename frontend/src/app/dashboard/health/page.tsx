@@ -103,7 +103,8 @@ export default function HealthPage() {
           <CardTitle>System Status</CardTitle>
         </CardHeader>
         <CardContent>
-          <Table>
+          <div className="overflow-x-auto">
+            <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Metric</TableHead>
@@ -135,6 +136,7 @@ export default function HealthPage() {
               ))}
             </TableBody>
           </Table>
+          </div>
           <p className="mt-3 text-right text-xs text-muted-foreground">
             Updated {relativeTimestamp(health?.timestamp)} · refreshes every 30s
           </p>

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import Link from 'next/link'
 import { trpc } from '@/lib/trpc'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -18,6 +18,7 @@ import {
   Radio,
   Plus,
   ShieldCheck,
+  Clock,
 } from 'lucide-react'
 import {
   deriveHealthStatus,
@@ -27,6 +28,7 @@ import {
 import { formatUtcTimestamp, relativeTimestamp } from '@/lib/format'
 
 const REFRESH_INTERVAL_MS = 30_000
+const STALE_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
 
 type MonitorStatus = 'healthy' | 'degraded' | 'critical' | 'unknown'
 
@@ -61,6 +63,11 @@ const ACTIVITY_META: Record<string, { icon: typeof Activity; className: string }
   event: { icon: Radio, className: 'text-warning' },
   check: { icon: CheckCircle2, className: 'text-muted-foreground' },
   playbook: { icon: Bot, className: 'text-info' },
+}
+
+function isStale(lastRun: string): boolean {
+  const lastRunTime = new Date(lastRun).getTime()
+  return Date.now() - lastRunTime > STALE_THRESHOLD_MS
 }
 
 function InlineError({ message, retry }: { message: string; retry: () => void }) {
@@ -165,18 +172,25 @@ export default function DashboardOverview() {
   const health = healthQuery.data
   const derived = deriveHealthStatus(health)
   const errorRatePct = normalizeErrorRatePct(health?.slo?.errorRate24h)
-  // Same-snapshot honesty: overall health % is 100 minus the observed error
-  // rate; unknown inputs stay unknown ('-'), never a fabricated number.
-  const healthScore =
-    errorRatePct !== null
-      ? Math.max(0, Math.round((100 - errorRatePct) * 10) / 10)
-      : null
+
+  // Count distinct active applications from check results (group by checkId)
+  const monitors = monitorsQuery.data?.monitors ?? []
+  const distinctApps = useMemo(() => {
+    const seen = new Set<string>()
+    for (const m of monitors) {
+      seen.add(m.id)
+    }
+    return seen.size
+  }, [monitors])
+
+  const incidents = incidentsQuery.data?.events ?? []
+  const activity = activityQuery.data?.activity ?? []
 
   const metricCards = [
     {
       icon: Cpu,
       label: 'Apps monitored',
-      value: monitorsQuery.data ? monitorsQuery.data.count : null,
+      value: distinctApps,
       destructive: false,
     },
     {
@@ -199,10 +213,6 @@ export default function DashboardOverview() {
     },
   ]
 
-  const monitors = monitorsQuery.data?.monitors ?? []
-  const incidents = incidentsQuery.data?.events ?? []
-  const activity = activityQuery.data?.activity ?? []
-
   return (
     <div className="space-y-6">
       {/* Hero */}
@@ -211,12 +221,10 @@ export default function DashboardOverview() {
           <div className="min-w-0">
             <p className="text-sm text-muted-foreground">Overall health of your stack</p>
             <div className="mt-1 flex flex-wrap items-center gap-3">
-              <p className="text-4xl font-bold tabular-nums">
-                {healthScore !== null ? `${healthScore}%` : '—'}
-              </p>
               <Badge
                 variant={healthLevelVariant(derived.status)}
                 aria-label={`Status: ${derived.status}`}
+                className="text-lg px-3 py-1"
               >
                 {derived.status}
               </Badge>
@@ -238,7 +246,7 @@ export default function DashboardOverview() {
             aria-live="polite"
           >
             <RefreshCw className={`size-4 mr-2 ${healthQuery.isRefetching ? 'animate-spin' : ''}`} aria-hidden />
-            {healthQuery.isRefetching ? 'Running check…' : 'Run health check'}
+            {healthQuery.isRefetching ? 'Refreshing…' : 'Refresh status'}
           </Button>
         </CardContent>
       </Card>
@@ -282,6 +290,7 @@ export default function DashboardOverview() {
               <div className="grid gap-4 sm:grid-cols-2">
                 {monitors.slice(0, 6).map((monitor) => {
                   const status = deriveMonitorStatus(monitor.lastStatus)
+                  const stale = isStale(monitor.lastRun)
                   return (
                     <Card key={monitor.id} className="hover:border-glow-500/60 transition-colors">
                       <CardContent className="py-4">
@@ -293,11 +302,18 @@ export default function DashboardOverview() {
                             {status}
                           </Badge>
                         </div>
-                        <p className="mt-2 text-xs text-muted-foreground">
-                          Last run: {relativeTimestamp(monitor.lastRun)} ·{' '}
+                        <p className="mt-2 text-xs text-muted-foreground flex items-center gap-1">
+                          <span>Last run: {relativeTimestamp(monitor.lastRun)}</span>
                           <span title={formatUtcTimestamp(monitor.lastRun)}>
                             {formatUtcTimestamp(monitor.lastRun)}
                           </span>
+                          {stale && (
+                            <>
+                              <span className="text-warning">·</span>
+                              <Clock className="size-3" aria-hidden />
+                              <span className="text-warning">Stale</span>
+                            </>
+                          )}
                         </p>
                       </CardContent>
                     </Card>
@@ -319,8 +335,8 @@ export default function DashboardOverview() {
             ) : incidents.length === 0 ? (
               <EmptyState
                 icon={CheckCircle2}
-                title="No incidents — everything is healthy"
-                description="New incidents will appear here the moment monitoring detects them."
+                title="No incidents recorded"
+                description="Incidents will appear here when monitoring detects issues."
               />
             ) : (
               <ul className="space-y-3">

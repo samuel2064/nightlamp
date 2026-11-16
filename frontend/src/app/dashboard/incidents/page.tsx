@@ -5,12 +5,47 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
-import { RefreshCw, AlertTriangle } from 'lucide-react'
+import { RefreshCw, CheckCircle2 } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
+import { Spinner } from '@/components/ui/spinner'
+import { toast } from 'sonner'
+import { OfflineBanner } from '@/components/dashboard/OfflineBanner'
+import { useLiveConnection } from '@/components/dashboard/connection-indicator'
 
 export default function IncidentsPage() {
+  const utils = trpc.useUtils()
   const { data, isLoading, isError, refetch } = trpc.incidents.list.useQuery({ limit: 100 })
+  const { status: connectionStatus } = useLiveConnection()
+  const isOffline = connectionStatus === 'disconnected'
+
+  const acknowledgeIncident = trpc.incidents.acknowledge.useMutation({
+    onMutate: async ({ id }) => {
+      await utils.incidents.list.cancel()
+      const prev = utils.incidents.list.getData({ limit: 100 })
+      if (prev?.events) {
+        utils.incidents.list.setData({ limit: 100 }, {
+          ...prev,
+          events: prev.events.map((e) =>
+            e.id === id ? { ...e, acknowledged: true } : e,
+          ),
+        })
+      }
+      return { prev }
+    },
+    onSuccess: () => {
+      toast.success('Incident acknowledged')
+    },
+    onError: (err, { id }, context) => {
+      if (context?.prev) {
+        utils.incidents.list.setData({ limit: 100 }, context.prev)
+      }
+      toast.error(`Failed to acknowledge incident: ${err.message}`)
+    },
+    onSettled: () => {
+      utils.incidents.list.invalidate()
+    },
+  })
 
   if (isLoading) {
     return (
@@ -57,6 +92,7 @@ export default function IncidentsPage() {
 
   return (
     <div className="space-y-6">
+      <OfflineBanner onRetry={refetch} />
       <div>
         <h1 className="text-2xl font-semibold">Incidents</h1>
         <p className="text-sm text-muted-foreground mt-1">
@@ -65,7 +101,8 @@ export default function IncidentsPage() {
       </div>
 
       <Card>
-        <Table>
+        <div className="overflow-x-auto">
+          <Table>
           <TableHeader>
             <TableRow>
               <TableHead>Severity</TableHead>
@@ -73,15 +110,16 @@ export default function IncidentsPage() {
               <TableHead>Type</TableHead>
               <TableHead>Detected</TableHead>
               <TableHead>Acknowledged</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {!data || data.events.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} className="text-center py-8">
+                <TableCell colSpan={6} className="text-center py-8">
                   <EmptyState
-                    icon={AlertTriangle}
-                    title="No incidents found"
+                    icon={CheckCircle2}
+                    title="No incidents — everything is healthy."
                     description="All systems are operating normally."
                   />
                 </TableCell>
@@ -111,11 +149,31 @@ export default function IncidentsPage() {
                       <Badge variant="outline">Unacknowledged</Badge>
                     )}
                   </TableCell>
+                  <TableCell className="text-right">
+                    {!e.acknowledged && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => acknowledgeIncident.mutate({ id: e.id })}
+                        disabled={acknowledgeIncident.isPending || isOffline}
+                        aria-label={`Acknowledge ${e.title}`}
+                        aria-disabled={isOffline}
+                      >
+                        {acknowledgeIncident.isPending ? (
+                          <Spinner className="size-3 mr-1" />
+                        ) : (
+                          <CheckCircle2 className="size-3 mr-1" />
+                        )}
+                        {isOffline ? 'Offline' : 'Acknowledge'}
+                      </Button>
+                    )}
+                  </TableCell>
                 </TableRow>
               ))
             )}
           </TableBody>
         </Table>
+        </div>
       </Card>
     </div>
   )

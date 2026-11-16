@@ -9,9 +9,11 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { AlertTriangle, Pencil, Trash2, Plus, KeyRound, Slack, RefreshCw, HardDrive, Globe, GitBranch, type LucideIcon } from 'lucide-react'
+import { OfflineBanner } from '@/components/dashboard/OfflineBanner'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { relativeTimestamp, formatUtcTimestamp } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { AddAppWizard } from '@/components/dashboard/add-app-wizard'
 
 type TabKey = 'apps' | 'checks' | 'notifications' | 'team' | 'billing' | 'integrations'
 
@@ -99,6 +101,7 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6">
+      <OfflineBanner onRetry={refetch} />
       <div>
         <h1 className="text-2xl font-semibold">Settings</h1>
         <p className="text-sm text-muted-foreground mt-1">Manage how Nightlamp watches your apps</p>
@@ -142,7 +145,8 @@ export default function SettingsPage() {
                 <CardTitle>Checks</CardTitle>
               </CardHeader>
               <CardContent>
-                <Table>
+                <div className="overflow-x-auto">
+                  <Table>
                   <TableHeader>
                     <TableRow>
                       <TableHead>Check</TableHead>
@@ -166,6 +170,7 @@ export default function SettingsPage() {
                     ))}
                   </TableBody>
                 </Table>
+                </div>
               </CardContent>
             </Card>
           )}
@@ -229,13 +234,15 @@ interface MonitorRow {
 }
 
 function AppsTab({ rows }: { rows: MonitorRow[] }) {
+  const [showWizard, setShowWizard] = useState(false)
+
   return (
     <div id="settings-panel-apps" role="tabpanel">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground" aria-live="polite">
           {rows.length} check source{rows.length === 1 ? '' : 's'} monitored
         </p>
-        <Button variant="outline" size="sm" disabled title="App connections arrive with platform integrations">
+        <Button variant="outline" size="sm" onClick={() => setShowWizard(true)}>
           <Plus className="size-3 mr-1" /> Add App
         </Button>
       </div>
@@ -243,7 +250,12 @@ function AppsTab({ rows }: { rows: MonitorRow[] }) {
         <EmptyState
           icon={HardDrive}
           title="No apps monitored yet."
-          description="Add your first app to start watching for issues. App connections arrive with platform integrations."
+          description="Add your first app to start watching for issues."
+          action={
+            <Button variant="default" size="sm" onClick={() => setShowWizard(true)}>
+              <Plus className="size-4 mr-1" /> Add App
+            </Button>
+          }
         />
       ) : (
         <div className="space-y-3">
@@ -274,6 +286,9 @@ function AppsTab({ rows }: { rows: MonitorRow[] }) {
             </Card>
           ))}
         </div>
+      )}
+      {showWizard && (
+        <AddAppWizard onClose={() => setShowWizard(false)} onSuccess={() => setShowWizard(false)} />
       )}
     </div>
   )

@@ -9,6 +9,7 @@ import { RefreshCw, BookOpen } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import Link from 'next/link'
+import { OfflineBanner } from '@/components/dashboard/OfflineBanner'
 
 export default function PlaybooksPage() {
   const { data, isLoading, isError, refetch } = trpc.playbook.list.useQuery()
@@ -58,6 +59,7 @@ export default function PlaybooksPage() {
 
   return (
     <div className="space-y-6">
+      <OfflineBanner onRetry={refetch} />
       <div>
         <h1 className="text-2xl font-semibold">Playbooks</h1>
         <p className="text-sm text-muted-foreground mt-1">
@@ -66,7 +68,8 @@ export default function PlaybooksPage() {
       </div>
 
       <Card>
-        <Table>
+        <div className="overflow-x-auto">
+          <Table>
           <TableHeader>
             <TableRow>
               <TableHead>Failure Type</TableHead>
@@ -82,8 +85,8 @@ export default function PlaybooksPage() {
                 <TableCell colSpan={5} className="text-center py-8">
                   <EmptyState
                     icon={BookOpen}
-                    title="No playbook entries"
-                    description="Diagnostic playbooks will appear here when failures are detected."
+                    title="No playbooks yet."
+                    description="Playbooks are generated when an incident needs a fix."
                   />
                 </TableCell>
               </TableRow>
@@ -110,6 +113,7 @@ export default function PlaybooksPage() {
             )}
           </TableBody>
         </Table>
+        </div>
       </Card>
     </div>
   )

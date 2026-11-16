@@ -7,4 +7,7 @@ export const billingRouter = router({
 
   subscriptions: protectedProcedure
     .query(({ ctx }) => createBackendClient(ctx.token).billing.listSubscriptions()),
+
+  portal: protectedProcedure
+    .mutation(({ ctx }) => createBackendClient(ctx.token).billing.portalUrl()),
 })

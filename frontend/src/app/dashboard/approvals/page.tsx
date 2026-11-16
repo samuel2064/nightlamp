@@ -17,10 +17,14 @@ import { RefreshCw, CheckCircle2, XCircle, ClipboardCheck } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Spinner } from '@/components/ui/spinner'
+import { OfflineBanner } from '@/components/dashboard/OfflineBanner'
+import { useLiveConnection } from '@/components/dashboard/connection-indicator'
 
 export default function ApprovalsPage() {
   const utils = trpc.useUtils()
   const { data: runs, isLoading, isError, refetch } = trpc.remediation.listRuns.useQuery({ status: 'pending_approval' })
+  const { status: connectionStatus } = useLiveConnection()
+  const isOffline = connectionStatus === 'disconnected'
 
   const approveRun = trpc.remediation.approveRun.useMutation({
     onMutate: async ({ id }) => {
@@ -121,6 +125,7 @@ export default function ApprovalsPage() {
 
   return (
     <div className="space-y-6">
+      <OfflineBanner onRetry={refetch} />
       <div>
         <h1 className="text-2xl font-semibold">Approvals</h1>
         <p className="text-sm text-muted-foreground mt-1">
@@ -140,7 +145,8 @@ export default function ApprovalsPage() {
         </Card>
       ) : (
         <Card>
-          <Table>
+          <div className="overflow-x-auto">
+            <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Failure Type</TableHead>
@@ -181,20 +187,22 @@ export default function ApprovalsPage() {
                         variant="outline"
                         className="text-green-600 border-green-300 hover:bg-green-50"
                         onClick={() => approveRun.mutate({ id: run.id as string })}
-                        disabled={isMutating}
+                        disabled={isMutating || isOffline}
+                        aria-disabled={isOffline}
                       >
                         {approveRun.isPending ? <Spinner className="size-3 mr-1" /> : <CheckCircle2 className="size-3 mr-1" />}
-                        Approve
+                        {isOffline ? 'Offline' : 'Approve'}
                       </Button>
                       <Button
                         size="sm"
                         variant="outline"
                         className="text-red-600 border-red-300 hover:bg-red-50"
                         onClick={() => rejectRun.mutate({ id: run.id as string })}
-                        disabled={isMutating}
+                        disabled={isMutating || isOffline}
+                        aria-disabled={isOffline}
                       >
                         {rejectRun.isPending ? <Spinner className="size-3 mr-1" /> : <XCircle className="size-3 mr-1" />}
-                        Reject
+                        {isOffline ? 'Offline' : 'Reject'}
                       </Button>
                     </div>
                   </TableCell>
@@ -202,7 +210,8 @@ export default function ApprovalsPage() {
               ))}
             </TableBody>
           </Table>
-        </Card>
+            </div>
+          </Card>
       )}
     </div>
   )

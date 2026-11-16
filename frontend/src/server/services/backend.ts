@@ -28,6 +28,70 @@ export interface PlaybookEntry {
   occurrenceCount: number
 }
 
+export interface PlaybookStep {
+  id: string
+  index: number
+  title: string
+  type: 'QUESTION' | 'CHECK' | 'ACTION' | 'INFO' | 'BRANCH' | 'RESOLUTION'
+  status: 'pending' | 'current' | 'completed' | 'skipped'
+  question?: {
+    text: string
+    options: Array<{ value: string; label: string; description?: string }>
+    allowMultiple: boolean
+    allowCustom: boolean
+  }
+  check?: {
+    id: string
+    name: string
+    target: string
+    type: 'HTTP' | 'TCP' | 'CUSTOM'
+    timeout: number
+  }
+  action?: {
+    instructions: string
+    confirmLabel: string
+    requireConfirmation: boolean
+  }
+  info?: {
+    content: string
+  }
+  branch?: {
+    condition: string
+    result: boolean
+    truePath: string
+    falsePath: string
+    skippedSteps: string[]
+  }
+  resolution?: {
+    outcome: 'success' | 'partial' | 'escalation'
+    rootCause: string
+    actionsTaken: string[]
+    prevention: string[]
+  }
+}
+
+export interface Playbook {
+  id: string
+  title: string
+  version: string
+  estimatedDuration: number
+  successRate: number
+  steps: PlaybookStep[]
+}
+
+export interface PlaybookExecution {
+  id: string
+  playbookId: string
+  playbook: Playbook
+  currentStepIndex: number
+  completedIndices: number[]
+  skippedIndices: number[]
+  answers: Record<string, string[]>
+  status: 'running' | 'completed' | 'paused'
+  startedAt: string
+  updatedAt: string
+}
+
 export interface BillingData {
   customers: number
   subscriptions: number
@@ -109,6 +173,7 @@ function normalizeHealthStatus(raw: string | undefined): HealthStatus {
 export interface BackendClient {
   events: {
     list: (params?: { limit?: number; offset?: number; type?: string; severity?: string }) => Promise<{ events: FailureEvent[]; count: number }>
+    acknowledge: (id: string) => Promise<{ success: boolean; id: string }>
   }
   checkResults: {
     list: (params?: { limit?: number; offset?: number; status?: string }) => Promise<{ results: CheckResult[]; count: number }>
@@ -117,6 +182,9 @@ export interface BackendClient {
     list: () => Promise<{ entries: PlaybookEntry[]; count: number }>
     search: (q: string) => Promise<{ entries: PlaybookEntry[]; count: number }>
     get: (id: string) => Promise<PlaybookEntry>
+    run: (id: string) => Promise<PlaybookExecution>
+    decision: (executionId: string, stepId: string, answer: string[], skipped?: boolean) => Promise<{ step: PlaybookStep | null; completed: boolean }>
+    getExecution: (executionId: string) => Promise<PlaybookExecution>
   }
   health: {
     get: () => Promise<HealthStats>
@@ -124,6 +192,7 @@ export interface BackendClient {
   billing: {
     summary: () => Promise<BillingData>
     listSubscriptions: () => Promise<{ subscriptions: any[] }>
+    portalUrl: () => Promise<{ url: string }>
   }
   remediation: {
     listRuns: (input?: { status?: string; limit?: number; offset?: number }) => Promise<{ runs: any[]; count: number }>
@@ -164,6 +233,8 @@ export function createBackendClient(token: string | null): BackendClient {
         apiFetch<{ events: FailureEvent[]; count: number }>(
           `/api/events?${new URLSearchParams(params as Record<string, string>).toString()}`
         ),
+      acknowledge: (id: string) =>
+        apiFetchPost<{ success: boolean; id: string }>('/api/events/acknowledge', { id }),
     },
     checkResults: {
       list: (params?: { limit?: number; offset?: number; status?: string }) =>
@@ -182,6 +253,15 @@ export function createBackendClient(token: string | null): BackendClient {
         if (!entry) throw new Error(`Playbook entry ${id} not found`)
         return entry
       },
+      run: (id: string) =>
+        apiFetchPost<PlaybookExecution>(`/api/playbooks/${id}/run`, {}),
+      decision: (executionId: string, stepId: string, answer: string[], skipped = false) =>
+        apiFetchPost<{ step: PlaybookStep | null; completed: boolean }>(
+          `/api/playbooks/${executionId}/decision`,
+          { stepId, answer, skipped }
+        ),
+      getExecution: (executionId: string) =>
+        apiFetch<PlaybookExecution>(`/api/playbooks/${executionId}`),
     },
     health: {
       get: async () => {
@@ -194,6 +274,8 @@ export function createBackendClient(token: string | null): BackendClient {
         apiFetch<BillingData>('/api/billing/summary'),
       listSubscriptions: () =>
         apiFetch<{ subscriptions: any[] }>('/api/billing/subscriptions'),
+      portalUrl: () =>
+        apiFetch<{ url: string }>('/api/billing/portal'),
     },
     remediation: {
       listRuns: (input?: { status?: string; limit?: number; offset?: number }) =>
