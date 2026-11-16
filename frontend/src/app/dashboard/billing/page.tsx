@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+
 import { trpc } from '@/lib/trpc'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -23,7 +23,7 @@ export default function BillingPage() {
         toast.error('Billing portal not configured', { description: 'Please contact support to set up billing portal access.' })
       }
     },
-    onError: (err) => {
+    onError: () => {
       toast.error('Billing portal unavailable', { description: 'Stripe customer portal integration is not yet configured on the backend.' })
     },
   })

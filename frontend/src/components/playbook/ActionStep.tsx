@@ -1,14 +1,12 @@
 'use client'
 
 import { useState } from 'react'
-import { ChevronRight, CheckCircle2, AlertCircle } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from '@/components/ui/alert-dialog'
-import type { ReactNode } from 'react'
 
 interface ActionStepProps {
   instructions: string

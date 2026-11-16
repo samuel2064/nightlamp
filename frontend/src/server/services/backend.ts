@@ -185,7 +185,7 @@ function normalizeHealthStatus(raw: string | undefined): HealthStatus {
   }
 }
 
-async function apiFetchPost<T>(path: string, body: any): Promise<T> {
+async function apiFetchPost<T>(path: string, body: unknown): Promise<T> {
   return apiFetch<T>(path, { method: 'POST', body: JSON.stringify(body) })
 }
 
@@ -193,7 +193,7 @@ export const backend = {
   events: {
     list: (params?: { limit?: number; offset?: number; type?: string; severity?: string }) =>
       apiFetch<{ events: FailureEvent[]; count: number }>(
-        `/api/events?${new URLSearchParams(params as Record<string, string>).toString()}`
+        `/api/events?${new URLSearchParams(params as Record<string, string | undefined>).toString()}`
       ),
     acknowledge: (id: string) =>
       apiFetchPost<{ success: boolean; id: string }>('/api/events/acknowledge', { id }),
@@ -201,7 +201,7 @@ export const backend = {
   checkResults: {
     list: (params?: { limit?: number; offset?: number; status?: string }) =>
       apiFetch<{ results: CheckResult[]; count: number }>(
-        `/api/check-results?${new URLSearchParams(params as Record<string, string>).toString()}`
+        `/api/check-results?${new URLSearchParams(params as Record<string, string | undefined>).toString()}`
       ),
   },
   playbook: {
@@ -232,14 +232,14 @@ export const backend = {
     summary: () =>
       apiFetch<BillingData>('/api/billing/summary'),
     listSubscriptions: () =>
-      apiFetch<{ subscriptions: any[] }>('/api/billing/subscriptions'),
+      apiFetch<{ subscriptions: unknown[] }>('/api/billing/subscriptions'),
     portalUrl: () =>
       apiFetch<{ url: string }>('/api/billing/portal'),
   },
   remediation: {
     listRuns: (input?: { status?: string; limit?: number; offset?: number }) =>
-      apiFetch<{ logs: any[]; count: number }>(
-        `/api/playbook/remediation-logs?${new URLSearchParams((input || {}) as Record<string, string>).toString()}`
+      apiFetch<{ logs: unknown[]; count: number }>(
+        `/api/playbook/remediation-logs?${new URLSearchParams((input || {}) as Record<string, string | undefined>).toString()}`
       ).then(res => ({ runs: res.logs ?? [], count: res.count ?? 0 })),
     approveRun: (id: string) =>
       apiFetchPost<{ success: boolean }>('/api/remediation/approve', { id }),
@@ -248,8 +248,8 @@ export const backend = {
     retryRun: (id: string) =>
       apiFetchPost<{ success: boolean }>('/api/remediation/retry', { id }),
     listPolicies: () =>
-      apiFetch<{ policies: any[] }>('/api/remediation/policies'),
-    updatePolicy: (id: string, data: any) =>
+      apiFetch<{ policies: unknown[] }>('/api/remediation/policies'),
+    updatePolicy: (id: string, data: unknown) =>
       apiFetchPost<{ success: boolean }>('/api/remediation/policies', { id, ...data }),
   },
 }

@@ -2,17 +2,15 @@
 
 import React, { useState } from 'react'
 import { X, Check, Loader2, AlertCircle, Wifi, Server, Globe, Database, Github, Zap } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Switch } from '@/components/ui/switch'
 import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
-import { cn } from '@/lib/utils'
-import { trpc } from '@/lib/trpc'
 
 // TODO: Backend API for creating monitors is not yet implemented.
 // When available, add a `create` mutation to monitorsRouter and backend service.
@@ -190,7 +188,7 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
         showToast('Test check failed', `Endpoint returned ${response.status} ${response.statusText}`, 'destructive')
         setErrors({ checkUrl: `Endpoint returned ${response.status}. Check the URL and network access.` })
       }
-    } catch (err) {
+    } catch {
       // Network error or CORS error - fall back to mock
       await new Promise((resolve) => setTimeout(resolve, 1000))
       const success = Math.random() > 0.3

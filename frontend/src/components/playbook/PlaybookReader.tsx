@@ -2,13 +2,11 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { X, Save, ChevronLeft, ChevronRight, CheckCircle2, RefreshCw } from 'lucide-react'
-import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet'
+import { Sheet, SheetContent } from '@/components/ui/sheet'
 import { ConnectionIndicator } from '@/components/dashboard/connection-indicator'
 import { StepNavigator } from './StepNavigator'
 import { StepHeader } from './StepHeader'
@@ -21,9 +19,9 @@ import { ResolutionStep } from './ResolutionStep'
 import { AutomationPanel } from './AutomationPanel'
 import { trpc } from '@/lib/trpc'
 import { toast } from 'sonner'
-import type { Playbook, Step, StepType, PlaybookExecution, ActiveUser, RunningCheck, RightPanelTab } from './types'
+import type { StepType, PlaybookExecution, RunningCheck } from './types'
 
-const STEP_COMPONENTS: Record<StepType, React.ComponentType<any>> = {
+const STEP_COMPONENTS: Record<StepType, React.ComponentType<React.ComponentProps<typeof QuestionStep>>> = {
   QUESTION: QuestionStep,
   CHECK: CheckStep,
   ACTION: ActionStep,
@@ -42,11 +40,8 @@ export function PlaybookReader({ playbookId, onExit }: PlaybookReaderProps) {
   const [playbookEntry, setPlaybookEntry] = useState<{ id: string; title: string; failureType: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [sseConnected, setSseConnected] = useState(false)
-  const [activeUsers, setActiveUsers] = useState<ActiveUser[]>([])
   const [runningChecks, setRunningChecks] = useState<RunningCheck[]>([])
   const [recentOutput, setRecentOutput] = useState<string[]>([])
-  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('automation')
   const [mobilePane, setMobilePane] = useState<'navigator' | 'content' | 'panels'>('content')
   const [sheetOpen, setSheetOpen] = useState(false)
   const [polling, setPolling] = useState(false)
@@ -76,7 +71,7 @@ export function PlaybookReader({ playbookId, onExit }: PlaybookReaderProps) {
   // Simulate SSE connection (replace with real SSE when backend is ready)
   useEffect(() => {
     if (!execution?.id) return
-    setSseConnected(true)
+    // SSE connection simulated - replace with real SSE when backend is ready
   }, [execution?.id])
 
   // Poll execution state when running
@@ -100,7 +95,7 @@ export function PlaybookReader({ playbookId, onExit }: PlaybookReaderProps) {
       clearInterval(interval)
       setPolling(false)
     }
-  }, [execution?.id, execution?.status, utils])
+  }, [execution?.id, execution?.status, utils, polling])
 
   const runPlaybook = trpc.playbook.run.useMutation({
     onSuccess: (newExecution) => {
@@ -244,22 +239,11 @@ export function PlaybookReader({ playbookId, onExit }: PlaybookReaderProps) {
     handleRunCheck(execution.currentStepIndex)
   }
 
-  const handleSkipBranch = () => {
-    if (!execution) return
-    const currentStep = execution.playbook.steps[execution.currentStepIndex]
-    handleDecision(currentStep.id, [], true)
-  }
-
   const handleMarkResolved = () => {
     if (!execution) return
     setExecution((prev) =>
       prev ? { ...prev, status: 'completed' } : prev
     )
-  }
-
-  const handleRefresh = () => {
-    if (!execution?.id) return
-    utils.playbook.getExecution.invalidate({ executionId: execution.id })
   }
 
   const isInitialLoading = loading || entryLoading
