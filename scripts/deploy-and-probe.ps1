@@ -13,26 +13,33 @@ $browser = @{ Accept = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/
 function Get-Status([string]$url, [string]$method = 'GET', [string]$body = '', [hashtable]$extraHeaders = $null) {
   $headers = @{}
   if ($extraHeaders) { foreach ($k in $extraHeaders.Keys) { $headers[$k] = $extraHeaders[$k] } }
-  try {
-    if ($method -eq 'POST') {
-      $r = Invoke-WebRequest -Uri $url -Method POST -Body $body -ContentType 'application/json' -Headers $headers -TimeoutSec 60 -UseBasicParsing
-    } else {
-      $r = Invoke-WebRequest -Uri $url -Method GET -Headers $headers -TimeoutSec 60 -UseBasicParsing
+  for ($attempt = 1; $attempt -le 4; $attempt++) {
+    try {
+      if ($method -eq 'POST') {
+        $r = Invoke-WebRequest -Uri $url -Method POST -Body $body -ContentType 'application/json' -Headers $headers -TimeoutSec 60 -UseBasicParsing
+      } else {
+        $r = Invoke-WebRequest -Uri $url -Method GET -Headers $headers -TimeoutSec 60 -UseBasicParsing
+      }
+      return @{ status = [int]$r.StatusCode; body = $r.Content }
+    } catch {
+      $resp = $_.Exception.Response
+      if ($resp) {
+        $code = [int]$resp.StatusCode
+        $text = ''
+        try {
+          $reader = New-Object System.IO.StreamReader($resp.GetResponseStream())
+          $text = $reader.ReadToEnd()
+        } catch { }
+        return @{ status = $code; body = $text }
+      }
+      if ($attempt -lt 4) {
+        Start-Sleep -Seconds 10
+        continue
+      }
+      return @{ status = 0; body = $_.Exception.Message }
     }
-    return @{ status = [int]$r.StatusCode; body = $r.Content }
-  } catch {
-    $resp = $_.Exception.Response
-    if ($resp) {
-      $code = [int]$resp.StatusCode
-      $text = ''
-      try {
-        $reader = New-Object System.IO.StreamReader($resp.GetResponseStream())
-        $text = $reader.ReadToEnd()
-      } catch { }
-      return @{ status = $code; body = $text }
-    }
-    return @{ status = 0; body = $_.Exception.Message }
   }
+  return @{ status = 0; body = 'unreachable' }
 }
 
 function Show([string]$label, [hashtable]$r, [int[]]$expected) {
