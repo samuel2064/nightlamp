@@ -16,6 +16,8 @@ const TENANT_TABLES = [
   'alert_rules',
   'onboarding_sessions',
   'x_scheduled_posts',
+  'usage_records',
+  'webhook_events',
 ] as const;
 
 function tableExists(db: Database, table: string): boolean {
@@ -64,21 +66,11 @@ export function up(db: Database): void {
 
   rebuildRemediationPolicies(db);
 
-  db.run('CREATE INDEX IF NOT EXISTS idx_checks_team ON checks(team_id)');
-  db.run('CREATE INDEX IF NOT EXISTS idx_check_results_team ON check_results(team_id)');
-  db.run('CREATE INDEX IF NOT EXISTS idx_failure_events_team ON failure_events(team_id)');
-  db.run('CREATE INDEX IF NOT EXISTS idx_playbook_entries_team ON playbook_entries(team_id)');
-  db.run('CREATE INDEX IF NOT EXISTS idx_dependencies_team ON dependencies(team_id)');
-  db.run('CREATE INDEX IF NOT EXISTS idx_dependency_updates_team ON dependency_updates(team_id)');
-  db.run('CREATE INDEX IF NOT EXISTS idx_customers_team ON customers(team_id)');
-  db.run('CREATE INDEX IF NOT EXISTS idx_subscriptions_team ON subscriptions(team_id)');
-  db.run('CREATE INDEX IF NOT EXISTS idx_remediation_log_team ON remediation_log(team_id)');
-  db.run('CREATE INDEX IF NOT EXISTS idx_remediation_runs_team ON remediation_runs(team_id)');
-  db.run('CREATE INDEX IF NOT EXISTS idx_remediation_policies_team ON remediation_policies(team_id)');
-  db.run('CREATE INDEX IF NOT EXISTS idx_alert_channels_team ON alert_channels(team_id)');
-  db.run('CREATE INDEX IF NOT EXISTS idx_alert_rules_team ON alert_rules(team_id)');
-  db.run('CREATE INDEX IF NOT EXISTS idx_onboarding_sessions_team ON onboarding_sessions(team_id)');
-  db.run('CREATE INDEX IF NOT EXISTS idx_x_scheduled_posts_team ON x_scheduled_posts(team_id)');
+  for (const table of TENANT_TABLES) {
+    if (tableExists(db, table) && hasColumn(db, table, 'team_id')) {
+      db.run(`CREATE INDEX IF NOT EXISTS idx_${table}_team ON ${table}(team_id)`);
+    }
+  }
 }
 
 export function down(db: Database): void {
@@ -98,6 +90,8 @@ export function down(db: Database): void {
     'idx_alert_rules_team',
     'idx_onboarding_sessions_team',
     'idx_x_scheduled_posts_team',
+    'idx_usage_records_team',
+    'idx_webhook_events_team',
   ];
 
   for (const index of indexes) {

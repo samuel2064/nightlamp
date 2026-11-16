@@ -18,7 +18,9 @@ export type TenantTable =
   | 'alert_channels'
   | 'alert_rules'
   | 'onboarding_sessions'
-  | 'x_scheduled_posts';
+  | 'x_scheduled_posts'
+  | 'usage_records'
+  | 'webhook_events';
 
 export function tenantFilter(column: string, teamId: string | null): TenantFilter {
   if (teamId === null) {
@@ -31,7 +33,7 @@ export function tenantFilterForTables(
   table: TenantTable,
   teamId: string | null,
 ): TenantFilter {
-  return tenantFilter(table, teamId);
+  return tenantFilter(`${table}.team_id`, teamId);
 }
 
 export function rowBelongsToTenant(
