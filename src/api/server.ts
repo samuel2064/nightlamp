@@ -18,6 +18,8 @@ import { OnboardingApi } from '../teams/onboarding-api';
 import { PlaybookBuilderApi } from '../playbook/playbook-builder-api';
 import { NotificationApi } from '../notifications';
 import { ReportsApi } from '../reports';
+import { AppsApi } from '../apps';
+import { isChannelAttachedToApp } from '../apps/attachment';
 import { getPolicyForSeverity, getOnCallAt, ESCALATION_POLICIES, buildSelfMonitorDashboard, computeErrorBudgetStatus, SELF_MONITOR_DEFAULTS } from '../alerting';
 import { nodeHTTPRequestHandler } from '@trpc/server/adapters/node-http';
 import { handleSSERequest } from './sse';
@@ -170,6 +172,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
   const playbookBuilderApi = new PlaybookBuilderApi(db);
   const notificationApi = new NotificationApi(db);
   const reportsApi = new ReportsApi(db);
+  const appsApi = new AppsApi(db);
   const playbookEngine = createPlaybookEngine(db);
   const latencyTracker = new ApiLatencyTracker();
   const hotCache = new ApiCache(15_000);
@@ -539,6 +542,10 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         return;
       }
 
+      if (appsApi.handle(req, res, auth!)) {
+        return;
+      }
+
       if (path === '/api/alerting/channels' || path === '/api/alerting/channels/') {
         if (req.method === 'POST') {
           let body = '';
@@ -584,6 +591,11 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         if (!rowBelongsToTenant(db, 'alert_channels', channelId, teamId)) {
           res.writeHead(404);
           res.end(JSON.stringify({ error: 'Channel not found' }));
+          return;
+        }
+        if (isChannelAttachedToApp(db, channelId)) {
+          res.writeHead(409);
+          res.end(JSON.stringify({ error: 'Channel is attached to an application' }));
           return;
         }
         db.run('DELETE FROM alert_rules WHERE channel_id = ?', [channelId]);
