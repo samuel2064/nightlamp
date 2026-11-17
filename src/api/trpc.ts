@@ -3,7 +3,7 @@ import { z } from 'zod';
 import superjson from 'superjson';
 import { Database } from 'sql.js';
 import { PlaybookEngine, createPlaybookEngine, PlaybookExecution, PlaybookDefinition, PlaybookStep } from '../playbook/engine';
-import { ApiAuthError, TeamRole, upsertUser, verifyAccessToken, extractBearerToken } from './auth';
+import { ApiAuthError, TeamRole, VerifiedTokenClaims, upsertUser, verifyAccessToken, verifyAccessTokenAsync, extractBearerToken } from './auth';
 import { IncomingMessage } from 'http';
 import * as crypto from 'crypto';
 
@@ -47,6 +47,26 @@ function getUserFromToken(token: string | undefined, db: Database): UserInfo | n
     return null;
   }
 
+  return buildUserInfo(db, claims);
+}
+
+async function getUserFromTokenAsync(token: string | undefined, db: Database): Promise<UserInfo | null> {
+  if (!token) return null;
+
+  let claims;
+  try {
+    claims = await verifyAccessTokenAsync(token);
+  } catch (err: any) {
+    if (err instanceof ApiAuthError && err.code === 'AUTH_NOT_CONFIGURED') {
+      throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Authentication is not configured' });
+    }
+    return null;
+  }
+
+  return buildUserInfo(db, claims);
+}
+
+function buildUserInfo(db: Database, claims: VerifiedTokenClaims): UserInfo {
   const user = upsertUser(db, claims);
   const result = db.exec(
     `SELECT m.team_id, m.role FROM memberships m
@@ -87,17 +107,17 @@ export async function createTRPCContextFromRequest(
   req: Request
 ): Promise<TRPCContext> {
   const token = extractAuthFromRequest(req);
-  const user = getUserFromToken(token, db);
+  const user = await getUserFromTokenAsync(token, db);
   return { db, playbookEngine, user };
 }
 
-export function createTRPCContextFromNodeRequest(
+export async function createTRPCContextFromNodeRequest(
   db: Database,
   playbookEngine: PlaybookEngine,
   req: IncomingMessage
-): TRPCContext {
+): Promise<TRPCContext> {
   const token = extractBearerToken(req.headers) || undefined;
-  const user = getUserFromToken(token, db);
+  const user = await getUserFromTokenAsync(token, db);
   return { db, playbookEngine, user };
 }
 

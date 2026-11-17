@@ -348,13 +348,13 @@ describe('P0 API authorization', () => {
   });
 
   describe('tRPC authorization', () => {
-    it('builds an anonymous context when no token is present', () => {
-      const ctx = createTRPCContextFromNodeRequest(db, createPlaybookEngine(db), nodeRequest({}));
+    it('builds an anonymous context when no token is present', async () => {
+      const ctx = await createTRPCContextFromNodeRequest(db, createPlaybookEngine(db), nodeRequest({}));
       assert.strictEqual(ctx.user, null);
     });
 
-    it('builds an authenticated context from a valid token', () => {
-      const ctx = createTRPCContextFromNodeRequest(db, createPlaybookEngine(db), nodeRequest({
+    it('builds an authenticated context from a valid token', async () => {
+      const ctx = await createTRPCContextFromNodeRequest(db, createPlaybookEngine(db), nodeRequest({
         authorization: `Bearer ${createTestToken({ sub: TEST_CLERK_USER_ID })}`,
       }));
       assert.ok(ctx.user);
