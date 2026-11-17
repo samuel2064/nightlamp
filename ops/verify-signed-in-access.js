@@ -9,6 +9,7 @@ const expectedIssuer = process.env.CLERK_ISSUER;
 const nightlampApi = process.env.NIGHTLAMP_API || 'https://nightlamp-api.onrender.com';
 const resultFile = process.env.RESULT_FILE || '/tmp/signed-in-result.json';
 const marker = process.env.VERIFICATION_MARKER || 'nightlamp-cto-verification';
+const emailDomain = process.env.VERIFICATION_EMAIL_DOMAIN || 'example.com';
 
 const report = {
   probes: [],
@@ -92,6 +93,20 @@ function bearer(token, extraHeaders) {
   return Object.assign({ Authorization: `Bearer ${token}` }, extraHeaders || {});
 }
 
+function errorCodes(response) {
+  const body = response.body;
+  if (!body || typeof body !== 'object') return [];
+  const codes = [];
+  if (typeof body.code === 'string') codes.push(body.code);
+  if (Array.isArray(body.errors)) {
+    for (const entry of body.errors) {
+      if (entry && typeof entry.code === 'string') codes.push(entry.code);
+      if (entry && typeof entry.field === 'string') codes.push(`${entry.field}:invalid`);
+    }
+  }
+  return codes;
+}
+
 async function run() {
   const envVars = await renderRequest('GET', `/services/${frontendId}/env-vars`);
   log(`GET the frontend environment variables -> HTTP ${envVars.status}`);
@@ -129,21 +144,31 @@ async function run() {
   const existingUsers = Array.isArray(users.body) ? users.body.length : 0;
   report.identity.existingUserCount = existingUsers;
 
-  const email = `${marker}-${Date.now()}@nightlamp.local`;
+  const email = `${marker}-${Date.now()}@${emailDomain}`;
   const created = await clerkRequest('POST', '/users', {
     email_address: email,
     first_name: 'Nightlamp',
     last_name: 'Verification',
     password: `Nv${Date.now()}-${Math.random().toString(36).slice(2)}`,
   });
-  log(`POST the verification user -> HTTP ${created.status}`);
-  if (created.status < 200 || created.status >= 300 || !created.body || !created.body.id) {
-    report.error = `the verification identity could not be created (HTTP ${created.status})`;
-    return;
+  log(`POST the verification user -> HTTP ${created.status}${errorCodes(created).length ? ` (${errorCodes(created).join(', ')})` : ''}`);
+  report.identity.verificationEmailDomain = emailDomain;
+  if (created.status >= 200 && created.status < 300 && created.body && created.body.id) {
+    userId = created.body.id;
+    report.identity.userId = userId;
+    report.identity.identityCreated = true;
+  } else {
+    const existing = Array.isArray(users.body) ? users.body.find((entry) => entry && entry.id) : null;
+    if (!existing) {
+      report.error = `the verification identity could not be created (HTTP ${created.status}${errorCodes(created).length ? `: ${errorCodes(created).join(', ')}` : ''}) and there is no existing user to fall back to`;
+      return;
+    }
+    userId = existing.id;
+    report.identity.userId = userId;
+    report.identity.identityCreated = false;
+    report.identity.usedExistingUser = true;
+    log('falling back to an existing user for the session; that user will not be deleted');
   }
-  userId = created.body.id;
-  report.identity.userId = userId;
-  report.identity.identityCreated = true;
 
   const session = await clerkRequest('POST', '/sessions', { user_id: userId });
   log(`POST a session for the verification user -> HTTP ${session.status}`);
@@ -220,10 +245,14 @@ async function cleanup() {
     log(`DELETE the verification session -> HTTP ${removed.status}`);
     report.identity.sessionRemoved = removed.status === 204 || removed.status === 200;
   }
-  if (userId) {
+  if (userId && report.identity.identityCreated) {
     const removed = await clerkRequest('DELETE', `/users/${userId}`);
     log(`DELETE the verification user -> HTTP ${removed.status}`);
     report.identity.userRemoved = removed.status === 204 || removed.status === 200;
+  } else if (userId) {
+    log('the existing user is not deleted by this script');
+    report.identity.userRemoved = false;
+    report.identity.existingUserKept = true;
   }
 }
 
