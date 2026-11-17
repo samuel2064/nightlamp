@@ -6,11 +6,11 @@
   },
   "diagnostics": [
     "GET the frontend environment variables -> HTTP 200",
-    "the frontend secret key belongs to the Clerk instance: ǘ�\\�z\u001fQ\n�)!\"�Í�t\f�i\u0014��\ffY�\u001a�"
+    "the frontend publishable key belongs to the Clerk instance: capable-goldfish-98.clerk.accounts.dev$"
   ],
   "valuesIncluded": false,
   "bodiesIncluded": false,
-  "error": "the frontend secret key belongs to a different Clerk instance",
+  "error": "the frontend publishable key belongs to a different Clerk instance",
   "probesPassed": 0,
   "probesTotal": 0
 }
