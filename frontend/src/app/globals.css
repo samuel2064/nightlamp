@@ -59,4 +59,39 @@
   :focus-visible {
     @apply outline-none ring-2 ring-[hsl(var(--ring))] ring-offset-2 ring-offset-background;
   }
+
+  /* Ensure auth inputs are >= 16px to prevent iOS Safari viewport zoom on focus */
+  .cl-formFieldInput,
+  .cl-input,
+  input[type="email"],
+  input[type="password"],
+  input[type="text"],
+  input[type="tel"],
+  input[type="url"] {
+    font-size: 1rem !important; /* 16px minimum */
+  }
+
+  /* Ensure touch targets meet 44x44 minimum */
+  .cl-formButtonPrimary,
+  .cl-button,
+  button,
+  [role="button"],
+  a,
+  .cl-tab,
+  .cl-radioButton,
+  .cl-checkbox {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Comparison table responsive: prevent horizontal clipping at 320/375px */
+  @media (max-width: 640px) {
+    .comparison-table-wrapper {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .comparison-table-wrapper table {
+      min-width: 640px;
+    }
+  }
 }

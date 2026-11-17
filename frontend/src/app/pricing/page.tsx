@@ -349,7 +349,7 @@ export default function PricingPage() {
       <section className="border-t bg-muted/30 py-16">
         <div className="container mx-auto max-w-5xl px-4">
           <h2 className="mb-8 text-center text-2xl font-bold">Plan limits at a glance</h2>
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto comparison-table-wrapper">
             <table className="w-full min-w-[640px] text-left">
               <thead>
                 <tr className="border-b">
@@ -380,7 +380,7 @@ export default function PricingPage() {
       <section className="border-t py-20">
         <div className="container mx-auto px-4">
           <h2 className="mb-12 text-center text-3xl font-bold">Compare plans</h2>
-          <div className="mx-auto max-w-5xl overflow-x-auto">
+          <div className="mx-auto max-w-5xl overflow-x-auto comparison-table-wrapper">
             <table className="w-full min-w-[640px] text-left">
               <thead>
                 <tr className="border-b">
