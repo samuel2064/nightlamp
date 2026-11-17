@@ -95,16 +95,45 @@ function clerkInstanceFromPublishable(key) {
   }
 }
 
-async function clerk(method, path, body) {
+async function clerk(method, path, body, options = {}) {
+  const headers = {
+    Authorization: `Bearer ${process.env.CLERK_SECRET_KEY_VALUE || ''}`,
+    'Content-Type': 'application/json',
+  };
+  if (options.withVersion !== false) headers['Clerk-API-Version'] = CLERK_API_VERSION;
   return fetchJson(`${CLERK_API}${path}`, {
     method,
-    headers: {
-      Authorization: `Bearer ${process.env.CLERK_SECRET_KEY_VALUE || ''}`,
-      'Content-Type': 'application/json',
-      'Clerk-API-Version': CLERK_API_VERSION,
-    },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
+}
+
+function clerkErrorSummary(res) {
+  if (!res || !res.json || !Array.isArray(res.json.errors) || !res.json.errors.length) {
+    return scrub(res && res.text ? res.text : 'no response');
+  }
+  const first = res.json.errors[0];
+  return `${res.status} ${first.code || ''} ${first.message || first.long_message || ''}`.slice(0, 220);
+}
+
+async function createClerkUser(email) {
+  const bodies = [
+    { email_address: email },
+    { email_address: email, skip_email_verification: true },
+    { email_address: email, first_name: 'Nightlamp', last_name: 'Verification' },
+    { email_address: email, skip_email_verification: true, first_name: 'Nightlamp', last_name: 'Verification' },
+  ];
+  for (const withVersion of [true, false]) {
+    for (const body of bodies) {
+      const res = await clerk('POST', '/users', body, { withVersion });
+      if (res.json && res.json.id) {
+        step('clerk-user-created', `${res.json.id} (${email})`);
+        return res.json;
+      }
+      step('clerk-user-create-attempt', `version=${withVersion ? CLERK_API_VERSION : 'default'} body=${Object.keys(body).sort().join('+')} -> ${clerkErrorSummary(res)}`);
+    }
+  }
+  return null;
 }
 
 function decodeJwt(token) {
@@ -181,26 +210,13 @@ async function run() {
   }
   if (issuer) step('backend-issuer', issuer);
 
-  let created = await clerk('POST', '/users', {
-    email_address: TEST_EMAIL,
-    skip_email_verification: true,
-    first_name: 'Nightlamp',
-    last_name: 'Verification',
-  });
-  if (created.status >= 400) {
-    created = await clerk('POST', '/users', {
-      email_address: TEST_EMAIL,
-      first_name: 'Nightlamp',
-      last_name: 'Verification',
-    });
-  }
-  if (!created.json || !created.json.id) {
-    finding(`the Clerk test identity could not be created (HTTP ${created.status}: ${scrub(created.text)})`);
+  const user = await createClerkUser(TEST_EMAIL);
+  if (!user) {
+    finding('the Clerk test identity could not be created');
     return;
   }
-  const userId = created.json.id;
+  const userId = user.id;
   report.testUser = { id: userId, email: TEST_EMAIL };
-  step('clerk-user-created', `${userId} (${TEST_EMAIL})`);
 
   const session = await clerk('POST', '/sessions', { user_id: userId });
   if (!session.json || !session.json.id) {
