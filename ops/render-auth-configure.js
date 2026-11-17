@@ -86,8 +86,12 @@ function replaceEnvVars(serviceId, current, additions) {
     log(`refused the bulk replace, the API did not return the value of: ${missing.join(',')}`);
     return { ok: false, refused: true };
   }
-  const beforeHashes = current.map((entry) => `${entry.key}\t${hash(entry.value)}`).sort();
-  const keep = current.filter((entry) => !additions.some((addition) => addition.key === entry.key));
+  const additionsKeys = additions.map((addition) => addition.key);
+  const beforeHashes = current
+    .filter((entry) => !additionsKeys.includes(entry.key))
+    .map((entry) => `${entry.key}\t${hash(entry.value)}`)
+    .sort();
+  const keep = current.filter((entry) => !additionsKeys.includes(entry.key));
   const withType = keep.map((entry) => (
     entry.type
       ? { key: entry.key, value: String(entry.value), type: entry.type }
@@ -106,13 +110,21 @@ function replaceEnvVars(serviceId, current, additions) {
   const after = listEnvVars(serviceId);
   if (!after) return { ok: true, verified: false };
   const afterHashes = after
-    .filter((entry) => !additions.some((addition) => addition.key === entry.key))
+    .filter((entry) => !additionsKeys.includes(entry.key))
     .map((entry) => `${entry.key}\t${hash(entry.value)}`)
     .sort();
-  const unchanged = JSON.stringify(beforeHashes) === JSON.stringify(afterHashes);
+  const beforeMap = new Map(beforeHashes.map((line) => line.split('\t')));
+  const afterMap = new Map(afterHashes.map((line) => line.split('\t')));
+  const changed = [...beforeMap.keys()].filter((key) => afterMap.get(key) !== beforeMap.get(key));
+  const vanished = [...beforeMap.keys()].filter((key) => !afterMap.has(key));
+  const appeared = [...afterMap.keys()].filter((key) => !beforeMap.has(key));
+  if (vanished.length) log(`variables that disappeared: ${vanished.join(',')}`);
+  if (appeared.length) log(`variables that appeared without being added by this run: ${appeared.join(',')}`);
+  if (changed.length) log(`pre-existing variables with a different value: ${changed.join(',')}`);
+  const unchanged = changed.length === 0 && vanished.length === 0 && appeared.length === 0;
   log(unchanged
     ? 'every pre-existing variable kept exactly the same value, verified by hash'
-    : 'a pre-existing variable changed value');
+    : 'the verification found a difference in the pre-existing variables');
   return { ok: true, verified: unchanged };
 }
 
