@@ -43,7 +43,7 @@ interface JwtHeader {
 
 interface JwtVerificationConfig {
   secret?: string;
-  publicKey?: string;
+  publicKey?: crypto.KeyObject;
   issuer?: string;
   audience?: string;
 }
@@ -61,16 +61,26 @@ function decodeJsonPart(value: string): Record<string, any> {
   }
 }
 
+function loadPublicKey(pem: string): crypto.KeyObject | undefined {
+  try {
+    return crypto.createPublicKey({ key: pem, format: 'pem' });
+  } catch {
+    return undefined;
+  }
+}
+
 function getVerificationConfig(): JwtVerificationConfig {
   const secret = process.env.CLERK_JWT_SECRET?.trim();
-  const publicKey = process.env.CLERK_JWT_PUBLIC_KEY?.trim().replace(/\\n/g, '\n');
-  if (!secret && !publicKey) {
+  const publicKeyPem = process.env.CLERK_JWT_PUBLIC_KEY?.trim().replace(/\\n/g, '\n');
+  const publicKey = publicKeyPem ? loadPublicKey(publicKeyPem) : undefined;
+  const issuer = process.env.CLERK_JWT_ISSUER?.trim() || undefined;
+  if (!secret && !publicKey && !issuer) {
     throw new ApiAuthError('Authentication is not configured', 503, 'AUTH_NOT_CONFIGURED');
   }
   return {
     secret: secret || undefined,
-    publicKey: publicKey || undefined,
-    issuer: process.env.CLERK_JWT_ISSUER?.trim() || undefined,
+    publicKey,
+    issuer,
     audience: process.env.CLERK_JWT_AUDIENCE?.trim() || undefined,
   };
 }
