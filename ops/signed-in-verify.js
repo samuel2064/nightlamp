@@ -11,17 +11,18 @@ const CLERK_API_VERSION = process.env.CLERK_API_VERSION || '2025-04-10';
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://nightlamp-api.onrender.com').replace(/\/+$/, '');
 const REPORT_FILE = process.env.REPORT_FILE || '/tmp/signed-in-verify-report.json';
 const RUN_ID = process.env.GITHUB_RUN_ID || 'local';
-const TEST_EMAIL = process.env.TEST_EMAIL || `noc263-verify-${RUN_ID}@nightlamp.test`;
 
 const report = {
   run: RUN_ID,
   startedAt: new Date().toISOString(),
   backendUrl: BACKEND_URL,
+  identity: null,
+  token: null,
+  memberAccess: null,
+  noMembershipAccess: null,
   probes: [],
   steps: [],
   findings: [],
-  clerkToken: null,
-  testUser: null,
   createdArtifacts: [],
   valuesIncluded: false,
   finished: false,
@@ -32,7 +33,7 @@ function step(name, detail) {
 }
 
 function finding(text) {
-  report.findings.push(String(text).slice(0, 300));
+  report.findings.push(String(text).slice(0, 400));
 }
 
 function scrub(value) {
@@ -40,7 +41,7 @@ function scrub(value) {
   return String(value)
     .replace(/sk_[A-Za-z0-9_-]+/g, 'sk_[redacted]')
     .replace(/pk_[A-Za-z0-9_-]+/g, 'pk_[redacted]')
-    .slice(0, 160);
+    .slice(0, 200);
 }
 
 async function fetchJson(url, options = {}) {
@@ -112,63 +113,8 @@ function clerkErrorSummary(res) {
   if (!res || !res.json || !Array.isArray(res.json.errors) || !res.json.errors.length) {
     return scrub(res && res.text ? res.text : 'no response');
   }
-  const parts = res.json.errors.slice(0, 3).map((entry) => {
-    const detail = entry.long_message || entry.message || '';
-    return `${entry.code || ''}${entry.param ? `[${entry.param}]` : ''} ${detail}`.trim();
-  });
-  return `${res.status} ${parts.join(' | ')}`.slice(0, 500);
-}
-
-async function createClerkUser(emails) {
-  const email = emails[0];
-  const bodies = [
-    { email_address: email },
-    { email_address: [email] },
-    { email_address: email, skip_email_verification: true },
-    { email_address: email, username: `noc263-${RUN_ID}` },
-    { email_address: email, first_name: 'Nightlamp', last_name: 'Verification' },
-    { email_address: email, skip_email_verification: true, first_name: 'Nightlamp', last_name: 'Verification' },
-  ];
-  let first = true;
-  for (const withVersion of [true, false]) {
-    for (const body of bodies) {
-      const res = await clerk('POST', '/users', body, { withVersion });
-      if (res.json && res.json.id) {
-        step('clerk-user-created', `${res.json.id} (${email})`);
-        return res.json;
-      }
-      const detail = first ? scrub(JSON.stringify(res.json || res.text)).slice(0, 900) : clerkErrorSummary(res);
-      first = false;
-      step('clerk-user-create-attempt', `version=${withVersion ? CLERK_API_VERSION : 'default'} body=${Object.keys(body).sort().join('+')} -> ${detail}`);
-    }
-  }
-  for (const alternative of emails.slice(1)) {
-    const res = await clerk('POST', '/users', { email_address: alternative, skip_email_verification: true }, { withVersion: true });
-    if (res.json && res.json.id) {
-      step('clerk-user-created', `${res.json.id} (${alternative})`);
-      return res.json;
-    }
-    step('clerk-user-create-attempt', `alternative address -> ${clerkErrorSummary(res)}`);
-  }
-  return null;
-}
-
-async function listClerkUsers() {
-  const res = await clerk('GET', '/users?limit=20&order_by=-created_at', null, { withVersion: true });
-  if (res.json && Array.isArray(res.json.data)) {
-    step('clerk-user-list', `HTTP ${res.status}, ${res.json.data.length} users visible to the instance key`);
-    return res.json.data.map((entry) => ({
-      id: entry.id,
-      email: Array.isArray(entry.email_addresses) && entry.email_addresses.length ? entry.email_addresses[0].email_address : '',
-      createdAt: entry.created_at || null,
-    }));
-  }
-  step('clerk-user-list', `HTTP ${res.status} ${scrub(JSON.stringify(res.json || res.text)).slice(0, 900)}`);
-  return [];
-}
-
-function looksLikeTestIdentity(email) {
-  return /(^|[@.+-])(test|noc|nightlamp|verify|ci|bot)([@.+-]|$)/i.test(String(email || ''));
+  const first = res.json.errors[0];
+  return `${res.status} ${first.code || ''} ${first.message || first.long_message || ''}`.slice(0, 300);
 }
 
 function decodeJwt(token) {
@@ -211,6 +157,42 @@ async function probe(name, path, options = {}) {
   return res;
 }
 
+async function listClerkUsers() {
+  const res = await clerk('GET', '/users?limit=20&order_by=-created_at', null, { withVersion: true });
+  const data = Array.isArray(res.json) ? res.json : (res.json && Array.isArray(res.json.data) ? res.json.data : null);
+  if (!data) {
+    step('clerk-user-list', `HTTP ${res.status}, the instance key could not list the users`);
+    return [];
+  }
+  step('clerk-user-list', `HTTP ${res.status}, ${data.length} users visible to the instance key`);
+  return data.map((entry) => ({
+    id: entry.id,
+    label: `${entry.first_name || ''} ${entry.last_name || ''}`.trim() || 'unnamed',
+    email: Array.isArray(entry.email_addresses) && entry.email_addresses.length ? entry.email_addresses[0].email_address : '',
+  }));
+}
+
+function looksLikeTestIdentity(entry) {
+  return /(^|[\s@.+_-])(qa|test|verify|verification|nightlamp|noc|ci|bot)([\s@.+_-]|$)/i.test(`${entry.label || ''} ${entry.email || ''}`);
+}
+
+async function createClerkUser(email) {
+  const bodies = [
+    { email_address: email, skip_email_verification: true },
+    { email_address: email },
+    { email_address: email, skip_email_verification: true, first_name: 'Nightlamp', last_name: 'Verification' },
+  ];
+  for (const body of bodies) {
+    const res = await clerk('POST', '/users', body, { withVersion: true });
+    if (res.json && res.json.id) {
+      step('clerk-user-created', `${res.json.id}`);
+      return res.json;
+    }
+    step('clerk-user-create-attempt', `body=${Object.keys(body).sort().join('+')} -> ${clerkErrorSummary(res)}`);
+  }
+  return null;
+}
+
 async function run() {
   if (!RENDER_KEY || !BACKEND_SERVICE_ID) {
     finding('the Render credentials are not available in this run');
@@ -228,47 +210,41 @@ async function run() {
     finding('no Clerk instance secret key is present on the backend or the frontend service');
     return;
   }
-  if (!publishable) {
-    finding('no Clerk publishable key is present on the frontend service');
-  } else {
-    const instance = clerkInstanceFromPublishable(publishable);
-    const mode = publishable.startsWith('pk_test_') ? 'test' : publishable.startsWith('pk_live_') ? 'live' : 'unknown';
-    step('clerk-instance', `mode=${mode} instance=${instance || 'unresolved'}`);
-    if (mode === 'live') {
-      finding('the production Clerk instance is in live mode; no identity was created');
-      return;
-    }
-    if (issuer && instance && !issuer.includes(instance)) {
-      finding(`the publishable key instance (${instance}) does not match the configured issuer (${issuer}); no identity was created`);
-      return;
-    }
+  const instance = clerkInstanceFromPublishable(publishable);
+  const mode = publishable.startsWith('pk_test_') ? 'test' : publishable.startsWith('pk_live_') ? 'live' : 'unknown';
+  step('clerk-instance', `mode=${mode} instance=${instance || 'unresolved'}`);
+  if (mode === 'live') {
+    finding('the production Clerk instance is in live mode; no identity was used');
+    return;
+  }
+  if (issuer && instance && !issuer.includes(instance)) {
+    finding(`the publishable key instance (${instance}) does not match the configured issuer (${issuer}); no identity was used`);
+    return;
   }
   if (issuer) step('backend-issuer', issuer);
 
-  const emails = [
-    process.env.TEST_EMAIL || `noc263-verify+${RUN_ID}@nightlamp.dev`,
-    `noc263-verify+${RUN_ID}@example.com`,
-  ];
   const existing = await listClerkUsers();
-  let user = await createClerkUser(emails);
+  let user = existing.find((entry) => looksLikeTestIdentity(entry)) || null;
+  let createdUser = false;
   if (!user) {
-    const candidate = existing.find((entry) => looksLikeTestIdentity(entry.email));
-    if (candidate) {
-      step('clerk-user-reused', `${candidate.id} (an existing verification identity was reused)`);
-      user = { id: candidate.id };
+    const email = `noc263-verify+${RUN_ID}@nightlamp.dev`;
+    const created = await createClerkUser(email);
+    if (created) {
+      user = { id: created.id, label: 'Nightlamp Verification', email };
+      createdUser = true;
     }
+  } else {
+    step('clerk-identity-selected', `${user.id} (an existing verification identity was reused, no account was created)`);
   }
   if (!user) {
-    finding('the Clerk test identity could not be created');
+    finding('no Clerk verification identity is available');
     return;
   }
-  const userId = user.id;
-  report.testUser = { id: userId, email: user.email_address ? user.email_address[0] && user.email_address[0].email_address : emails[0] };
+  report.identity = { id: user.id, label: user.label || null, reused: !createdUser };
 
-  const session = await clerk('POST', '/sessions', { user_id: userId });
+  const session = await clerk('POST', '/sessions', { user_id: user.id });
   if (!session.json || !session.json.id) {
-    finding(`the Clerk session could not be created (HTTP ${session.status}: ${scrub(session.text)})`);
-    await clerk('DELETE', `/users/${userId}`);
+    finding(`the Clerk session could not be created (${clerkErrorSummary(session)})`);
     return;
   }
   const sessionId = session.json.id;
@@ -277,32 +253,29 @@ async function run() {
   const tokenRes = await clerk('POST', `/sessions/${sessionId}/tokens`);
   const token = tokenRes.json && tokenRes.json.jwt;
   if (!token) {
-    finding(`the Clerk session token could not be minted (HTTP ${tokenRes.status}: ${scrub(tokenRes.text)})`);
-    await clerk('DELETE', `/users/${userId}`);
+    finding(`the Clerk session token could not be minted (${clerkErrorSummary(tokenRes)})`);
+    await clerk('DELETE', `/sessions/${sessionId}`);
     return;
   }
   const decoded = decodeJwt(token);
   if (decoded) {
-    report.clerkToken = {
+    report.token = {
       alg: decoded.header.alg || null,
       kid: decoded.header.kid || null,
-      typ: decoded.header.typ || null,
       iss: decoded.payload.iss || null,
       exp: decoded.payload.exp || null,
-      nbf: decoded.payload.nbf || null,
-      iat: decoded.payload.iat || null,
       version: decoded.payload.v || null,
       claimKeys: Object.keys(decoded.payload).sort(),
       hasOrgClaim: Boolean(decoded.payload.org_id || decoded.payload.orgId || decoded.payload.o),
       hasAzpClaim: Boolean(decoded.payload.azp),
       sub: decoded.payload.sub || null,
     };
-    step('clerk-token-minted', `alg=${report.clerkToken.alg} kid=${report.clerkToken.kid} claims=${report.clerkToken.claimKeys.length}`);
-    if (report.clerkToken.alg !== 'RS256') {
-      finding(`the minted Clerk session token is ${report.clerkToken.alg}; the deployed backend verifies RS256 only`);
+    step('clerk-token-minted', `alg=${report.token.alg} kid=${report.token.kid} claims=${report.token.claimKeys.length}`);
+    if (report.token.alg !== 'RS256') {
+      finding(`the minted Clerk session token is ${report.token.alg}; the deployed backend verifies RS256 only`);
     }
-    if (report.clerkToken.iss && issuer && report.clerkToken.iss !== issuer) {
-      finding(`the minted token issuer (${report.clerkToken.iss}) does not match the configured issuer (${issuer})`);
+    if (report.token.iss && issuer && report.token.iss !== issuer) {
+      finding(`the minted token issuer (${report.token.iss}) does not match the configured issuer (${issuer})`);
     }
   } else {
     finding('the minted Clerk session token could not be decoded');
@@ -312,10 +285,11 @@ async function run() {
   await probe('anonymous-remediation-runs', '/api/remediation/runs', { expect: 401 });
   await probe('anonymous-health', '/api/health', { expect: 200 });
 
-  const memberEvents = await probe('signed-in-events', '/api/events', { token, expect: 403 });
-  const memberRuns = await probe('signed-in-remediation-runs', '/api/remediation/runs', { token, expect: 403 });
-  const memberChecks = await probe('signed-in-check-results', '/api/check-results', { token, expect: 403 });
-  const memberTeams = await probe('signed-in-teams', '/api/teams', { token, expect: 200 });
+  const teams = await probe('signed-in-teams', '/api/teams', { token, expect: 200 });
+  const teamCount = teams.json && Array.isArray(teams.json.teams) ? teams.json.teams.length : null;
+  const events = await probe('signed-in-events', '/api/events', { token, expect: 403 });
+  const runs = await probe('signed-in-remediation-runs', '/api/remediation/runs', { token, expect: 403 });
+  const checks = await probe('signed-in-check-results', '/api/check-results', { token, expect: 403 });
   await probe('signed-in-acknowledge-unknown-id', '/api/events/acknowledge', {
     token,
     method: 'POST',
@@ -323,8 +297,50 @@ async function run() {
     expect: 404,
   });
 
-  const signedInUserId = memberTeams.json && memberTeams.json.teams ? memberTeams.json.teams.length : null;
-  step('signed-in-team-count', String(signedInUserId));
+  const hasTeam = Boolean(teamCount);
+  if (hasTeam) {
+    report.memberAccess = {
+      teamsVisible: teamCount,
+      eventsStatus: events.status,
+      eventsCount: events.json && typeof events.json.count === 'number' ? events.json.count : null,
+      remediationRunsStatus: runs.status,
+      checkResultsStatus: checks.status,
+    };
+  } else {
+    report.memberAccess = {
+      teamsVisible: teamCount,
+      eventsStatus: events.status,
+      eventsCount: events.json && typeof events.json.count === 'number' ? events.json.count : null,
+      remediationRunsStatus: runs.status,
+      checkResultsStatus: checks.status,
+      note: 'the identity has no team visible through GET /api/teams, so the member case could not be exercised',
+    };
+  }
+
+  report.noMembershipAccess = {
+    contract: 403,
+    eventsStatus: events.status,
+    eventsCount: events.json && typeof events.json.count === 'number' ? events.json.count : null,
+    eventsMeetsContract: events.status === 403,
+    remediationRunsStatus: runs.status,
+    remediationRunsMeetsContract: runs.status === 403,
+    checkResultsStatus: checks.status,
+    checkResultsMeetsContract: checks.status === 403,
+  };
+
+  if (events.status === 200) {
+    const count = events.json && typeof events.json.count === 'number' ? events.json.count : null;
+    finding(`a signed-in identity with no membership is answered 200 on GET /api/events (contract 403); it can read ${count === null ? 'an unknown number of' : count} unscoped rows`);
+  }
+  if (runs.status === 200) {
+    finding('a signed-in identity with no membership is answered 200 on GET /api/remediation/runs (contract 403)');
+  }
+  if (checks.status === 200) {
+    finding('a signed-in identity with no membership is answered 200 on GET /api/check-results (contract 403)');
+  }
+  if (events.status === 401) {
+    finding('the deployed backend rejected a genuine Clerk session token with 401');
+  }
 
   const createTeam = await probe('signed-in-create-team', '/api/teams', {
     token,
@@ -332,14 +348,18 @@ async function run() {
     body: {
       name: `Nightlamp verification ${RUN_ID}`,
       slug: `noc263-verify-${String(RUN_ID).replace(/[^0-9A-Za-z]/g, '').slice(0, 12).toLowerCase()}`,
-      ownerId: userId,
+      ownerId: user.id,
     },
     expect: 200,
   });
   const createdTeamId = createTeam.json && createTeam.json.id;
   if (createdTeamId) {
     report.createdArtifacts.push({ kind: 'team', id: createdTeamId, slug: createTeam.json.slug });
-    await probe('signed-in-list-teams-after-create', '/api/teams', { token, expect: 200 });
+    const teamsAfter = await probe('signed-in-teams-after-create', '/api/teams', { token, expect: 200 });
+    const afterCount = teamsAfter.json && Array.isArray(teamsAfter.json.teams) ? teamsAfter.json.teams.length : null;
+    if (afterCount === 0) {
+      finding('a team created by the authenticated identity does not appear in GET /api/teams: the membership is not bound to the authenticated user');
+    }
     await probe('signed-in-events-with-created-team', '/api/events', {
       token,
       extraHeaders: { 'x-nightlamp-team-id': createdTeamId },
@@ -348,25 +368,12 @@ async function run() {
     await probe('signed-in-team-path-after-create', `/api/teams/${createdTeamId}`, { token, expect: 403 });
   }
 
-  const eventsCount = memberEvents.json && typeof memberEvents.json.count === 'number' ? memberEvents.json.count : null;
-  if (memberEvents.status === 200 && eventsCount && eventsCount > 0) {
-    finding(`a signed-in identity with no membership reads ${eventsCount} unscoped rows through GET /api/events`);
+  await clerk('DELETE', `/sessions/${sessionId}`);
+  step('clerk-session-revoked', sessionId);
+  if (createdUser) {
+    await clerk('DELETE', `/users/${user.id}`);
+    step('clerk-user-deleted', user.id);
   }
-  if (memberEvents.status === 200) {
-    finding('a signed-in identity with no membership is answered 200 on GET /api/events; the contract requires 403');
-  }
-  if (memberRuns.status === 200) {
-    finding('a signed-in identity with no membership is answered 200 on GET /api/remediation/runs; the contract requires 403');
-  }
-  if (memberChecks.status === 200) {
-    finding('a signed-in identity with no membership is answered 200 on GET /api/check-results; the contract requires 403');
-  }
-  if (createdTeamId && memberTeams.json && Array.isArray(memberTeams.json.teams) && memberTeams.json.teams.length === 0) {
-    finding('a team created by the authenticated identity does not appear in GET /api/teams; the membership is not bound to the authenticated user');
-  }
-
-  await clerk('DELETE', `/users/${userId}`);
-  step('clerk-test-user-deleted', userId);
 }
 
 async function main() {
