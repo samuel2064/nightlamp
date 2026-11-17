@@ -112,26 +112,37 @@ function clerkErrorSummary(res) {
   if (!res || !res.json || !Array.isArray(res.json.errors) || !res.json.errors.length) {
     return scrub(res && res.text ? res.text : 'no response');
   }
-  const first = res.json.errors[0];
-  return `${res.status} ${first.code || ''} ${first.message || first.long_message || ''}`.slice(0, 220);
+  const parts = res.json.errors.slice(0, 3).map((entry) => {
+    const detail = entry.long_message || entry.message || '';
+    return `${entry.code || ''}${entry.param ? `[${entry.param}]` : ''} ${detail}`.trim();
+  });
+  return `${res.status} ${parts.join(' | ')}`.slice(0, 500);
 }
 
-async function createClerkUser(email) {
+async function createClerkUser(emails) {
   const bodies = [
-    { email_address: email },
-    { email_address: email, skip_email_verification: true },
-    { email_address: email, first_name: 'Nightlamp', last_name: 'Verification' },
-    { email_address: email, skip_email_verification: true, first_name: 'Nightlamp', last_name: 'Verification' },
+    { email_address: emails[0] },
+    { email_address: emails[0], skip_email_verification: true },
+    { email_address: emails[0], first_name: 'Nightlamp', last_name: 'Verification' },
+    { email_address: emails[0], skip_email_verification: true, first_name: 'Nightlamp', last_name: 'Verification' },
   ];
   for (const withVersion of [true, false]) {
     for (const body of bodies) {
       const res = await clerk('POST', '/users', body, { withVersion });
       if (res.json && res.json.id) {
-        step('clerk-user-created', `${res.json.id} (${email})`);
+        step('clerk-user-created', `${res.json.id} (${body.email_address})`);
         return res.json;
       }
-      step('clerk-user-create-attempt', `version=${withVersion ? CLERK_API_VERSION : 'default'} body=${Object.keys(body).sort().join('+')} -> ${clerkErrorSummary(res)}`);
+      step('clerk-user-create-attempt', `version=${withVersion ? CLERK_API_VERSION : 'default'} body=${Object.keys(body).sort().join('+')} email=${body.email_address} -> ${clerkErrorSummary(res)}`);
     }
+  }
+  for (const email of emails.slice(1)) {
+    const res = await clerk('POST', '/users', { email_address: email, skip_email_verification: true }, { withVersion: true });
+    if (res.json && res.json.id) {
+      step('clerk-user-created', `${res.json.id} (${email})`);
+      return res.json;
+    }
+    step('clerk-user-create-attempt', `version=${CLERK_API_VERSION} body=email_address+skip_email_verification email=${email} -> ${clerkErrorSummary(res)}`);
   }
   return null;
 }
@@ -210,13 +221,17 @@ async function run() {
   }
   if (issuer) step('backend-issuer', issuer);
 
-  const user = await createClerkUser(TEST_EMAIL);
+  const emails = [
+    process.env.TEST_EMAIL || `noc263-verify+${RUN_ID}@nightlamp.dev`,
+    `noc263-verify+${RUN_ID}@example.com`,
+  ];
+  const user = await createClerkUser(emails);
   if (!user) {
     finding('the Clerk test identity could not be created');
     return;
   }
   const userId = user.id;
-  report.testUser = { id: userId, email: TEST_EMAIL };
+  report.testUser = { id: userId, email: user.email_address ? user.email_address[0] && user.email_address[0].email_address : emails[0] };
 
   const session = await clerk('POST', '/sessions', { user_id: userId });
   if (!session.json || !session.json.id) {
