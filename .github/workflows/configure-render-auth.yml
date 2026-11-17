@@ -90,8 +90,14 @@ jobs:
             exit 1
           fi
           if [ "$TARGET_BACKEND_ID" != "$BACKEND_SERVICE_ID" ]; then
-            echo "::warning::the repository secret points at service $BACKEND_SERVICE_ID (slug '$SECRET_BACKEND_SLUG') while the product hostname needs the service with the slug '$EXPECTED_BACKEND_SLUG' ($TARGET_BACKEND_ID)"
-            echo "the repository deploy secret and the product hostname point at different services" >> /tmp/diag.log
+            echo "::error::the repository deploy secret points at service $BACKEND_SERVICE_ID (slug '$SECRET_BACKEND_SLUG') while the product hostname needs the service with the slug '$EXPECTED_BACKEND_SLUG' ($TARGET_BACKEND_ID); refusing to configure anything"
+            echo "the repository deploy secret and the product hostname point at different services, refusing to configure" >> /tmp/diag.log
+            exit 1
+          fi
+          if [ -n "$FRONTEND_SERVICE_ID" ] && [ -n "$TARGET_FRONTEND_ID" ] && [ "$TARGET_FRONTEND_ID" != "$FRONTEND_SERVICE_ID" ]; then
+            echo "::error::the repository frontend deploy secret points at service $FRONTEND_SERVICE_ID (slug '$SECRET_FRONTEND_SLUG') while the product hostname needs the service with the slug '$EXPECTED_FRONTEND_SLUG' ($TARGET_FRONTEND_ID); refusing to configure anything"
+            echo "the repository frontend deploy secret and the product hostname point at different services, refusing to configure" >> /tmp/diag.log
+            exit 1
           fi
           echo "TARGET_BACKEND_ID=$TARGET_BACKEND_ID" >> "$GITHUB_ENV"
           echo "TARGET_FRONTEND_ID=$TARGET_FRONTEND_ID" >> "$GITHUB_ENV"
