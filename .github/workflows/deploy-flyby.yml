@@ -81,6 +81,31 @@ jobs:
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Ensure the web manifest has the right Content-Type
+        run: |
+          set -euo pipefail
+          test -n "$RENDER_API_KEY" || { echo "::error::RENDER_API_KEY is missing"; exit 1; }
+          base="https://api.render.com/v1/services/$FLYBY_WEB_SERVICE_ID/headers"
+          rules=$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" "$base")
+          has=$(echo "$rules" | jq -r '[.. | objects | select(has("path") and has("name")) | select(.path == "/manifest.webmanifest" and ((.name | ascii_downcase) == "content-type")) | .id][0] // empty')
+          if [ -z "$has" ]; then
+            echo "::notice::adding the manifest Content-Type rule"
+            code=$(curl -sS -o /tmp/header.json -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              -H 'Content-Type: application/json' \
+              -d '{"path":"/manifest.webmanifest","name":"Content-Type","value":"application/manifest+json"}' \
+              "$base")
+            echo "add manifest Content-Type rule -> HTTP $code"
+            jq -c '{id: .id, path: .path, name: .name, value: .value}' /tmp/header.json 2>/dev/null || cat /tmp/header.json
+            case "$code" in
+              200|201) ;;
+              *) echo "::warning::could not add the manifest Content-Type rule (HTTP $code)" ;;
+            esac
+          else
+            echo "manifest Content-Type rule already present: $has"
+          fi
+          echo "live manifest content-type: $(curl -sSI --max-time 60 https://flyby-web.onrender.com/manifest.webmanifest | grep -i '^content-type:' | tr -d '\r' || true)"
+
       - name: Trigger Render deploys
         if: steps.ci.outputs.ready == 'true'
         run: |
