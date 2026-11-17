@@ -120,31 +120,55 @@ function clerkErrorSummary(res) {
 }
 
 async function createClerkUser(emails) {
+  const email = emails[0];
   const bodies = [
-    { email_address: emails[0] },
-    { email_address: emails[0], skip_email_verification: true },
-    { email_address: emails[0], first_name: 'Nightlamp', last_name: 'Verification' },
-    { email_address: emails[0], skip_email_verification: true, first_name: 'Nightlamp', last_name: 'Verification' },
+    { email_address: email },
+    { email_address: [email] },
+    { email_address: email, skip_email_verification: true },
+    { email_address: email, username: `noc263-${RUN_ID}` },
+    { email_address: email, first_name: 'Nightlamp', last_name: 'Verification' },
+    { email_address: email, skip_email_verification: true, first_name: 'Nightlamp', last_name: 'Verification' },
   ];
+  let first = true;
   for (const withVersion of [true, false]) {
     for (const body of bodies) {
       const res = await clerk('POST', '/users', body, { withVersion });
       if (res.json && res.json.id) {
-        step('clerk-user-created', `${res.json.id} (${body.email_address})`);
+        step('clerk-user-created', `${res.json.id} (${email})`);
         return res.json;
       }
-      step('clerk-user-create-attempt', `version=${withVersion ? CLERK_API_VERSION : 'default'} body=${Object.keys(body).sort().join('+')} email=${body.email_address} -> ${clerkErrorSummary(res)}`);
+      const detail = first ? scrub(JSON.stringify(res.json || res.text)).slice(0, 900) : clerkErrorSummary(res);
+      first = false;
+      step('clerk-user-create-attempt', `version=${withVersion ? CLERK_API_VERSION : 'default'} body=${Object.keys(body).sort().join('+')} -> ${detail}`);
     }
   }
-  for (const email of emails.slice(1)) {
-    const res = await clerk('POST', '/users', { email_address: email, skip_email_verification: true }, { withVersion: true });
+  for (const alternative of emails.slice(1)) {
+    const res = await clerk('POST', '/users', { email_address: alternative, skip_email_verification: true }, { withVersion: true });
     if (res.json && res.json.id) {
-      step('clerk-user-created', `${res.json.id} (${email})`);
+      step('clerk-user-created', `${res.json.id} (${alternative})`);
       return res.json;
     }
-    step('clerk-user-create-attempt', `version=${CLERK_API_VERSION} body=email_address+skip_email_verification email=${email} -> ${clerkErrorSummary(res)}`);
+    step('clerk-user-create-attempt', `alternative address -> ${clerkErrorSummary(res)}`);
   }
   return null;
+}
+
+async function listClerkUsers() {
+  const res = await clerk('GET', '/users?limit=20&order_by=-created_at', null, { withVersion: true });
+  if (res.json && Array.isArray(res.json.data)) {
+    step('clerk-user-list', `HTTP ${res.status}, ${res.json.data.length} users visible to the instance key`);
+    return res.json.data.map((entry) => ({
+      id: entry.id,
+      email: Array.isArray(entry.email_addresses) && entry.email_addresses.length ? entry.email_addresses[0].email_address : '',
+      createdAt: entry.created_at || null,
+    }));
+  }
+  step('clerk-user-list', `HTTP ${res.status} ${scrub(JSON.stringify(res.json || res.text)).slice(0, 900)}`);
+  return [];
+}
+
+function looksLikeTestIdentity(email) {
+  return /(^|[@.+-])(test|noc|nightlamp|verify|ci|bot)([@.+-]|$)/i.test(String(email || ''));
 }
 
 function decodeJwt(token) {
@@ -225,7 +249,15 @@ async function run() {
     process.env.TEST_EMAIL || `noc263-verify+${RUN_ID}@nightlamp.dev`,
     `noc263-verify+${RUN_ID}@example.com`,
   ];
-  const user = await createClerkUser(emails);
+  const existing = await listClerkUsers();
+  let user = await createClerkUser(emails);
+  if (!user) {
+    const candidate = existing.find((entry) => looksLikeTestIdentity(entry.email));
+    if (candidate) {
+      step('clerk-user-reused', `${candidate.id} (an existing verification identity was reused)`);
+      user = { id: candidate.id };
+    }
+  }
   if (!user) {
     finding('the Clerk test identity could not be created');
     return;
