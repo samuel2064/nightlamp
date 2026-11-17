@@ -19,15 +19,19 @@ interface RegisteredAction {
 }
 
 const actionRegistry: Map<string, RegisteredAction> = new Map()
+const failureTypeRegistry: Map<string, RegisteredAction> = new Map()
 
 export function registerAction(name: string, failureType: string, handler: RemediationHandler): void {
-  actionRegistry.set(failureType, { name, failureType, handler })
+  const action = { name, failureType, handler }
+  actionRegistry.set(name, action)
+  failureTypeRegistry.set(failureType, action)
 }
 
-export function getAction(failureType: string): RemediationHandler | undefined {
-  return actionRegistry.get(failureType)?.handler
+export function getAction(nameOrFailureType: string): RemediationHandler | undefined {
+  return actionRegistry.get(nameOrFailureType)?.handler
+    ?? failureTypeRegistry.get(nameOrFailureType)?.handler
 }
 
 export function listActions(): RegisteredAction[] {
-  return Array.from(actionRegistry.values())
+  return Array.from(failureTypeRegistry.values())
 }

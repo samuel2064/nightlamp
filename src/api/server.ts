@@ -23,7 +23,7 @@ import { nodeHTTPRequestHandler } from '@trpc/server/adapters/node-http';
 import { handleSSERequest } from './sse';
 import { createPlaybookEngine } from '../playbook/engine';
 import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
-import { ApiAuthError, AuthContext, assertTeamMembership, authenticateRequestAsync, requireRole } from './auth';
+import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership, authenticateRequestAsync, requireRole } from './auth';
 import { tenantFilter, rowBelongsToTenant } from './tenant';
 
 export interface ApiConfig {
@@ -72,6 +72,17 @@ const ADMIN_ENDPOINTS: EndpointRule[] = [
 function normalizePath(path: string): string {
   const normalized = path.replace(/\/+$/, '');
   return normalized || '/';
+}
+
+const TEAM_ADMIN_ROLES: TeamRole[] = ['owner', 'admin'];
+
+function requiresTeamAdmin(subPath: string, method: string | undefined): boolean {
+  const normalized = subPath.replace(/\/+$/, '');
+  if (normalized === '') return method === 'PATCH' || method === 'DELETE';
+  if (normalized === '/members') return method === 'POST';
+  if (/^\/members\/[^/]+$/.test(normalized)) return method === 'PATCH' || method === 'DELETE';
+  if (normalized === '/invitations') return method === 'POST';
+  return false;
 }
 
 function matchesEndpoint(path: string, method: string | undefined, rules: EndpointRule[]): boolean {
@@ -200,21 +211,31 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           throw err;
         }
 
-        const teamPathMatch = path.match(/^\/api\/teams\/([^/]+)/);
+        const teamPathMatch = path.match(/^\/api\/teams\/([^/]+)(\/.*)?$/);
         if (teamPathMatch) {
           const requestedTeamId = teamPathMatch[1];
+          const teamSubPath = teamPathMatch[2] || '';
           const teamExists = db.exec('SELECT id FROM teams WHERE id = ?', [requestedTeamId]);
-          if (teamExists.length > 0 && teamExists[0].values.length > 0) {
-            try {
-              assertTeamMembership(db, auth.userId, requestedTeamId);
-            } catch (err: any) {
-              if (err instanceof ApiAuthError) {
-                res.writeHead(err.statusCode);
-                res.end(JSON.stringify({ error: err.message, code: err.code }));
-                return;
-              }
-              throw err;
+          if (teamExists.length === 0 || teamExists[0].values.length === 0) {
+            res.writeHead(404);
+            res.end(JSON.stringify({ error: 'Team not found' }));
+            return;
+          }
+          let teamRole: TeamRole;
+          try {
+            teamRole = assertTeamMembership(db, auth.userId, requestedTeamId);
+          } catch (err: any) {
+            if (err instanceof ApiAuthError) {
+              res.writeHead(err.statusCode);
+              res.end(JSON.stringify({ error: err.message, code: err.code }));
+              return;
             }
+            throw err;
+          }
+          if (requiresTeamAdmin(teamSubPath, req.method) && !TEAM_ADMIN_ROLES.includes(teamRole)) {
+            res.writeHead(403);
+            res.end(JSON.stringify({ error: 'This operation requires elevated permissions', code: 'FORBIDDEN' }));
+            return;
           }
         }
 
