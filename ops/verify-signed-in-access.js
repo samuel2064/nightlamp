@@ -34,7 +34,8 @@ function clerkInstance(keyValue) {
   const body = parts.slice(2).join('_').replace(/[^A-Za-z0-9_-]/g, '');
   if (!body) return '';
   try {
-    return Buffer.from(body + '='.repeat((4 - (body.length % 4)) % 4), 'base64url').toString('utf8');
+    const decoded = Buffer.from(body + '='.repeat((4 - (body.length % 4)) % 4), 'base64url').toString('utf8');
+    return decoded.replace(/\$$/, '');
   } catch (error) {
     return '';
   }
