@@ -60,6 +60,10 @@
     "frontendHasPublishableKey": true,
     "existingUserCount": 4,
     "verificationEmailDomain": "example.com",
+    "creationAttempts": [
+      "without-password:400:request_body_invalid",
+      "with-password:400:request_body_invalid"
+    ],
     "userId": "[redacted-user]",
     "identityCreated": false,
     "usedExistingUser": true,
@@ -76,15 +80,17 @@
       "v"
     ],
     "tokenIssuer": "https://capable-goldfish-98.clerk.accounts.dev",
-    "sessionRemoved": false,
+    "sessionRemoved": true,
     "userRemoved": false,
-    "existingUserKept": true
+    "existingUserKept": true,
+    "leftoverSessionsRevoked": 0
   },
   "diagnostics": [
     "GET the frontend environment variables -> HTTP 200",
     "the frontend publishable key belongs to the Clerk instance: capable-goldfish-98.clerk.accounts.dev",
     "GET the Clerk users -> HTTP 200",
-    "POST the verification user -> HTTP 400 (request_body_invalid)",
+    "POST the verification user without a password -> HTTP 400 (request_body_invalid)",
+    "POST the verification user with a password -> HTTP 400 (request_body_invalid)",
     "falling back to an existing user for the session; that user will not be deleted",
     "POST a session for the verification user -> HTTP 200",
     "POST a session token -> HTTP 200",
@@ -95,7 +101,7 @@
     "PASS a tenant the user is not a member of is refused with 403 expected 403 got 403 FORBIDDEN",
     "PASS an admin route is refused with 403 for a user without a role expected 403 got 403 FORBIDDEN",
     "PASS a token that is not valid is refused with 401 expected 401 got 401 UNAUTHORIZED",
-    "DELETE the verification session -> HTTP 405",
+    "POST revoke the verification session -> HTTP 200",
     "the existing user is not deleted by this script"
   ],
   "valuesIncluded": false,
