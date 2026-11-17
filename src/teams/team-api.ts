@@ -123,9 +123,11 @@ export class TeamApi {
   private handleListTeams(res: ServerResponse, auth?: AuthContext | null): void {
     const result = auth
       ? this.db.exec(
-        `SELECT id, name, slug, owner_id, plan, created_at FROM teams
-         WHERE owner_id = ? OR EXISTS (SELECT 1 FROM memberships m WHERE m.team_id = teams.id AND m.user_id = ?)
-         ORDER BY created_at DESC`,
+        `SELECT DISTINCT t.id, t.name, t.slug, t.owner_id, t.plan, t.created_at
+         FROM teams t
+         LEFT JOIN memberships m ON m.team_id = t.id AND m.user_id = ?
+         WHERE t.owner_id = ? OR m.team_id IS NOT NULL
+         ORDER BY t.created_at DESC`,
         [auth.userId, auth.userId]
       )
       : this.db.exec(
