@@ -1,19 +1,105 @@
 {
-  "probes": [],
+  "probes": [
+    {
+      "label": "a signed-in user with no team can list the events",
+      "expected": [
+        200
+      ],
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "label": "a signed-in user with no team can list the remediation runs",
+      "expected": [
+        200
+      ],
+      "status": 200,
+      "code": null,
+      "ok": true
+    },
+    {
+      "label": "acknowledging an event that does not exist answers 404, not 200",
+      "expected": [
+        404
+      ],
+      "status": 404,
+      "code": null,
+      "ok": true
+    },
+    {
+      "label": "a tenant the user is not a member of is refused with 403",
+      "expected": [
+        403
+      ],
+      "status": 403,
+      "code": "FORBIDDEN",
+      "ok": true
+    },
+    {
+      "label": "an admin route is refused with 403 for a user without a role",
+      "expected": [
+        403
+      ],
+      "status": 403,
+      "code": "FORBIDDEN",
+      "ok": true
+    },
+    {
+      "label": "a token that is not valid is refused with 401",
+      "expected": [
+        401
+      ],
+      "status": 401,
+      "code": "UNAUTHORIZED",
+      "ok": true
+    }
+  ],
   "identity": {
     "frontendHasClerkSecret": true,
     "frontendHasPublishableKey": true,
-    "existingUserCount": 4
+    "existingUserCount": 4,
+    "verificationEmailDomain": "example.com",
+    "userId": "[redacted-user]",
+    "identityCreated": false,
+    "usedExistingUser": true,
+    "tokenMinted": true,
+    "tokenClaims": [
+      "exp",
+      "fva",
+      "iat",
+      "iss",
+      "nbf",
+      "sid",
+      "sts",
+      "sub",
+      "v"
+    ],
+    "tokenIssuer": "https://capable-goldfish-98.clerk.accounts.dev",
+    "sessionRemoved": false,
+    "userRemoved": false,
+    "existingUserKept": true
   },
   "diagnostics": [
     "GET the frontend environment variables -> HTTP 200",
     "the frontend publishable key belongs to the Clerk instance: capable-goldfish-98.clerk.accounts.dev",
     "GET the Clerk users -> HTTP 200",
-    "POST the verification user -> HTTP 400"
+    "POST the verification user -> HTTP 400 (request_body_invalid)",
+    "falling back to an existing user for the session; that user will not be deleted",
+    "POST a session for the verification user -> HTTP 200",
+    "POST a session token -> HTTP 200",
+    "the minted token comes from the expected Clerk instance",
+    "PASS a signed-in user with no team can list the events expected 200 got 200",
+    "PASS a signed-in user with no team can list the remediation runs expected 200 got 200",
+    "PASS acknowledging an event that does not exist answers 404, not 200 expected 404 got 404",
+    "PASS a tenant the user is not a member of is refused with 403 expected 403 got 403 FORBIDDEN",
+    "PASS an admin route is refused with 403 for a user without a role expected 403 got 403 FORBIDDEN",
+    "PASS a token that is not valid is refused with 401 expected 401 got 401 UNAUTHORIZED",
+    "DELETE the verification session -> HTTP 405",
+    "the existing user is not deleted by this script"
   ],
   "valuesIncluded": false,
   "bodiesIncluded": false,
-  "error": "the verification identity could not be created (HTTP 400)",
-  "probesPassed": 0,
-  "probesTotal": 0
+  "probesPassed": 6,
+  "probesTotal": 6
 }
