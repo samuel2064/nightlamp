@@ -39,6 +39,7 @@ export class ApiAuthError extends Error {
 interface JwtHeader {
   alg: string;
   typ?: string;
+  kid?: string;
 }
 
 interface JwtVerificationConfig {
@@ -47,6 +48,19 @@ interface JwtVerificationConfig {
   issuer?: string;
   audience?: string;
 }
+
+interface ParsedToken {
+  header: JwtHeader;
+  claims: Record<string, any>;
+  signingInput: string;
+  signature: Buffer;
+}
+
+const JWKS_CACHE_TTL_MS = 10 * 60 * 1000;
+
+const JWKS_FETCH_TIMEOUT_MS = 5000;
+
+const jwksKeySets = new Map<string, { keys: Map<string, crypto.KeyObject>; fetchedAt: number }>();
 
 function decodeJsonPart(value: string): Record<string, any> {
   try {
@@ -64,13 +78,14 @@ function decodeJsonPart(value: string): Record<string, any> {
 function getVerificationConfig(): JwtVerificationConfig {
   const secret = process.env.CLERK_JWT_SECRET?.trim();
   const publicKey = process.env.CLERK_JWT_PUBLIC_KEY?.trim().replace(/\\n/g, '\n');
-  if (!secret && !publicKey) {
+  const issuer = process.env.CLERK_JWT_ISSUER?.trim() || undefined;
+  if (!secret && !publicKey && !issuer) {
     throw new ApiAuthError('Authentication is not configured', 503, 'AUTH_NOT_CONFIGURED');
   }
   return {
     secret: secret || undefined,
     publicKey: publicKey || undefined,
-    issuer: process.env.CLERK_JWT_ISSUER?.trim() || undefined,
+    issuer,
     audience: process.env.CLERK_JWT_AUDIENCE?.trim() || undefined,
   };
 }
@@ -80,7 +95,7 @@ function verifyHs256(signingInput: string, signature: Buffer, secret: string): b
   return signature.length === expected.length && crypto.timingSafeEqual(signature, expected);
 }
 
-function verifyRs256(signingInput: string, signature: Buffer, publicKey: string): boolean {
+function verifyRs256(signingInput: string, signature: Buffer, publicKey: string | crypto.KeyObject): boolean {
   return crypto.verify('RSA-SHA256', Buffer.from(signingInput), publicKey, signature);
 }
 
@@ -89,7 +104,7 @@ function audienceMatches(actual: string | string[] | undefined, expected: string
   return Array.isArray(actual) ? actual.includes(expected) : actual === expected;
 }
 
-export function verifyAccessToken(token: string): VerifiedTokenClaims {
+function parseToken(token: string): ParsedToken {
   const parts = token.split('.');
   if (parts.length !== 3 || parts.some((part) => !part)) {
     throw new ApiAuthError('Invalid authentication token', 401, 'UNAUTHORIZED');
@@ -98,7 +113,6 @@ export function verifyAccessToken(token: string): VerifiedTokenClaims {
   const [encodedHeader, encodedPayload, encodedSignature] = parts;
   const header = decodeJsonPart(encodedHeader) as JwtHeader;
   const claims = decodeJsonPart(encodedPayload);
-  const config = getVerificationConfig();
   const signingInput = `${encodedHeader}.${encodedPayload}`;
 
   let signature: Buffer;
@@ -108,17 +122,71 @@ export function verifyAccessToken(token: string): VerifiedTokenClaims {
     throw new ApiAuthError('Invalid authentication token', 401, 'UNAUTHORIZED');
   }
 
-  let valid = false;
+  return { header, claims, signingInput, signature };
+}
+
+async function fetchJwksKeySet(issuer: string): Promise<Map<string, crypto.KeyObject>> {
+  const url = `${issuer.replace(/\/+$/, '')}/.well-known/jwks.json`;
+  const response = await fetch(url, { signal: AbortSignal.timeout(JWKS_FETCH_TIMEOUT_MS) });
+  if (!response.ok) {
+    throw new Error(`JWKS request failed with status ${response.status}`);
+  }
+  const payload = await response.json() as { keys?: unknown };
+  const keys = new Map<string, crypto.KeyObject>();
+  const jwks = payload && Array.isArray(payload.keys) ? payload.keys : [];
+  for (const jwk of jwks) {
+    if (!jwk || typeof jwk !== 'object') continue;
+    const kid = (jwk as any).kid;
+    if (typeof kid !== 'string' || !kid) continue;
+    try {
+      keys.set(kid, crypto.createPublicKey({ key: jwk as any, format: 'jwk' }));
+    } catch {
+      continue;
+    }
+  }
+  return keys;
+}
+
+async function resolveJwksKey(issuer: string, kid: string): Promise<crypto.KeyObject | null> {
+  const cached = jwksKeySets.get(issuer);
+  const now = Date.now();
+  if (cached && now - cached.fetchedAt < JWKS_CACHE_TTL_MS) {
+    const hit = cached.keys.get(kid);
+    if (hit) return hit;
+  }
+
+  let keys: Map<string, crypto.KeyObject>;
+  try {
+    keys = await fetchJwksKeySet(issuer);
+  } catch {
+    jwksKeySets.delete(issuer);
+    return null;
+  }
+  jwksKeySets.set(issuer, { keys, fetchedAt: now });
+  return keys.get(kid) || null;
+}
+
+export function clearJwksCache(): void {
+  jwksKeySets.clear();
+}
+
+function verifySignature(parsed: ParsedToken, config: JwtVerificationConfig, jwksKey?: crypto.KeyObject): boolean {
+  const { header, signingInput, signature } = parsed;
   if (header.alg === 'HS256' && config.secret) {
-    valid = verifyHs256(signingInput, signature, config.secret);
-  } else if (header.alg === 'RS256' && config.publicKey) {
-    valid = verifyRs256(signingInput, signature, config.publicKey);
+    return verifyHs256(signingInput, signature, config.secret);
   }
-
-  if (!valid) {
-    throw new ApiAuthError('Invalid authentication token', 401, 'UNAUTHORIZED');
+  if (header.alg === 'RS256') {
+    if (config.publicKey) {
+      return verifyRs256(signingInput, signature, config.publicKey);
+    }
+    if (jwksKey) {
+      return verifyRs256(signingInput, signature, jwksKey);
+    }
   }
+  return false;
+}
 
+function validateClaims(claims: Record<string, any>, config: JwtVerificationConfig): VerifiedTokenClaims {
   const now = Math.floor(Date.now() / 1000);
   const clockSkew = 30;
   if (typeof claims.exp !== 'number' || claims.exp + clockSkew <= now) {
@@ -161,6 +229,32 @@ export function verifyAccessToken(token: string): VerifiedTokenClaims {
   };
 }
 
+export function verifyAccessToken(token: string): VerifiedTokenClaims {
+  const parsed = parseToken(token);
+  const config = getVerificationConfig();
+  if (!verifySignature(parsed, config)) {
+    throw new ApiAuthError('Invalid authentication token', 401, 'UNAUTHORIZED');
+  }
+  return validateClaims(parsed.claims, config);
+}
+
+export async function verifyAccessTokenAsync(token: string): Promise<VerifiedTokenClaims> {
+  const parsed = parseToken(token);
+  const config = getVerificationConfig();
+  if (verifySignature(parsed, config)) {
+    return validateClaims(parsed.claims, config);
+  }
+
+  if (parsed.header.alg === 'RS256' && !config.publicKey && config.issuer && parsed.header.kid) {
+    const key = await resolveJwksKey(config.issuer, parsed.header.kid);
+    if (key && verifySignature(parsed, config, key)) {
+      return validateClaims(parsed.claims, config);
+    }
+  }
+
+  throw new ApiAuthError('Invalid authentication token', 401, 'UNAUTHORIZED');
+}
+
 export function extractBearerToken(headers: IncomingHttpHeaders): string | null {
   const authorization = headers.authorization;
   const value = Array.isArray(authorization) ? authorization[0] : authorization;
@@ -192,13 +286,7 @@ export function upsertUser(db: Database, claims: VerifiedTokenClaims): { id: str
   return { id, email };
 }
 
-export function authenticateRequest(db: Database, req: IncomingMessage): AuthContext {
-  const token = extractBearerToken(req.headers);
-  if (!token) {
-    throw new ApiAuthError('Authentication required', 401, 'UNAUTHORIZED');
-  }
-
-  const claims = verifyAccessToken(token);
+function buildAuthContext(db: Database, claims: VerifiedTokenClaims, token: string, req: IncomingMessage): AuthContext {
   const user = upsertUser(db, claims);
   const memberships = db.exec(
     'SELECT team_id, role FROM memberships WHERE user_id = ? ORDER BY team_id',
@@ -239,6 +327,26 @@ export function authenticateRequest(db: Database, req: IncomingMessage): AuthCon
     role: membership ? membership.role : null,
     token,
   };
+}
+
+export function authenticateRequest(db: Database, req: IncomingMessage): AuthContext {
+  const token = extractBearerToken(req.headers);
+  if (!token) {
+    throw new ApiAuthError('Authentication required', 401, 'UNAUTHORIZED');
+  }
+
+  const claims = verifyAccessToken(token);
+  return buildAuthContext(db, claims, token, req);
+}
+
+export async function authenticateRequestAsync(db: Database, req: IncomingMessage): Promise<AuthContext> {
+  const token = extractBearerToken(req.headers);
+  if (!token) {
+    throw new ApiAuthError('Authentication required', 401, 'UNAUTHORIZED');
+  }
+
+  const claims = await verifyAccessTokenAsync(token);
+  return buildAuthContext(db, claims, token, req);
 }
 
 export function getTeamRole(db: Database, userId: string, teamId: string): TeamRole | null {
