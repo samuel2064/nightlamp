@@ -124,6 +124,10 @@ export interface BackendClient {
   checkResults: {
     list: (params?: { limit?: number; offset?: number; status?: string }) => Promise<{ results: CheckResult[]; count: number }>
   }
+  checks: {
+    create: (data: { source: string; name: string; config: any; enabled?: boolean }) => Promise<{ id: string; source: string; name: string; config: any; enabled: boolean; createdAt: string; updatedAt: string }>
+    testCheck: (data: { url: string; type: string; checkType?: string }) => Promise<{ success: boolean; statusCode?: number; latencyMs?: number; error?: string }>
+  }
   playbook: {
     list: () => Promise<{ entries: DiagnosticEntry[]; count: number }>
     search: (q: string) => Promise<{ entries: DiagnosticEntry[]; count: number }>
@@ -184,6 +188,18 @@ export function createBackendClient(token: string | null): BackendClient {
       list: (params?: { limit?: number; offset?: number; status?: string }) =>
         apiFetch<{ results: CheckResult[]; count: number }>(
           `/api/check-results?${new URLSearchParams(params as Record<string, string>).toString()}`
+        ),
+    },
+    checks: {
+      create: (data: { source: string; name: string; config: any; enabled?: boolean }) =>
+        apiFetchPost<{ id: string; source: string; name: string; config: any; enabled: boolean; createdAt: string; updatedAt: string }>(
+          '/api/checks',
+          data
+        ),
+      testCheck: (data: { url: string; type: string; checkType?: string }) =>
+        apiFetchPost<{ success: boolean; statusCode?: number; latencyMs?: number; error?: string }>(
+          '/api/checks/test',
+          data
         ),
     },
     playbook: {
