@@ -1,0 +1,7 @@
+{
+  "run": "43990161842",
+  "sha": "8ba6cbd50c13a3d5d0b4ca82bfdc57808038695e",
+  "frontendBuild": "success",
+  "inputs": "NEXT_PUBLIC_BACKEND_URL length=34;NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY length=0;CLERK_SECRET_KEY length=0;",
+  "valuesIncluded": false
+}
