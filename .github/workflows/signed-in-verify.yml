@@ -1,0 +1,82 @@
+name: Verify signed-in production access
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ops/signed-in-verify
+
+permissions:
+  contents: write
+
+env:
+  RENDER_API: https://api.render.com/v1
+  BACKEND_URL: https://nightlamp-api.onrender.com
+  CLERK_API: https://api.clerk.com/v1
+  REPORT_BRANCH: ops/signed-in-report
+  REPORT_FILE: /tmp/signed-in-verify-report.json
+
+jobs:
+  verify:
+    name: Signed-in verification against production
+    runs-on: ubuntu-latest
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      BACKEND_SERVICE_ID: ${{ secrets.RENDER_BACKEND_SERVICE_ID }}
+      FRONTEND_SERVICE_ID: ${{ secrets.RENDER_FRONTEND_SERVICE_ID }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 1
+
+      - name: Preflight
+        run: |
+          set -euo pipefail
+          test -n "$RENDER_API_KEY" || { echo "::error::RENDER_API_KEY secret is missing or empty"; exit 1; }
+          test -n "$BACKEND_SERVICE_ID" || { echo "::error::RENDER_BACKEND_SERVICE_ID secret is missing or empty"; exit 1; }
+          echo "preflight ok"
+
+      - name: Run the signed-in verification
+        run: |
+          set -uo pipefail
+          node ops/signed-in-verify.js > /tmp/signed-in-verify-output.txt 2>&1
+          STATUS=$?
+          echo "verification exit -> $STATUS"
+          cat /tmp/signed-in-verify-output.txt
+          if [ ! -f "$REPORT_FILE" ]; then
+            echo "::error::the verification produced no report"
+            exit 1
+          fi
+
+      - name: Publish the redacted report
+        if: always()
+        run: |
+          set -uo pipefail
+          if [ -f "$REPORT_FILE" ]; then
+            cp "$REPORT_FILE" /tmp/report.json
+          else
+            printf '{"error":"the verification produced no report","valuesIncluded":false}\n' > /tmp/report.json
+          fi
+          jq . /tmp/report.json > /tmp/report.pretty.json
+          cat /tmp/report.pretty.json
+          {
+            echo "## Signed-in production verification"
+            echo
+            jq -r '"- run: \(.run // "unknown")"' /tmp/report.json
+            jq -r '"- probes: \(.probes | length)"' /tmp/report.json
+            jq -r '.probes[] | "- \(.probe) -> HTTP \(.status) (contract \(.contract // "n/a"))"' /tmp/report.json
+            jq -r '.findings[]? | "- finding: \(.)"' /tmp/report.json
+          } >> "$GITHUB_STEP_SUMMARY"
+          git config user.name "nightlamp-ci"
+          git config user.email "ci@nightlamp.local"
+          git fetch --depth=1 origin "$REPORT_BRANCH" || true
+          if git rev-parse --verify FETCH_HEAD >/dev/null 2>&1; then
+            git checkout -B "$REPORT_BRANCH" FETCH_HEAD
+          fi
+          mkdir -p reports
+          cp /tmp/report.pretty.json reports/signed-in-verify.json
+          git add reports/signed-in-verify.json
+          git commit -m "signed-in verification report $GITHUB_RUN_ID" || true
+          git push origin "HEAD:$REPORT_BRANCH"
