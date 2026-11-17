@@ -13,7 +13,7 @@ import { up as applyTenantIsolationMigration } from '../db/migrations/008-tenant
 import { evaluateAndNotify } from '../alerting/evaluator';
 import { createServer } from 'http';
 import { registerAction } from '../remediation/actions/registry';
-import { setDb } from '../remediation/engine';
+import { initEngine, setDb } from '../remediation/engine';
 
 function nodeRequest(headers: Record<string, string>): IncomingMessage {
   return { headers } as unknown as IncomingMessage;
@@ -32,6 +32,7 @@ describe('P0 API authorization', () => {
   before(async () => {
     db = await createDatabase();
     setDb(db);
+    initEngine();
 
     db.run('INSERT INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)',
       [TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID, 'owner@example.com', 'Owner']);
@@ -197,6 +198,8 @@ describe('P0 API authorization', () => {
       '/api/alerting/channels',
       '/api/playbook/remediate',
     ];
+    const approvalRegressionRunIds: string[] = [];
+    const approvalRegressionEntryIds: string[] = [];
 
     before(() => {
       for (const role of ['member', 'admin']) {
@@ -219,6 +222,37 @@ describe('P0 API authorization', () => {
         },
         body: JSON.stringify(body),
       });
+    }
+
+    function createPendingRun(actionName: string, failureType = 'broken_webhook'): string {
+      const entryId = uuidv4();
+      const runId = uuidv4();
+      db.run(`INSERT INTO playbook_entries (id, failure_type, title, body, team_id)
+              VALUES (?, ?, 'Approval regression', 'Test approval', ?)`, [entryId, failureType, teamId]);
+      db.run(`INSERT INTO remediation_runs (id, playbook_entry_id, action_name, status, team_id)
+              VALUES (?, ?, ?, 'pending', ?)`, [runId, entryId, actionName, teamId]);
+      approvalRegressionRunIds.push(runId);
+      approvalRegressionEntryIds.push(entryId);
+      return runId;
+    }
+
+    afterEach(() => {
+      for (const runId of approvalRegressionRunIds) {
+        db.run('DELETE FROM remediation_runs WHERE id = ?', [runId]);
+      }
+      for (const entryId of approvalRegressionEntryIds) {
+        db.run('DELETE FROM playbook_entries WHERE id = ?', [entryId]);
+      }
+      approvalRegressionRunIds.length = 0;
+      approvalRegressionEntryIds.length = 0;
+    });
+
+    function getRunState(runId: string): Record<string, any> {
+      const result = db.exec(
+        'SELECT status, error, output, started_at, completed_at FROM remediation_runs WHERE id = ?',
+        [runId],
+      );
+      return Object.fromEntries(result[0].columns.map((column, index) => [column, result[0].values[0][index]]));
     }
 
     it('returns 403 on every admin endpoint for a signed-in user without membership', async () => {
@@ -262,6 +296,54 @@ describe('P0 API authorization', () => {
         assert.ok(remediation.logId);
         assert.strictEqual(db.exec('SELECT team_id FROM remediation_log WHERE id = ?', [remediation.logId])[0].values[0][0], teamId);
       }
+    });
+
+    it('allows owners and admins to approve a real retry-webhook run', async () => {
+      for (const subject of [TEST_CLERK_USER_ID, 'gate-clerk-admin']) {
+        const runId = createPendingRun('retry-webhook');
+        const approve = await post(endpoints[0], subject, { id: runId });
+
+        assert.strictEqual(approve.status, 200);
+        const body = await approve.json() as any;
+        assert.strictEqual(body.status, 'success');
+        assert.match(body.output, /Retrying webhook/);
+
+        const state = getRunState(runId);
+        assert.strictEqual(state.status, 'success');
+        assert.strictEqual(state.error, null);
+        assert.ok(state.completed_at);
+      }
+    });
+
+    it('rejects an unknown action without stranding the run in running', async () => {
+      const runId = createPendingRun('unknown-action');
+      const approve = await post(endpoints[0], TEST_CLERK_USER_ID, { id: runId });
+
+      assert.strictEqual(approve.status, 400);
+      assert.strictEqual((await approve.json() as any).error, 'No handler for action: unknown-action');
+
+      const state = getRunState(runId);
+      assert.strictEqual(state.status, 'failed');
+      assert.strictEqual(state.error, 'No handler for action: unknown-action');
+      assert.strictEqual(state.started_at, null);
+      assert.ok(state.completed_at);
+    });
+
+    it('records a handler execution failure and leaves the run non-running', async () => {
+      registerAction('throwing-action', 'throwing_failure', async () => {
+        throw new Error('handler exploded');
+      });
+      const runId = createPendingRun('throwing-action', 'throwing_failure');
+      const approve = await post(endpoints[0], TEST_CLERK_USER_ID, { id: runId });
+
+      assert.strictEqual(approve.status, 400);
+      assert.strictEqual((await approve.json() as any).error, 'handler exploded');
+
+      const state = getRunState(runId);
+      assert.strictEqual(state.status, 'failed');
+      assert.strictEqual(state.error, 'handler exploded');
+      assert.ok(state.started_at);
+      assert.ok(state.completed_at);
     });
   });
 
