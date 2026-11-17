@@ -1,0 +1,29 @@
+{
+  "run": "44019326903",
+  "startedAt": "2026-11-17T04:45:14.608Z",
+  "backendUrl": "https://nightlamp-api.onrender.com",
+  "probes": [],
+  "steps": [
+    {
+      "name": "render-env-vars",
+      "detail": "HTTP 200, 15 variables on service srv-d8j0vsnlk1mc738mvha0"
+    },
+    {
+      "name": "render-env-vars",
+      "detail": "HTTP 200, 9 variables on service srv-d957nkvaqgkc73eq2iq0"
+    },
+    {
+      "name": "clerk-instance",
+      "detail": "mode=test instance=capable-goldfish-98.clerk.accounts.dev$"
+    }
+  ],
+  "findings": [
+    "the publishable key instance (capable-goldfish-98.clerk.accounts.dev$) does not match the configured issuer (https://capable-goldfish-98.clerk.accounts.dev); no identity was created"
+  ],
+  "clerkToken": null,
+  "testUser": null,
+  "createdArtifacts": [],
+  "valuesIncluded": false,
+  "finished": true,
+  "finishedAt": "2026-11-17T04:45:15.032Z"
+}
