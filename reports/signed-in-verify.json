@@ -1,6 +1,6 @@
 {
-  "run": "44019788280",
-  "startedAt": "2026-11-17T04:49:18.383Z",
+  "run": "44020335960",
+  "startedAt": "2026-11-17T04:54:16.714Z",
   "backendUrl": "https://nightlamp-api.onrender.com",
   "probes": [],
   "steps": [
@@ -19,15 +19,47 @@
     {
       "name": "backend-issuer",
       "detail": "https://capable-goldfish-98.clerk.accounts.dev"
+    },
+    {
+      "name": "clerk-user-create-attempt",
+      "detail": "version=2025-04-10 body=email_address -> 400 request_body_invalid Request body invalid"
+    },
+    {
+      "name": "clerk-user-create-attempt",
+      "detail": "version=2025-04-10 body=email_address+skip_email_verification -> 400 request_body_invalid Request body invalid"
+    },
+    {
+      "name": "clerk-user-create-attempt",
+      "detail": "version=2025-04-10 body=email_address+first_name+last_name -> 400 request_body_invalid Request body invalid"
+    },
+    {
+      "name": "clerk-user-create-attempt",
+      "detail": "version=2025-04-10 body=email_address+first_name+last_name+skip_email_verification -> 400 request_body_invalid Request body invalid"
+    },
+    {
+      "name": "clerk-user-create-attempt",
+      "detail": "version=default body=email_address -> 400 request_body_invalid Request body invalid"
+    },
+    {
+      "name": "clerk-user-create-attempt",
+      "detail": "version=default body=email_address+skip_email_verification -> 400 request_body_invalid Request body invalid"
+    },
+    {
+      "name": "clerk-user-create-attempt",
+      "detail": "version=default body=email_address+first_name+last_name -> 400 request_body_invalid Request body invalid"
+    },
+    {
+      "name": "clerk-user-create-attempt",
+      "detail": "version=default body=email_address+first_name+last_name+skip_email_verification -> 400 request_body_invalid Request body invalid"
     }
   ],
   "findings": [
-    "the Clerk test identity could not be created (HTTP 400: {\"errors\":[{\"message\":\"Request body invalid\",\"long_message\":\"The request body is invalid. Please consult the API documentation for more information.\",\"code\":\"re)"
+    "the Clerk test identity could not be created"
   ],
   "clerkToken": null,
   "testUser": null,
   "createdArtifacts": [],
   "valuesIncluded": false,
   "finished": true,
-  "finishedAt": "2026-11-17T04:49:19.446Z"
+  "finishedAt": "2026-11-17T04:54:18.445Z"
 }
