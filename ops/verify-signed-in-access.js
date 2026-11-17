@@ -5,6 +5,7 @@ const renderKey = process.env.RENDER_API_KEY;
 const frontendId = process.env.RENDER_FRONTEND_SERVICE_ID || process.env.FRONTEND_SERVICE_ID;
 const clerkApi = process.env.CLERK_API || 'https://api.clerk.com/v1';
 const expectedInstance = process.env.CLERK_INSTANCE;
+const expectedIssuer = process.env.CLERK_ISSUER;
 const nightlampApi = process.env.NIGHTLAMP_API || 'https://nightlamp-api.onrender.com';
 const resultFile = process.env.RESULT_FILE || '/tmp/signed-in-result.json';
 const marker = process.env.VERIFICATION_MARKER || 'nightlamp-cto-verification';
@@ -99,19 +100,24 @@ async function run() {
   }
   const variables = (Array.isArray(envVars.body) ? envVars.body : []).map((entry) => entry.envVar || entry);
   const secret = variables.find((entry) => entry.key === 'CLERK_SECRET_KEY');
+  const publishable = variables.find((entry) => entry.key === 'NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY');
   report.identity.frontendHasClerkSecret = Boolean(secret && secret.value);
-  report.identity.frontendHasPublishableKey = variables.some((entry) => entry.key === 'NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY');
+  report.identity.frontendHasPublishableKey = Boolean(publishable && publishable.value);
   if (!secret || !secret.value) {
     report.error = 'CLERK_SECRET_KEY is not set on the frontend service';
     return;
   }
-  secretKey = String(secret.value).trim();
-  const instance = clerkInstance(secretKey);
-  log(`the frontend secret key belongs to the Clerk instance: ${instance || 'unknown'}`);
-  if (!instance || instance !== expectedInstance) {
-    report.error = 'the frontend secret key belongs to a different Clerk instance';
+  if (!publishable || !publishable.value) {
+    report.error = 'NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is not set on the frontend service';
     return;
   }
+  const publishableInstance = clerkInstance(String(publishable.value).trim());
+  log(`the frontend publishable key belongs to the Clerk instance: ${publishableInstance || 'unknown'}`);
+  if (!publishableInstance || publishableInstance !== expectedInstance) {
+    report.error = 'the frontend publishable key belongs to a different Clerk instance';
+    return;
+  }
+  secretKey = String(secret.value).trim();
 
   const users = await clerkRequest('GET', '/users?limit=20');
   log(`GET the Clerk users -> HTTP ${users.status}`);
@@ -154,12 +160,19 @@ async function run() {
     return;
   }
   report.identity.tokenMinted = true;
+  let claims = {};
   try {
-    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
-    report.identity.tokenClaims = Object.keys(payload).sort();
+    claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
   } catch (error) {
-    report.identity.tokenClaims = [];
+    claims = {};
   }
+  report.identity.tokenClaims = Object.keys(claims).sort();
+  report.identity.tokenIssuer = typeof claims.iss === 'string' ? claims.iss : null;
+  if (report.identity.tokenIssuer !== expectedIssuer) {
+    report.error = 'the minted token does not come from the expected Clerk instance';
+    return;
+  }
+  log('the minted token comes from the expected Clerk instance');
 
   const json = { 'Content-Type': 'application/json' };
   await probe(

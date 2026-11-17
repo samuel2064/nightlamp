@@ -13,6 +13,7 @@ env:
   RENDER_API: https://api.render.com/v1
   CLERK_API: https://api.clerk.com/v1
   CLERK_INSTANCE: capable-goldfish-98.clerk.accounts.dev
+  CLERK_ISSUER: https://capable-goldfish-98.clerk.accounts.dev
   NIGHTLAMP_API: https://nightlamp-api.onrender.com
   REPORT_BRANCH: ops/render-auth-report
   RESULT_FILE: /tmp/signed-in-result.json
