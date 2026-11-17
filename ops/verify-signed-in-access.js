@@ -22,6 +22,7 @@ const report = {
 let secretKey = null;
 let sessionId = null;
 let userId = null;
+const runStartedAt = Date.now();
 
 function log(line) {
   console.log(line);
@@ -145,14 +146,22 @@ async function run() {
   report.identity.existingUserCount = existingUsers;
 
   const email = `${marker}-${Date.now()}@${emailDomain}`;
-  const created = await clerkRequest('POST', '/users', {
-    email_address: email,
-    first_name: 'Nightlamp',
-    last_name: 'Verification',
-    password: `Nv${Date.now()}-${Math.random().toString(36).slice(2)}`,
-  });
-  log(`POST the verification user -> HTTP ${created.status}${errorCodes(created).length ? ` (${errorCodes(created).join(', ')})` : ''}`);
+  const password = `Nv${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const variants = [
+    { email_address: email, first_name: 'Nightlamp', last_name: 'Verification' },
+    { email_address: email, first_name: 'Nightlamp', last_name: 'Verification', password },
+  ];
+  let created = { status: 0, body: null };
+  const creationErrors = [];
+  for (const variant of variants) {
+    created = await clerkRequest('POST', '/users', variant);
+    const codes = errorCodes(created);
+    log(`POST the verification user${variant.password ? ' with a password' : ' without a password'} -> HTTP ${created.status}${codes.length ? ` (${codes.join(', ')})` : ''}`);
+    creationErrors.push(`${variant.password ? 'with-password' : 'without-password'}:${created.status}${codes.length ? `:${codes.join(',')}` : ''}`);
+    if (created.status >= 200 && created.status < 300 && created.body && created.body.id) break;
+  }
   report.identity.verificationEmailDomain = emailDomain;
+  report.identity.creationAttempts = creationErrors;
   if (created.status >= 200 && created.status < 300 && created.body && created.body.id) {
     userId = created.body.id;
     report.identity.userId = userId;
@@ -241,9 +250,14 @@ async function run() {
 
 async function cleanup() {
   if (sessionId) {
-    const removed = await clerkRequest('DELETE', `/sessions/${sessionId}`);
-    log(`DELETE the verification session -> HTTP ${removed.status}`);
-    report.identity.sessionRemoved = removed.status === 204 || removed.status === 200;
+    const revoked = await clerkRequest('POST', `/sessions/${sessionId}/revoke`, {});
+    log(`POST revoke the verification session -> HTTP ${revoked.status}`);
+    report.identity.sessionRemoved = revoked.status === 204 || revoked.status === 200;
+    if (!report.identity.sessionRemoved) {
+      const removed = await clerkRequest('DELETE', `/sessions/${sessionId}`);
+      log(`DELETE the verification session -> HTTP ${removed.status}`);
+      report.identity.sessionRemoved = removed.status === 204 || removed.status === 200;
+    }
   }
   if (userId && report.identity.identityCreated) {
     const removed = await clerkRequest('DELETE', `/users/${userId}`);
@@ -253,6 +267,18 @@ async function cleanup() {
     log('the existing user is not deleted by this script');
     report.identity.userRemoved = false;
     report.identity.existingUserKept = true;
+    const sessions = await clerkRequest('GET', `/users/${userId}/sessions?limit=20`);
+    const list = Array.isArray(sessions.body) ? sessions.body : [];
+    let revoked = 0;
+    for (const session of list) {
+      if (!session || !session.id || !session.created_at) continue;
+      const createdAt = Date.parse(session.created_at);
+      if (!Number.isFinite(createdAt) || createdAt < runStartedAt) continue;
+      const response = await clerkRequest('POST', `/sessions/${session.id}/revoke`, {});
+      log(`POST revoke a leftover session from an earlier run -> HTTP ${response.status}`);
+      if (response.status === 204 || response.status === 200) revoked += 1;
+    }
+    report.identity.leftoverSessionsRevoked = revoked;
   }
 }
 
