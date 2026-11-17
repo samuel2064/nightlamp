@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { ChannelType, ChannelConfig } from '../alerting/channels';
 import { processNotification, sendDirectNotification, getChannelType, getChannelConfig, checkRateLimit, logDelivery, markDelivered } from './service';
 import { AuthContext } from '../api/auth';
-import { tenantFilter, rowBelongsToTenant } from '../api/tenant';
+import { rowBelongsToScope, scopedTenantFilter, tenantFilter, rowBelongsToTenant } from '../api/tenant';
 import { isChannelAttachedToApp } from '../apps/attachment';
 
 export class NotificationApi {
@@ -16,12 +16,13 @@ export class NotificationApi {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = parsedUrl.pathname;
     const teamId = auth ? auth.teamId : null;
+    const userId = auth ? auth.userId : '';
 
     const channelMatch = path.match(/^\/api\/notifications\/channels(?:\/([a-zA-Z0-9-]+))?$/);
 
     if (path === '/api/notifications/channels' || path === '/api/notifications/channels/') {
-      if (req.method === 'GET') { this.handleListChannels(req, res, teamId); return true; }
-      if (req.method === 'POST') { this.handleCreateChannel(req, res, teamId); return true; }
+      if (req.method === 'GET') { this.handleListChannels(req, res, teamId, userId); return true; }
+      if (req.method === 'POST') { this.handleCreateChannel(req, res, teamId, userId); return true; }
       res.writeHead(405);
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return true;
@@ -29,8 +30,8 @@ export class NotificationApi {
 
     if (channelMatch && channelMatch[1]) {
       const channelId = channelMatch[1];
-      if (req.method === 'PATCH') { this.handleUpdateChannel(req, channelId, res, teamId); return true; }
-      if (req.method === 'DELETE') { this.handleDeleteChannel(channelId, res, teamId); return true; }
+      if (req.method === 'PATCH') { this.handleUpdateChannel(req, channelId, res, teamId, userId); return true; }
+      if (req.method === 'DELETE') { this.handleDeleteChannel(channelId, res, teamId, userId); return true; }
       res.writeHead(405);
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return true;
@@ -49,8 +50,8 @@ export class NotificationApi {
     return false;
   }
 
-  private handleListChannels(req: IncomingMessage, res: ServerResponse, teamId: string | null): void {
-    const scope = tenantFilter('team_id', teamId);
+  private handleListChannels(req: IncomingMessage, res: ServerResponse, teamId: string | null, userId: string): void {
+    const scope = scopedTenantFilter('alert_channels', teamId, userId, true);
     const sql = `SELECT id, name, type, enabled, team_id, created_at, updated_at FROM alert_channels WHERE ${scope.clause} ORDER BY created_at DESC`;
     const result = this.db.exec(sql, scope.params);
     const channels = result.length > 0 ? result[0].values.map((row: any) => ({
@@ -66,7 +67,7 @@ export class NotificationApi {
     res.end(JSON.stringify({ channels, count: channels.length }));
   }
 
-  private handleCreateChannel(req: IncomingMessage, res: ServerResponse, teamId: string | null): void {
+  private handleCreateChannel(req: IncomingMessage, res: ServerResponse, teamId: string | null, userId: string): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
@@ -88,8 +89,8 @@ export class NotificationApi {
 
         const id = uuidv4();
         this.db.run(
-          `INSERT INTO alert_channels (id, name, type, config, team_id) VALUES (?, ?, ?, ?, ?)`,
-          [id, name, mappedType, JSON.stringify(config), teamId]
+          `INSERT INTO alert_channels (id, name, type, config, team_id, owner_id) VALUES (?, ?, ?, ?, ?, ?)`,
+          [id, name, mappedType, JSON.stringify(config), teamId, userId]
         );
 
         res.end(JSON.stringify({ success: true, id, name, type, teamId }));
@@ -100,7 +101,7 @@ export class NotificationApi {
     });
   }
 
-  private handleUpdateChannel(req: IncomingMessage, channelId: string, res: ServerResponse, teamId: string | null): void {
+  private handleUpdateChannel(req: IncomingMessage, channelId: string, res: ServerResponse, teamId: string | null, userId: string): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
@@ -120,8 +121,18 @@ export class NotificationApi {
         }
 
         updates.push("updated_at = datetime('now')");
-        const scope = tenantFilter('team_id', teamId);
+        const scope = scopedTenantFilter('alert_channels', teamId, userId, false);
         this.db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${scope.clause}`, [...params, channelId, ...scope.params]);
+        if (this.db.getRowsModified() === 0) {
+          if (teamId === null && rowBelongsToScope(this.db, 'alert_channels', channelId, teamId, userId, true)) {
+            res.writeHead(403);
+            res.end(JSON.stringify({ error: 'Legacy personal channels are read-only' }));
+            return;
+          }
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: 'Channel not found' }));
+          return;
+        }
         res.end(JSON.stringify({ success: true }));
       } catch (err: any) {
         res.writeHead(400);
@@ -130,8 +141,13 @@ export class NotificationApi {
     });
   }
 
-  private handleDeleteChannel(channelId: string, res: ServerResponse, teamId: string | null): void {
-    if (!rowBelongsToTenant(this.db, 'alert_channels', channelId, teamId)) {
+  private handleDeleteChannel(channelId: string, res: ServerResponse, teamId: string | null, userId: string): void {
+    if (!rowBelongsToScope(this.db, 'alert_channels', channelId, teamId, userId, false)) {
+      if (teamId === null && rowBelongsToScope(this.db, 'alert_channels', channelId, teamId, userId, true)) {
+        res.writeHead(403);
+        res.end(JSON.stringify({ error: 'Legacy personal channels are read-only' }));
+        return;
+      }
       res.writeHead(404);
       res.end(JSON.stringify({ error: 'Channel not found' }));
       return;

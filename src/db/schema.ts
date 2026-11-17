@@ -1,6 +1,9 @@
 import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
+import * as fs from 'fs';
+import * as path from 'path';
 import { up as applyTenantIsolationMigration } from './migrations/008-tenant-isolation';
 import { up as applyMonitoredAppsMigration } from './migrations/009-monitored-apps';
+import { up as applyPersonalOwnershipMigration } from './migrations/010-personal-ownership';
 
 export interface NightlampDb {
   db: SqlJsDatabase;
@@ -8,7 +11,14 @@ export interface NightlampDb {
 
 export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   const SQL = await initSqlJs();
-  const db = new SQL.Database();
+  let db: SqlJsDatabase;
+
+  if (dbPath && fs.existsSync(dbPath)) {
+    const persisted = fs.readFileSync(dbPath);
+    db = new SQL.Database(persisted);
+  } else {
+    db = new SQL.Database();
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS checks (
@@ -341,6 +351,7 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
       config TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
       team_id TEXT,
+      owner_id TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (team_id) REFERENCES teams(id)
@@ -497,6 +508,7 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   db.run('CREATE INDEX IF NOT EXISTS idx_dedup_fingerprint ON notification_deduplication(channel_id, fingerprint)');
   db.run('CREATE INDEX IF NOT EXISTS idx_rate_limit_channel ON notification_rate_limits(channel_id, window_start)');
   db.run('CREATE INDEX IF NOT EXISTS idx_alert_channels_team ON alert_channels(team_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_alert_channels_owner ON alert_channels(owner_id)');
 
   // Hot-path indexes for performance optimization (NOC-164): perf queries,
   // dependency updates, subscription/usage reads, failure events, playbooks.
@@ -546,18 +558,35 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
 
   applyTenantIsolationMigration(db);
   applyMonitoredAppsMigration(db);
+  applyPersonalOwnershipMigration(db);
 
   return db;
 }
 
 export function saveDatabase(db: SqlJsDatabase, dbPath: string): void {
-  const fs = require('fs');
-  const path = require('path');
   const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  const data = db.export();
-  const buffer = Buffer.from(data);
-  fs.writeFileSync(dbPath, buffer);
+
+  const buffer = Buffer.from(db.export());
+  const tempPath = `${dbPath}.${process.pid}.${Date.now()}.tmp`;
+  let fileDescriptor: number | null = null;
+
+  try {
+    fileDescriptor = fs.openSync(tempPath, 'wx');
+    fs.writeFileSync(fileDescriptor, buffer);
+    fs.fsyncSync(fileDescriptor);
+    fs.closeSync(fileDescriptor);
+    fileDescriptor = null;
+    fs.renameSync(tempPath, dbPath);
+  } catch (error) {
+    if (fileDescriptor !== null) {
+      fs.closeSync(fileDescriptor);
+    }
+    if (fs.existsSync(tempPath)) {
+      fs.unlinkSync(tempPath);
+    }
+    throw error;
+  }
 }

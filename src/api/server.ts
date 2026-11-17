@@ -18,7 +18,7 @@ import { OnboardingApi } from '../teams/onboarding-api';
 import { PlaybookBuilderApi } from '../playbook/playbook-builder-api';
 import { NotificationApi } from '../notifications';
 import { ReportsApi } from '../reports';
-import { AppsApi } from '../apps';
+import { AppsApi, AppsApiDeps } from '../apps';
 import { isChannelAttachedToApp } from '../apps/attachment';
 import { getPolicyForSeverity, getOnCallAt, ESCALATION_POLICIES, buildSelfMonitorDashboard, computeErrorBudgetStatus, SELF_MONITOR_DEFAULTS } from '../alerting';
 import { nodeHTTPRequestHandler } from '@trpc/server/adapters/node-http';
@@ -26,14 +26,18 @@ import { handleSSERequest } from './sse';
 import { createPlaybookEngine } from '../playbook/engine';
 import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
 import { ApiAuthError, AuthContext, assertTeamMembership, authenticateRequest, requireRole } from './auth';
-import { tenantFilter, rowBelongsToTenant } from './tenant';
+import { rowBelongsToScope, scopedTenantFilter, tenantFilter, rowBelongsToTenant } from './tenant';
 
 export interface ApiConfig {
   port: number;
   stripeClient?: StripeClient;
   stripeWebhookSecret?: string;
   baseUrl?: string;
+  appsApiDeps?: AppsApiDeps;
+  onMutation?: () => void;
 }
+
+const MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 
 interface EndpointRule {
   path: string;
@@ -172,7 +176,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
   const playbookBuilderApi = new PlaybookBuilderApi(db);
   const notificationApi = new NotificationApi(db);
   const reportsApi = new ReportsApi(db);
-  const appsApi = new AppsApi(db);
+  const appsApi = new AppsApi(db, config.appsApiDeps);
   const playbookEngine = createPlaybookEngine(db);
   const latencyTracker = new ApiLatencyTracker();
   const hotCache = new ApiCache(15_000);
@@ -187,6 +191,13 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
     res.on('finish', () => {
       const elapsedNs = process.hrtime.bigint() - start;
       latencyTracker.record(path, Number(elapsedNs) / 1e6);
+      if (config.onMutation && MUTATING_METHODS.has((req.method || '').toUpperCase()) && res.statusCode < 400) {
+        try {
+          config.onMutation();
+        } catch (err: any) {
+          console.error('[Nightlamp] Failed to persist database after mutation:', err?.message);
+        }
+      }
     });
 
     try {
@@ -625,8 +636,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
               }
               const id = uuidv4();
               db.run(
-                `INSERT INTO alert_channels (id, name, type, config, team_id) VALUES (?, ?, ?, ?, ?)`,
-                [id, name, type, JSON.stringify(config), teamId]
+                `INSERT INTO alert_channels (id, name, type, config, team_id, owner_id) VALUES (?, ?, ?, ?, ?, ?)`,
+                [id, name, type, JSON.stringify(config), teamId, auth!.userId]
               );
               res.end(JSON.stringify({ success: true, id, name, type }));
             } catch (err: any) {
@@ -636,7 +647,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           });
           return;
         }
-        const tenantScope = tenantFilter('team_id', teamId);
+        const tenantScope = scopedTenantFilter('alert_channels', teamId, auth!.userId, true);
         const result = db.exec(`SELECT id, name, type, enabled, team_id, created_at FROM alert_channels WHERE ${tenantScope.clause} ORDER BY created_at DESC`, tenantScope.params);
         const channels = result.length > 0 ? result[0].values.map((row: any) => ({
           id: row[0], name: row[1], type: row[2], enabled: row[3] === 1, teamId: row[4], createdAt: row[5],
@@ -648,7 +659,12 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       if (path.startsWith('/api/alerting/channels/') && req.method === 'DELETE') {
         const channelId = path.split('/').pop();
         if (!channelId) { res.writeHead(400); res.end(JSON.stringify({ error: 'Channel ID required' })); return; }
-        if (!rowBelongsToTenant(db, 'alert_channels', channelId, teamId)) {
+        if (!rowBelongsToScope(db, 'alert_channels', channelId, teamId, auth!.userId, false)) {
+          if (teamId === null && rowBelongsToScope(db, 'alert_channels', channelId, teamId, auth!.userId, true)) {
+            res.writeHead(403);
+            res.end(JSON.stringify({ error: 'Legacy personal channels are read-only' }));
+            return;
+          }
           res.writeHead(404);
           res.end(JSON.stringify({ error: 'Channel not found' }));
           return;
@@ -683,9 +699,14 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
               return;
             }
             updates.push("updated_at = datetime('now')");
-            const tenantScope = tenantFilter('team_id', teamId);
+            const tenantScope = scopedTenantFilter('alert_channels', teamId, auth!.userId, false);
             db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${tenantScope.clause}`, [...params, channelId, ...tenantScope.params]);
             if (db.getRowsModified() === 0) {
+              if (teamId === null && rowBelongsToScope(db, 'alert_channels', channelId, teamId, auth!.userId, true)) {
+                res.writeHead(403);
+                res.end(JSON.stringify({ error: 'Legacy personal channels are read-only' }));
+                return;
+              }
               res.writeHead(404);
               res.end(JSON.stringify({ error: 'Channel not found' }));
               return;

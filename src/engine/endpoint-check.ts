@@ -1,4 +1,16 @@
+import * as http from 'http';
+import * as https from 'https';
 import * as net from 'net';
+import { URL } from 'url';
+import {
+  BlockedTargetError,
+  HostResolver,
+  TargetPolicy,
+  TargetResolutionError,
+  defaultHostResolver,
+  defaultTargetPolicy,
+  resolvePublicTarget,
+} from './outbound-safety';
 
 export type EndpointCheckType = 'http' | 'tcp' | 'keyword';
 
@@ -9,7 +21,9 @@ export type EndpointCheckFailureType =
   | 'http_4xx'
   | 'http_5xx'
   | 'keyword_not_found'
-  | 'connection_error';
+  | 'connection_error'
+  | 'blocked_target'
+  | 'response_too_large';
 
 export interface EndpointCheckConfig {
   type: EndpointCheckType;
@@ -25,6 +39,40 @@ export interface EndpointCheckResult {
   errorType: EndpointCheckFailureType | null;
   errorDetail: string | null;
 }
+
+export interface HttpTransportRequest {
+  url: string;
+  addresses: string[];
+  timeoutMs: number;
+  maxBodyBytes: number;
+  readBody: boolean;
+}
+
+export interface HttpTransportResponse {
+  statusCode: number;
+  body: Buffer | null;
+  bodyTruncated: boolean;
+}
+
+export type HttpTransport = (request: HttpTransportRequest) => Promise<HttpTransportResponse>;
+
+export interface TcpTransportRequest {
+  host: string;
+  addresses: string[];
+  port: number;
+  timeoutMs: number;
+}
+
+export type TcpTransport = (request: TcpTransportRequest) => Promise<void>;
+
+export interface EndpointCheckDeps {
+  resolver?: HostResolver;
+  policy?: TargetPolicy;
+  httpTransport?: HttpTransport;
+  tcpTransport?: TcpTransport;
+}
+
+export const MAX_KEYWORD_BODY_BYTES = 64 * 1024;
 
 function boundedTimeout(timeoutMs: number): number {
   if (!Number.isFinite(timeoutMs)) return 10_000;
@@ -46,7 +94,16 @@ function networkErrorCode(error: unknown): string | undefined {
 function classifyNetworkError(error: unknown, timeoutMs: number): EndpointCheckResult {
   const code = networkErrorCode(error);
   const name = error instanceof Error ? error.name : '';
-  if (name === 'AbortError' || code === 'ABORT_ERR' || code === 'UND_ERR_ABORTED') {
+  if (
+    name === 'AbortError' ||
+    code === 'ABORT_ERR' ||
+    code === 'UND_ERR_ABORTED' ||
+    code === 'ETIMEDOUT' ||
+    code === 'ESOCKETTIMEDOUT' ||
+    code === 'UND_ERR_CONNECT_TIMEOUT' ||
+    code === 'UND_ERR_HEADERS_TIMEOUT' ||
+    code === 'UND_ERR_BODY_TIMEOUT'
+  ) {
     return {
       status: 'fail',
       statusCode: null,
@@ -55,7 +112,14 @@ function classifyNetworkError(error: unknown, timeoutMs: number): EndpointCheckR
       errorDetail: `Request timed out after ${timeoutMs}ms`,
     };
   }
-  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+  if (
+    code === 'ENOTFOUND' ||
+    code === 'EAI_AGAIN' ||
+    code === 'EAI_FAIL' ||
+    code === 'EAI_NODATA' ||
+    code === 'ENODATA' ||
+    code === 'EAI_NONAME'
+  ) {
     return {
       status: 'fail',
       statusCode: null,
@@ -89,54 +153,149 @@ function httpFailure(statusCode: number): Pick<EndpointCheckResult, 'status' | '
   return { status: 'fail', errorType: 'http_4xx', errorDetail: `HTTP ${statusCode}` };
 }
 
-async function runHttpCheck(config: EndpointCheckConfig): Promise<EndpointCheckResult> {
-  const timeoutMs = boundedTimeout(config.timeoutMs);
-  const controller = new AbortController();
-  const startedAt = performance.now();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetch(config.target, {
-      method: 'GET',
-      redirect: 'manual',
-      signal: controller.signal,
-      headers: { 'User-Agent': 'Nightlamp-Monitor/1.0' },
-    });
-    const responseLatencyMs = Math.round((performance.now() - startedAt) * 100) / 100;
-    const statusCode = response.status;
-
-    if (statusCode >= 400) {
-      return { ...httpFailure(statusCode), statusCode, latencyMs: responseLatencyMs };
+function pinnedLookup(addresses: string[]): net.LookupFunction {
+  return ((hostname: string, options: any, callback: any) => {
+    const entries = addresses.map((address) => ({ address, family: net.isIPv6(address) ? 6 : 4 }));
+    if (options && options.all) {
+      callback(null, entries);
+      return;
     }
-
-    if (config.type === 'keyword') {
-      const body = await response.text();
-      const latencyMs = Math.round((performance.now() - startedAt) * 100) / 100;
-      if (!body.includes(config.keyword || '')) {
-        return {
-          status: 'fail',
-          statusCode,
-          latencyMs,
-          errorType: 'keyword_not_found',
-          errorDetail: 'Expected keyword was not found in the response',
-        };
-      }
-      return { status: 'pass', statusCode, latencyMs, errorType: null, errorDetail: null };
-    }
-
-    return { status: 'pass', statusCode, latencyMs: responseLatencyMs, errorType: null, errorDetail: null };
-  } catch (error) {
-    const classified = classifyNetworkError(error, timeoutMs);
-    return {
-      ...classified,
-      latencyMs: Math.round((performance.now() - startedAt) * 100) / 100,
-    };
-  } finally {
-    clearTimeout(timer);
-  }
+    callback(null, entries[0].address, entries[0].family);
+  }) as net.LookupFunction;
 }
 
-function parseTcpTarget(target: string): { host: string; port: number } | null {
+function defaultHttpTransport(request: HttpTransportRequest): Promise<HttpTransportResponse> {
+  return new Promise((resolve, reject) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(request.url);
+    } catch {
+      reject(Object.assign(new Error('Invalid target URL'), { code: 'ERR_INVALID_URL' }));
+      return;
+    }
+
+    const client = parsed.protocol === 'https:' ? https : http;
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      fn();
+    };
+
+    const req = client.request(
+      {
+        protocol: parsed.protocol,
+        hostname: parsed.hostname,
+        port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+        path: `${parsed.pathname}${parsed.search}`,
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Nightlamp-Monitor/1.0',
+          Accept: '*/*',
+          Connection: 'close',
+        },
+        lookup: pinnedLookup(request.addresses),
+      },
+      (res) => {
+        const statusCode = res.statusCode || 0;
+
+        if (!request.readBody) {
+          res.destroy();
+          finish(() => resolve({ statusCode, body: null, bodyTruncated: false }));
+          return;
+        }
+
+        const chunks: Buffer[] = [];
+        let size = 0;
+
+        res.on('data', (chunk: Buffer) => {
+          size += chunk.length;
+          if (size > request.maxBodyBytes) {
+            res.destroy();
+            req.destroy();
+            finish(() => resolve({ statusCode, body: Buffer.concat(chunks), bodyTruncated: true }));
+            return;
+          }
+          chunks.push(chunk);
+        });
+
+        res.on('end', () => {
+          finish(() => resolve({ statusCode, body: Buffer.concat(chunks), bodyTruncated: false }));
+        });
+
+        res.on('aborted', () => {
+          finish(() => reject(Object.assign(new Error('Response aborted'), { code: 'ECONNRESET' })));
+        });
+
+        res.on('error', (err: any) => {
+          finish(() => reject(err));
+        });
+      },
+    );
+
+    const deadline = setTimeout(() => {
+      req.destroy(Object.assign(new Error('Request deadline exceeded'), { code: 'ETIMEDOUT' }));
+      finish(() => reject(Object.assign(new Error('Request deadline exceeded'), { code: 'ETIMEDOUT' })));
+    }, request.timeoutMs);
+
+    req.on('error', (err: any) => {
+      finish(() => reject(err));
+    });
+
+    req.end();
+  });
+}
+
+function defaultTcpTransport(request: TcpTransportRequest): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const socket = net.createConnection({
+      host: request.addresses[0],
+      port: request.port,
+      lookup: pinnedLookup(request.addresses),
+    });
+
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+
+    const timer = setTimeout(() => {
+      socket.destroy();
+      finish(() => reject(Object.assign(new Error('Request deadline exceeded'), { code: 'ETIMEDOUT' })));
+    }, request.timeoutMs);
+
+    socket.once('connect', () => {
+      socket.end();
+      finish(() => resolve());
+    });
+
+    socket.once('error', (err: any) => {
+      finish(() => reject(err));
+    });
+  });
+}
+
+function parseHttpTarget(target: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(target);
+  } catch {
+    throw Object.assign(new Error('Target must be a valid URL'), { code: 'ERR_INVALID_URL' });
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw Object.assign(new Error('Target must use http or https'), { code: 'ERR_INVALID_URL' });
+  }
+  if (parsed.username || parsed.password) {
+    throw Object.assign(new Error('Target must not contain embedded credentials'), { code: 'ERR_INVALID_URL' });
+  }
+  return parsed;
+}
+
+export function parseTcpTarget(target: string): { host: string; port: number } | null {
   if (target.startsWith('tcp://')) {
     try {
       const parsed = new URL(target);
@@ -163,63 +322,132 @@ function parseTcpTarget(target: string): { host: string; port: number } | null {
   return { host, port };
 }
 
-async function runTcpCheck(config: EndpointCheckConfig): Promise<EndpointCheckResult> {
+export async function runEndpointCheck(
+  config: EndpointCheckConfig,
+  deps: EndpointCheckDeps = {},
+): Promise<EndpointCheckResult> {
   const timeoutMs = boundedTimeout(config.timeoutMs);
-  const target = parseTcpTarget(config.target);
   const startedAt = performance.now();
-  if (!target) {
-    return {
-      status: 'fail',
-      statusCode: null,
-      latencyMs: 0,
-      errorType: 'connection_error',
-      errorDetail: 'TCP target must use host:port format',
-    };
-  }
+  const resolver = deps.resolver || defaultHostResolver;
+  const policy = deps.policy || defaultTargetPolicy;
 
-  return new Promise<EndpointCheckResult>((resolve) => {
-    let settled = false;
-    const socket = net.createConnection({ host: target.host, port: target.port });
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      resolve({
+  try {
+    if (config.type === 'tcp') {
+      const target = parseTcpTarget(config.target);
+      if (!target) {
+        return {
+          status: 'fail',
+          statusCode: null,
+          latencyMs: 0,
+          errorType: 'connection_error',
+          errorDetail: 'TCP target must use host:port format',
+        };
+      }
+
+      const resolved = await resolvePublicTarget(target.host, resolver, policy);
+      const transport = deps.tcpTransport || defaultTcpTransport;
+      await transport({
+        host: resolved.host,
+        addresses: resolved.addresses,
+        port: target.port,
+        timeoutMs,
+      });
+
+      return {
+        status: 'pass',
+        statusCode: null,
+        latencyMs: Math.round((performance.now() - startedAt) * 100) / 100,
+        errorType: null,
+        errorDetail: null,
+      };
+    }
+
+    const parsed = parseHttpTarget(config.target);
+    const resolved = await resolvePublicTarget(parsed.hostname, resolver, policy);
+    const transport = deps.httpTransport || defaultHttpTransport;
+    const response = await transport({
+      url: config.target,
+      addresses: resolved.addresses,
+      timeoutMs,
+      maxBodyBytes: MAX_KEYWORD_BODY_BYTES,
+      readBody: config.type === 'keyword',
+    });
+
+    const latencyMs = Math.round((performance.now() - startedAt) * 100) / 100;
+    const statusCode = response.statusCode;
+
+    if (statusCode >= 400) {
+      return { ...httpFailure(statusCode), statusCode, latencyMs };
+    }
+
+    if (config.type === 'keyword') {
+      if (response.bodyTruncated) {
+        return {
+          status: 'fail',
+          statusCode,
+          latencyMs,
+          errorType: 'response_too_large',
+          errorDetail: `Response body exceeded the ${MAX_KEYWORD_BODY_BYTES} byte limit`,
+        };
+      }
+      const body = response.body ? response.body.toString('utf8') : '';
+      if (!body.includes(config.keyword || '')) {
+        return {
+          status: 'fail',
+          statusCode,
+          latencyMs,
+          errorType: 'keyword_not_found',
+          errorDetail: 'Expected keyword was not found in the response',
+        };
+      }
+      return { status: 'pass', statusCode, latencyMs, errorType: null, errorDetail: null };
+    }
+
+    return { status: 'pass', statusCode, latencyMs, errorType: null, errorDetail: null };
+  } catch (error) {
+    if (error instanceof BlockedTargetError) {
+      return {
         status: 'fail',
         statusCode: null,
         latencyMs: Math.round((performance.now() - startedAt) * 100) / 100,
-        errorType: 'timeout',
-        errorDetail: `Request timed out after ${timeoutMs}ms`,
-      });
-    }, timeoutMs);
-
-    const finish = (result: Omit<EndpointCheckResult, 'latencyMs'>) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({
-        ...result,
+        errorType: 'blocked_target',
+        errorDetail: error.message,
+      };
+    }
+    if (error instanceof TargetResolutionError) {
+      return {
+        status: 'fail',
+        statusCode: null,
         latencyMs: Math.round((performance.now() - startedAt) * 100) / 100,
-      });
+        errorType: 'dns_failure',
+        errorDetail: error.message,
+      };
+    }
+    const classified = classifyNetworkError(error, timeoutMs);
+    return {
+      ...classified,
+      latencyMs: Math.round((performance.now() - startedAt) * 100) / 100,
     };
-
-    socket.once('connect', () => {
-      socket.end();
-      finish({ status: 'pass', statusCode: null, errorType: null, errorDetail: null });
-    });
-    socket.once('error', (error) => {
-      const classified = classifyNetworkError(error, timeoutMs);
-      finish({
-        status: classified.status,
-        statusCode: classified.statusCode,
-        errorType: classified.errorType,
-        errorDetail: classified.errorDetail,
-      });
-    });
-  });
+  }
 }
 
-export async function runEndpointCheck(config: EndpointCheckConfig): Promise<EndpointCheckResult> {
-  if (config.type === 'tcp') return runTcpCheck(config);
-  return runHttpCheck(config);
+export async function assertTargetAllowed(
+  target: string,
+  checkType: EndpointCheckType,
+  deps: EndpointCheckDeps = {},
+): Promise<void> {
+  const resolver = deps.resolver || defaultHostResolver;
+  const policy = deps.policy || defaultTargetPolicy;
+
+  if (checkType === 'tcp') {
+    const parsed = parseTcpTarget(target);
+    if (!parsed) {
+      throw new BlockedTargetError('TCP target must use host:port format');
+    }
+    await resolvePublicTarget(parsed.host, resolver, policy);
+    return;
+  }
+
+  const parsed = parseHttpTarget(target);
+  await resolvePublicTarget(parsed.hostname, resolver, policy);
 }

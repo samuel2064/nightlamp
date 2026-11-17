@@ -16,10 +16,13 @@ import { runRemediation } from '../remediation/engine';
 import { evaluateAndNotify } from '../alerting';
 
 export {
+  assertTargetAllowed,
+  parseTcpTarget,
   runEndpointCheck,
 } from './endpoint-check';
 export type {
   EndpointCheckConfig,
+  EndpointCheckDeps,
   EndpointCheckFailureType,
   EndpointCheckResult,
   EndpointCheckType,

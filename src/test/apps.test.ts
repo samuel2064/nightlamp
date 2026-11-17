@@ -6,7 +6,16 @@ import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
 import { createDatabase } from '../db/schema';
 import { startApiServer } from '../api/server';
+import { EndpointCheckDeps } from '../engine/endpoint-check';
 import { createTestToken, fetchWithoutAuth } from './setup';
+
+const testEndpointDeps: EndpointCheckDeps = {
+  resolver: async () => ['93.184.216.34'],
+  policy: {
+    isBlockedAddress: () => false,
+    isBlockedHostname: () => false,
+  },
+};
 
 async function listen(server: Server | NetServer): Promise<number> {
   server.listen(0, '127.0.0.1');
@@ -150,7 +159,10 @@ describe('tenant-scoped app registry', () => {
     tcpServer = createNetServer((socket) => socket.end());
     tcpPort = await listen(tcpServer);
 
-    server = startApiServer(db, { port: 0 });
+    server = startApiServer(db, {
+      port: 0,
+      appsApiDeps: { endpointDeps: testEndpointDeps, cooldownMs: 0 },
+    });
     port = (server.address() as { port: number }).port;
 
     const channelResponse = await apiRequest('/api/alerting/channels', ownerToken, {
