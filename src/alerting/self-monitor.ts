@@ -134,8 +134,8 @@ export function severityForResult(result: SelfMonitorResult): string {
 
 /**
  * Build the self-monitor input from persisted data:
- *  - errorRate from recent "failed" check_results as a fraction of all recent check_results
- *  - downtime seconds from contiguous failed check_results within the window
+ *  - errorRate from recent personal-scope "failed" check_results as a fraction of all personal-scope check_results
+ *  - downtime seconds from contiguous personal-scope failed check_results within the window
  *  - p95LatencyMs from the supplied latency summary (global p95)
  */
 export function readSelfMonitorMetrics(
@@ -144,7 +144,7 @@ export function readSelfMonitorMetrics(
   windowHours: number = SELF_MONITOR_DEFAULTS.windowHours
 ): SelfMonitorInput {
   const results = db.exec(
-    `SELECT status, executed_at FROM check_results`
+    `SELECT status, executed_at FROM check_results WHERE team_id IS NULL`
   );
 
   let total = 0;
@@ -206,8 +206,8 @@ export async function evaluateSelfMonitor(
 
     const eventId = uuidv4();
     db.run(
-      `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, detected_at)
-       VALUES (?, ?, 'slo_breach', ?, ?, ?, datetime('now'))`,
+      `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, detected_at, team_id)
+       VALUES (?, ?, 'slo_breach', ?, ?, ?, datetime('now'), NULL)`,
       [eventId, checkId, severityForResult(result), `Nightlamp self-monitor breach (${result.slos.filter((s) => s.breached).map((s) => s.key).join(', ')})`, `Self-monitoring SLO breach detected.\n${violated.join('\n')}`]
     );
 

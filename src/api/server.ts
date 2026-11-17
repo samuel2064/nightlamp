@@ -188,7 +188,9 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
     try {
       let auth: AuthContext | null = null;
-      if (!isPublicEndpoint(path, req.method)) {
+      const hasAuthHeader = Boolean(req.headers.authorization);
+      const shouldAuthenticate = !isPublicEndpoint(path, req.method) || (normalizePath(path) === '/api/health' && hasAuthHeader);
+      if (shouldAuthenticate) {
         try {
           auth = authenticateRequest(db, req);
         } catch (err: any) {
@@ -1070,7 +1072,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           const enabled = parsedUrl.searchParams.get('enabled');
 
           const tenantScope = tenantFilter('team_id', teamId);
-          let sql = `SELECT id, source, name, config, enabled, created_at, updated_at FROM checks WHERE ${tenantScope.clause}`;
+          let sql = `SELECT id, source, name, config, enabled, created_at, updated_at, team_id FROM checks WHERE ${tenantScope.clause}`;
           const params: any[] = [...tenantScope.params];
 
           if (enabled !== null) {
@@ -1090,6 +1092,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             enabled: row[4] === 1,
             createdAt: row[5],
             updatedAt: row[6],
+            teamId: row[7],
           })) : [];
 
           const body = JSON.stringify({ monitors, count: monitors.length, limit, offset });
@@ -1505,30 +1508,43 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       }
 
       if (path === '/api/health' || path === '/api/health/') {
-        // Only enabled monitors contribute to health. A disabled monitor (for
-        // example one holding placeholder integration credentials) must not be
-        // able to keep the dashboard permanently red.
-        const activeCheckJoin = `LEFT JOIN checks c ON fe.check_id = c.id
-          WHERE (c.id IS NULL OR c.enabled = 1)`;
+        const checkScope = tenantFilter('c.team_id', teamId);
+        const eventScope = tenantFilter('fe.team_id', teamId);
+        const resultScope = tenantFilter('cr.team_id', teamId);
+        const playbookScope = tenantFilter('pe.team_id', teamId);
+        const activeEventJoin = `LEFT JOIN checks c ON fe.check_id = c.id
+          WHERE (c.id IS NULL OR c.enabled = 1) AND ${eventScope.clause} AND ${checkScope.clause}`;
         const activeResultJoin = `LEFT JOIN checks c ON cr.check_id = c.id
-          WHERE (c.id IS NULL OR c.enabled = 1)`;
+          WHERE (c.id IS NULL OR c.enabled = 1) AND ${resultScope.clause} AND ${checkScope.clause}`;
 
-        const checkCount = db.exec('SELECT COUNT(*) as count FROM checks WHERE enabled = 1');
-        const eventCount = db.exec(`SELECT COUNT(*) as count FROM failure_events fe ${activeCheckJoin}`);
-        const playbookCount = db.exec('SELECT COUNT(*) as count FROM playbook_entries');
+        const checkCount = db.exec(
+          `SELECT COUNT(*) as count FROM checks c WHERE c.enabled = 1 AND ${checkScope.clause}`,
+          checkScope.params,
+        );
+        const eventCount = db.exec(
+          `SELECT COUNT(*) as count FROM failure_events fe ${activeEventJoin}`,
+          [...eventScope.params, ...checkScope.params],
+        );
+        const playbookCount = db.exec(
+          `SELECT COUNT(*) as count FROM playbook_entries pe WHERE ${playbookScope.clause}`,
+          playbookScope.params,
+        );
         const recentEvents = db.exec(
-          `SELECT COUNT(*) as count FROM failure_events fe ${activeCheckJoin}
-           AND fe.detected_at >= datetime('now', '-24 hours')`
+          `SELECT COUNT(*) as count FROM failure_events fe ${activeEventJoin}
+           AND fe.detected_at >= datetime('now', '-24 hours')`,
+          [...eventScope.params, ...checkScope.params],
         );
         const recentCritical = db.exec(
-          `SELECT COUNT(*) as count FROM failure_events fe ${activeCheckJoin}
-           AND fe.severity = 'critical' AND fe.detected_at >= datetime('now', '-24 hours')`
+          `SELECT COUNT(*) as count FROM failure_events fe ${activeEventJoin}
+           AND fe.severity = 'critical' AND fe.detected_at >= datetime('now', '-24 hours')`,
+          [...eventScope.params, ...checkScope.params],
         );
         const recentResults = db.exec(
           `SELECT COUNT(*) as total,
                   SUM(CASE WHEN cr.status <> 'pass' THEN 1 ELSE 0 END) as failed
            FROM check_results cr ${activeResultJoin}
-           AND cr.executed_at >= datetime('now', '-24 hours')`
+           AND cr.executed_at >= datetime('now', '-24 hours')`,
+          [...resultScope.params, ...checkScope.params],
         );
         let uptimeSeconds = 0;
         try {

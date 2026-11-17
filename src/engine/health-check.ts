@@ -14,6 +14,7 @@ import { classifyFailure, FailureType } from '../classifier';
 import { getOrCreatePlaybookEntry, writePlaybookFile } from '../playbook';
 import { runRemediation } from '../remediation/engine';
 import { evaluateAndNotify } from '../alerting';
+import { tenantFilter } from '../api/tenant';
 
 export interface HealthCheckConfig {
   sentry?: SentryConfig;
@@ -42,18 +43,20 @@ export interface CheckConfigLike {
  *
  * A poll run is not a monitor: previously every run inserted a fresh `checks`
  * row, which produced a new duplicate monitor every minute. The check row is
- * now stable per (source, name) and only its config is refreshed.
+ * now stable per (team, source, name) and only its config is refreshed.
  */
 export function ensureCheck(
   db: Database,
   source: string,
   name: string,
-  config: object
+  config: object,
+  teamId: string | null = null
 ): string {
   const configJson = JSON.stringify(config);
+  const scope = tenantFilter('team_id', teamId);
   const existing = db.exec(
-    'SELECT id, config FROM checks WHERE source = ? AND name = ? ORDER BY created_at ASC, id ASC LIMIT 1',
-    [source, name]
+    `SELECT id, config FROM checks WHERE source = ? AND name = ? AND ${scope.clause} ORDER BY created_at ASC, id ASC LIMIT 1`,
+    [source, name, ...scope.params]
   );
 
   let checkId: string;
@@ -69,15 +72,15 @@ export function ensureCheck(
   } else {
     checkId = uuidv4();
     db.run(
-      'INSERT INTO checks (id, source, name, config, enabled) VALUES (?, ?, ?, ?, 1)',
-      [checkId, source, name, configJson]
+      'INSERT INTO checks (id, source, name, config, enabled, team_id) VALUES (?, ?, ?, ?, 1, ?)',
+      [checkId, source, name, configJson, teamId]
     );
   }
 
   db.run(
     `UPDATE checks SET enabled = 0, updated_at = datetime('now')
-     WHERE source = ? AND name = ? AND id <> ? AND enabled = 1`,
-    [source, name, checkId]
+     WHERE source = ? AND name = ? AND id <> ? AND ${scope.clause} AND enabled = 1`,
+    [source, name, checkId, ...scope.params]
   );
 
   return checkId;
@@ -85,17 +88,18 @@ export function ensureCheck(
 
 /**
  * Collapse pre-existing duplicate monitor rows, keeping one enabled row per
- * (source, name). Older deployments created one row per poll interval.
+ * (team, source, name). Older deployments created one row per poll interval.
  */
 export function deduplicateChecks(db: Database): number {
   const result = db.exec(
-    'SELECT id, source, name, enabled FROM checks ORDER BY created_at ASC, id ASC'
+    'SELECT id, source, name, enabled, team_id FROM checks ORDER BY created_at ASC, id ASC'
   );
   if (result.length === 0 || result[0].values.length === 0) return 0;
 
   const groups = new Map<string, { id: string; enabled: boolean }[]>();
   for (const row of result[0].values) {
-    const key = `${row[1]}\u0000${row[2]}`;
+    const teamId = JSON.stringify(row[4] ?? null);
+    const key = `${teamId}\u0000${row[1]}\u0000${row[2]}`;
     const group = groups.get(key) || [];
     group.push({ id: row[0] as string, enabled: Number(row[3]) === 1 });
     groups.set(key, group);
@@ -156,25 +160,26 @@ export function sanitizeChecks(db: Database): { duplicatesDisabled: number; plac
 async function autoRemediateOnRecurrence(
   db: Database,
   checkId: string,
-  entry: { id: string; failureType: FailureType; occurrenceCount: number },
+  entry: { id: string; failureType: FailureType; occurrenceCount: number; teamId?: string | null },
   failureType: string,
   playbookDir: string,
   events: string[],
+  teamId: string | null = null,
 ): Promise<number> {
   let extraFailures = 0;
   if (entry.occurrenceCount >= 2) {
     const remediationResult = await runRemediation(db, entry as any);
     const remEventId = uuidv4();
     db.run(
-      `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data) VALUES (?, ?, 'remediation_triggered', 'info', ?, ?, ?)`,
-      [remEventId, checkId, `Auto-remediation for ${failureType}: ${remediationResult.status}`, remediationResult.output, JSON.stringify(remediationResult)]
+      `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data, team_id) VALUES (?, ?, 'remediation_triggered', 'info', ?, ?, ?, ?)`,
+      [remEventId, checkId, `Auto-remediation for ${failureType}: ${remediationResult.status}`, remediationResult.output, JSON.stringify(remediationResult), teamId]
     );
 
-    await evaluateAndNotify(db, 'remediation_triggered', 'info', `Auto-remediation for ${failureType}: ${remediationResult.status}`, remediationResult.output, new Date().toISOString(), checkId, remEventId).catch((err: any) => {
+    await evaluateAndNotify(db, 'remediation_triggered', 'info', `Auto-remediation for ${failureType}: ${remediationResult.status}`, remediationResult.output, new Date().toISOString(), checkId, remEventId, teamId).catch((err: any) => {
       console.error(`[Alerting] Failed to send notification for remediation ${remEventId}: ${err.message}`);
     });
 
-    const remEntry = getOrCreatePlaybookEntry(db, 'remediation_triggered' as FailureType);
+    const remEntry = getOrCreatePlaybookEntry(db, 'remediation_triggered' as FailureType, teamId);
     const remFilePath = writePlaybookFile(playbookDir, remEntry);
     events.push(remFilePath);
     extraFailures++;
@@ -186,19 +191,21 @@ export async function runSentryCheck(
   db: Database,
   config: SentryConfig,
   previousIssues: SentryIssue[],
-  playbookDir: string
+  playbookDir: string,
+  teamId: string | null = null,
+  monitorName: string = 'Sentry Error Monitor'
 ): Promise<CheckRunResult> {
   const events: string[] = [];
   let failureCount = 0;
 
-  const checkId = ensureCheck(db, 'sentry', 'Sentry Error Monitor', config);
+  const checkId = ensureCheck(db, 'sentry', monitorName, config, teamId);
 
   const result = await pollSentry(config);
 
   if (result.error) {
     db.run(
-      `INSERT INTO check_results (id, check_id, status, summary, details, raw_data) VALUES (?, ?, 'error', ?, ?, ?)`,
-      [uuidv4(), checkId, result.error, result.error, JSON.stringify(result)]
+      `INSERT INTO check_results (id, check_id, status, summary, details, raw_data, team_id) VALUES (?, ?, 'error', ?, ?, ?, ?)`,
+      [uuidv4(), checkId, result.error, result.error, JSON.stringify(result), teamId]
     );
 
     const classification = classifyFailure(checkId, {
@@ -208,19 +215,19 @@ export async function runSentryCheck(
 
     for (const event of classification) {
       db.run(
-        `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [event.id, checkId, event.failureType, event.severity, event.title, event.description, JSON.stringify(event.rawData)]
+        `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data, team_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [event.id, checkId, event.failureType, event.severity, event.title, event.description, JSON.stringify(event.rawData), teamId]
       );
 
-      await evaluateAndNotify(db, event.failureType, event.severity, event.title, event.description, event.detectedAt, checkId, event.id).catch((err: any) => {
+      await evaluateAndNotify(db, event.failureType, event.severity, event.title, event.description, event.detectedAt, checkId, event.id, teamId).catch((err: any) => {
         console.error(`[Alerting] Failed to send notification for event ${event.id}: ${err.message}`);
       });
 
-      const entry = getOrCreatePlaybookEntry(db, event.failureType);
+      const entry = getOrCreatePlaybookEntry(db, event.failureType, teamId);
       const filePath = writePlaybookFile(playbookDir, entry);
       events.push(filePath);
       failureCount++;
-      failureCount += await autoRemediateOnRecurrence(db, checkId, entry, event.failureType, playbookDir, events);
+      failureCount += await autoRemediateOnRecurrence(db, checkId, entry, event.failureType, playbookDir, events, teamId);
     }
 
     return { checkId, status: 'error', summary: result.error, failureEvents: failureCount, playbookEntries: events, issues: result.issues, monitors: [] };
@@ -233,19 +240,19 @@ export async function runSentryCheck(
     for (const issue of spikes) {
       const eventId = uuidv4();
       db.run(
-        `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data) VALUES (?, ?, 'error_spike', 'warning', ?, ?, ?)`,
-        [eventId, checkId, `Error spike detected: ${issue.title} (${issue.count} occurrences)`, `Issue ${issue.permalink} spiked from previous count`, JSON.stringify(issue)]
+        `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data, team_id) VALUES (?, ?, 'error_spike', 'warning', ?, ?, ?, ?)`,
+        [eventId, checkId, `Error spike detected: ${issue.title} (${issue.count} occurrences)`, `Issue ${issue.permalink} spiked from previous count`, JSON.stringify(issue), teamId]
       );
 
-      await evaluateAndNotify(db, 'error_spike', 'warning', `Error spike detected: ${issue.title}`, `Issue ${issue.permalink} spiked from previous count`, new Date().toISOString(), checkId, eventId).catch((err: any) => {
+      await evaluateAndNotify(db, 'error_spike', 'warning', `Error spike detected: ${issue.title}`, `Issue ${issue.permalink} spiked from previous count`, new Date().toISOString(), checkId, eventId, teamId).catch((err: any) => {
         console.error(`[Alerting] Failed to send notification for spike ${eventId}: ${err.message}`);
       });
 
-      const entry = getOrCreatePlaybookEntry(db, 'error_spike' as FailureType);
+      const entry = getOrCreatePlaybookEntry(db, 'error_spike' as FailureType, teamId);
       const filePath = writePlaybookFile(playbookDir, entry);
       events.push(filePath);
       failureCount++;
-      failureCount += await autoRemediateOnRecurrence(db, checkId, entry, 'error_spike', playbookDir, events);
+      failureCount += await autoRemediateOnRecurrence(db, checkId, entry, 'error_spike', playbookDir, events, teamId);
     }
   }
 
@@ -253,26 +260,26 @@ export async function runSentryCheck(
     for (const issue of newPatterns) {
       const eventId = uuidv4();
       db.run(
-        `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data) VALUES (?, ?, 'new_error_pattern', 'info', ?, ?, ?)`,
-        [eventId, checkId, `New error pattern: ${issue.title}`, `First occurrence of ${issue.title} at ${issue.permalink}`, JSON.stringify(issue)]
+        `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data, team_id) VALUES (?, ?, 'new_error_pattern', 'info', ?, ?, ?, ?)`,
+        [eventId, checkId, `New error pattern: ${issue.title}`, `First occurrence of ${issue.title} at ${issue.permalink}`, JSON.stringify(issue), teamId]
       );
 
-      await evaluateAndNotify(db, 'new_error_pattern', 'info', `New error pattern: ${issue.title}`, `First occurrence of ${issue.title} at ${issue.permalink}`, new Date().toISOString(), checkId, eventId).catch((err: any) => {
+      await evaluateAndNotify(db, 'new_error_pattern', 'info', `New error pattern: ${issue.title}`, `First occurrence of ${issue.title} at ${issue.permalink}`, new Date().toISOString(), checkId, eventId, teamId).catch((err: any) => {
         console.error(`[Alerting] Failed to send notification for new pattern ${eventId}: ${err.message}`);
       });
 
-      const entry = getOrCreatePlaybookEntry(db, 'new_error_pattern' as FailureType);
+      const entry = getOrCreatePlaybookEntry(db, 'new_error_pattern' as FailureType, teamId);
       const filePath = writePlaybookFile(playbookDir, entry);
       events.push(filePath);
       failureCount++;
-      failureCount += await autoRemediateOnRecurrence(db, checkId, entry, 'new_error_pattern', playbookDir, events);
+      failureCount += await autoRemediateOnRecurrence(db, checkId, entry, 'new_error_pattern', playbookDir, events, teamId);
     }
   }
 
   const status: 'pass' | 'fail' = failureCount > 0 ? 'fail' : 'pass';
   db.run(
-    `INSERT INTO check_results (id, check_id, status, summary, details, raw_data) VALUES (?, ?, ?, ?, ?, ?)`,
-    [uuidv4(), checkId, status, `${result.issues.length} issues found, ${spikes.length} spikes, ${newPatterns.length} new patterns`, JSON.stringify({ spikes: spikes.length, newPatterns: newPatterns.length }), JSON.stringify(result)]
+    `INSERT INTO check_results (id, check_id, status, summary, details, raw_data, team_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [uuidv4(), checkId, status, `${result.issues.length} issues found, ${spikes.length} spikes, ${newPatterns.length} new patterns`, JSON.stringify({ spikes: spikes.length, newPatterns: newPatterns.length }), JSON.stringify(result), teamId]
   );
 
   return {
@@ -290,19 +297,21 @@ export async function runUptimeRobotCheck(
   db: Database,
   config: UptimeRobotConfig,
   previousMonitors: UptimeRobotMonitor[],
-  playbookDir: string
+  playbookDir: string,
+  teamId: string | null = null,
+  monitorName: string = 'UptimeRobot Monitor'
 ): Promise<CheckRunResult> {
   const events: string[] = [];
   let failureCount = 0;
 
-  const checkId = ensureCheck(db, 'uptimerobot', 'UptimeRobot Monitor', config);
+  const checkId = ensureCheck(db, 'uptimerobot', monitorName, config, teamId);
 
   const result = await pollUptimeRobot(config);
 
   if (result.error) {
     db.run(
-      `INSERT INTO check_results (id, check_id, status, summary, details, raw_data) VALUES (?, ?, 'error', ?, ?, ?)`,
-      [uuidv4(), checkId, result.error, result.error, JSON.stringify(result)]
+      `INSERT INTO check_results (id, check_id, status, summary, details, raw_data, team_id) VALUES (?, ?, 'error', ?, ?, ?, ?)`,
+      [uuidv4(), checkId, result.error, result.error, JSON.stringify(result), teamId]
     );
 
     const classification = classifyFailure(checkId, {
@@ -312,19 +321,19 @@ export async function runUptimeRobotCheck(
 
     for (const event of classification) {
       db.run(
-        `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [event.id, checkId, event.failureType, event.severity, event.title, event.description, JSON.stringify(event.rawData)]
+        `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data, team_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [event.id, checkId, event.failureType, event.severity, event.title, event.description, JSON.stringify(event.rawData), teamId]
       );
 
-      await evaluateAndNotify(db, event.failureType, event.severity, event.title, event.description, event.detectedAt, checkId, event.id).catch((err: any) => {
+      await evaluateAndNotify(db, event.failureType, event.severity, event.title, event.description, event.detectedAt, checkId, event.id, teamId).catch((err: any) => {
         console.error(`[Alerting] Failed to send notification for UptimeRobot event ${event.id}: ${err.message}`);
       });
 
-      const entry = getOrCreatePlaybookEntry(db, event.failureType);
+      const entry = getOrCreatePlaybookEntry(db, event.failureType, teamId);
       const filePath = writePlaybookFile(playbookDir, entry);
       events.push(filePath);
       failureCount++;
-      failureCount += await autoRemediateOnRecurrence(db, checkId, entry, event.failureType, playbookDir, events);
+      failureCount += await autoRemediateOnRecurrence(db, checkId, entry, event.failureType, playbookDir, events, teamId);
     }
 
     return { checkId, status: 'error', summary: result.error, failureEvents: failureCount, playbookEntries: events, monitors: result.monitors, issues: [] };
@@ -337,19 +346,19 @@ export async function runUptimeRobotCheck(
     for (const monitor of downMonitors) {
       const eventId = uuidv4();
       db.run(
-        `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data) VALUES (?, ?, 'broken_webhook', 'critical', ?, ?, ?)`,
-        [eventId, checkId, `Monitor down: ${monitor.friendlyName}`, `Monitor ${monitor.friendlyName} (${monitor.url}) is down`, JSON.stringify(monitor)]
+        `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data, team_id) VALUES (?, ?, 'broken_webhook', 'critical', ?, ?, ?, ?)`,
+        [eventId, checkId, `Monitor down: ${monitor.friendlyName}`, `Monitor ${monitor.friendlyName} (${monitor.url}) is down`, JSON.stringify(monitor), teamId]
       );
 
-      await evaluateAndNotify(db, 'broken_webhook', 'critical', `Monitor down: ${monitor.friendlyName}`, `Monitor ${monitor.friendlyName} (${monitor.url}) is down`, new Date().toISOString(), checkId, eventId).catch((err: any) => {
+      await evaluateAndNotify(db, 'broken_webhook', 'critical', `Monitor down: ${monitor.friendlyName}`, `Monitor ${monitor.friendlyName} (${monitor.url}) is down`, new Date().toISOString(), checkId, eventId, teamId).catch((err: any) => {
         console.error(`[Alerting] Failed to send notification for down monitor ${eventId}: ${err.message}`);
       });
 
-      const entry = getOrCreatePlaybookEntry(db, 'broken_webhook' as FailureType);
+      const entry = getOrCreatePlaybookEntry(db, 'broken_webhook' as FailureType, teamId);
       const filePath = writePlaybookFile(playbookDir, entry);
       events.push(filePath);
       failureCount++;
-      failureCount += await autoRemediateOnRecurrence(db, checkId, entry, 'broken_webhook', playbookDir, events);
+      failureCount += await autoRemediateOnRecurrence(db, checkId, entry, 'broken_webhook', playbookDir, events, teamId);
     }
   }
 
@@ -357,26 +366,26 @@ export async function runUptimeRobotCheck(
     for (const change of statusChanges) {
       const eventId = uuidv4();
       db.run(
-        `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data) VALUES (?, ?, 'broken_webhook', 'critical', ?, ?, ?)`,
-        [eventId, checkId, `Status change: ${change.friendlyName} ${change.previousStatus} -> ${change.status}`, `Monitor ${change.friendlyName} changed status`, JSON.stringify(change)]
+        `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, raw_data, team_id) VALUES (?, ?, 'broken_webhook', 'critical', ?, ?, ?, ?)`,
+        [eventId, checkId, `Status change: ${change.friendlyName} ${change.previousStatus} -> ${change.status}`, `Monitor ${change.friendlyName} changed status`, JSON.stringify(change), teamId]
       );
 
-      await evaluateAndNotify(db, 'broken_webhook', 'critical', `Status change: ${change.friendlyName} ${change.previousStatus} -> ${change.status}`, `Monitor ${change.friendlyName} changed status`, new Date().toISOString(), checkId, eventId).catch((err: any) => {
+      await evaluateAndNotify(db, 'broken_webhook', 'critical', `Status change: ${change.friendlyName} ${change.previousStatus} -> ${change.status}`, `Monitor ${change.friendlyName} changed status`, new Date().toISOString(), checkId, eventId, teamId).catch((err: any) => {
         console.error(`[Alerting] Failed to send notification for status change ${eventId}: ${err.message}`);
       });
 
-      const entry = getOrCreatePlaybookEntry(db, 'broken_webhook' as FailureType);
+      const entry = getOrCreatePlaybookEntry(db, 'broken_webhook' as FailureType, teamId);
       const filePath = writePlaybookFile(playbookDir, entry);
       events.push(filePath);
       failureCount++;
-      failureCount += await autoRemediateOnRecurrence(db, checkId, entry, 'broken_webhook', playbookDir, events);
+      failureCount += await autoRemediateOnRecurrence(db, checkId, entry, 'broken_webhook', playbookDir, events, teamId);
     }
   }
 
   const status: 'pass' | 'fail' = failureCount > 0 ? 'fail' : 'pass';
   db.run(
-    `INSERT INTO check_results (id, check_id, status, summary, details, raw_data) VALUES (?, ?, ?, ?, ?, ?)`,
-    [uuidv4(), checkId, status, `${result.monitors.length} monitors checked, ${downMonitors.length} down, ${statusChanges.length} changes`, JSON.stringify({ down: downMonitors.length, changes: statusChanges.length }), JSON.stringify(result)]
+    `INSERT INTO check_results (id, check_id, status, summary, details, raw_data, team_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [uuidv4(), checkId, status, `${result.monitors.length} monitors checked, ${downMonitors.length} down, ${statusChanges.length} changes`, JSON.stringify({ down: downMonitors.length, changes: statusChanges.length }), JSON.stringify(result), teamId]
   );
 
   return {

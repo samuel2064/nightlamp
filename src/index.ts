@@ -23,6 +23,9 @@ process.on('unhandledRejection', (reason) => {
 dotenv.config();
 
 const POLL_INTERVAL_SEC = parseInt(process.env.POLL_INTERVAL_SEC || '60', 10);
+const MONITOR_TEAM_ID = process.env.MONITOR_TEAM_ID?.trim() || null;
+const SENTRY_TEAM_ID = process.env.SENTRY_TEAM_ID?.trim() || MONITOR_TEAM_ID;
+const UPTIMEROBOT_TEAM_ID = process.env.UPTIMEROBOT_TEAM_ID?.trim() || MONITOR_TEAM_ID;
 const DB_PATH = process.env.DB_PATH || './data/nightlamp.db';
 const PLAYBOOK_DIR = process.env.PLAYBOOK_DIR || './playbook';
 const API_PORT = parseInt(process.env.PORT || process.env.API_PORT || '3001', 10);
@@ -34,6 +37,8 @@ let uptimeRobotMonitorCache: UptimeRobotMonitor[] = [];
 async function init(): Promise<void> {
   console.log('[Nightlamp] Initializing health check engine...');
   db = await createDatabase(DB_PATH);
+  const validOwner = (teamId: string | null): boolean =>
+    teamId === null || db.exec('SELECT id FROM teams WHERE id = ?', [teamId]).length > 0;
   setDb(db);
   initEngine();
 
@@ -55,12 +60,14 @@ async function init(): Promise<void> {
     ? { authToken: sentryToken, orgSlug: sentryOrg, projectSlug: sentryProject }
     : null;
 
-  if (sentryConfig && !isSentryConfigPlaceholder(sentryConfig)) {
+  if (sentryConfig && !validOwner(SENTRY_TEAM_ID)) {
+    console.error('[Nightlamp] Sentry monitor disabled: configured team ID does not exist');
+  } else if (sentryConfig && !isSentryConfigPlaceholder(sentryConfig)) {
     const cronExpr = `*/${POLL_INTERVAL_SEC} * * * * *`;
     cron.schedule(cronExpr, async () => {
       console.log(`[Nightlamp] Running Sentry check (every ${POLL_INTERVAL_SEC}s)...`);
       try {
-        const result = await runSentryCheck(db, sentryConfig, sentryIssueCache, PLAYBOOK_DIR);
+        const result = await runSentryCheck(db, sentryConfig, sentryIssueCache, PLAYBOOK_DIR, SENTRY_TEAM_ID);
         sentryIssueCache = result.issues;
         console.log(`[Nightlamp] Sentry check complete: ${result.status} - ${result.summary}`);
         if (result.failureEvents > 0) {
@@ -83,12 +90,14 @@ async function init(): Promise<void> {
     ? { apiKey: uptimeRobotKey }
     : null;
 
-  if (uptimeRobotConfig && !isUptimeRobotConfigPlaceholder(uptimeRobotConfig)) {
+  if (uptimeRobotConfig && !validOwner(UPTIMEROBOT_TEAM_ID)) {
+    console.error('[Nightlamp] UptimeRobot monitor disabled: configured team ID does not exist');
+  } else if (uptimeRobotConfig && !isUptimeRobotConfigPlaceholder(uptimeRobotConfig)) {
     const cronExpr = `*/${POLL_INTERVAL_SEC} * * * * *`;
     cron.schedule(cronExpr, async () => {
       console.log(`[Nightlamp] Running UptimeRobot check (every ${POLL_INTERVAL_SEC}s)...`);
       try {
-        const result = await runUptimeRobotCheck(db, uptimeRobotConfig, uptimeRobotMonitorCache, PLAYBOOK_DIR);
+        const result = await runUptimeRobotCheck(db, uptimeRobotConfig, uptimeRobotMonitorCache, PLAYBOOK_DIR, UPTIMEROBOT_TEAM_ID);
         uptimeRobotMonitorCache = result.monitors;
         console.log(`[Nightlamp] UptimeRobot check complete: ${result.status} - ${result.summary}`);
         if (result.failureEvents > 0) {
