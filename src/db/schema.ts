@@ -3,7 +3,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { up as applyTenantIsolationMigration } from './migrations/008-tenant-isolation';
 import { up as applyMonitoredAppsMigration } from './migrations/009-monitored-apps';
-import { up as applyPersonalOwnershipMigration } from './migrations/010-personal-ownership';
+import { up as applyAnalyticsEventsMigration } from './migrations/010-analytics-events';
+import { up as applyPersonalOwnershipMigration } from './migrations/011-personal-ownership';
 
 export interface NightlampDb {
   db: SqlJsDatabase;
@@ -558,6 +559,7 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
 
   applyTenantIsolationMigration(db);
   applyMonitoredAppsMigration(db);
+  applyAnalyticsEventsMigration(db);
   applyPersonalOwnershipMigration(db);
 
   return db;
