@@ -2,7 +2,9 @@ import { Database } from 'sql.js';
 import { IncomingMessage, ServerResponse } from 'http';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
-import type { AuthContext } from '../api/auth';
+import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership } from '../api/auth';
+
+const TEAM_ADMIN_ROLES: TeamRole[] = ['owner', 'admin'];
 
 export class TeamApi {
   constructor(private db: Database) {}
@@ -13,7 +15,7 @@ export class TeamApi {
 
     if (path === '/api/teams' || path === '/api/teams/') {
       if (req.method === 'GET') { this.handleListTeams(res, auth); return true; }
-      if (req.method === 'POST') { this.handleCreateTeam(req, res); return true; }
+      if (req.method === 'POST') { this.handleCreateTeam(req, res, auth); return true; }
       res.writeHead(405);
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return true;
@@ -26,8 +28,8 @@ export class TeamApi {
 
       if (!subPath) {
         if (req.method === 'GET') { this.handleGetTeam(teamId, res); return true; }
-        if (req.method === 'PATCH') { this.handleUpdateTeam(req, teamId, res); return true; }
-        if (req.method === 'DELETE') { this.handleDeleteTeam(teamId, res); return true; }
+        if (req.method === 'PATCH') { this.handleUpdateTeam(req, teamId, res, auth); return true; }
+        if (req.method === 'DELETE') { this.handleDeleteTeam(teamId, res, auth); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
@@ -35,7 +37,7 @@ export class TeamApi {
 
       if (subPath === '/members') {
         if (req.method === 'GET') { this.handleListMembers(teamId, res); return true; }
-        if (req.method === 'POST') { this.handleAddMember(req, teamId, res); return true; }
+        if (req.method === 'POST') { this.handleAddMember(req, teamId, res, auth); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
@@ -44,8 +46,8 @@ export class TeamApi {
       const memberMatch = subPath.match(/^\/members\/([a-zA-Z0-9-]+)$/);
       if (memberMatch) {
         const userId = memberMatch[1];
-        if (req.method === 'PATCH') { this.handleUpdateMemberRole(req, teamId, userId, res); return true; }
-        if (req.method === 'DELETE') { this.handleRemoveMember(teamId, userId, res); return true; }
+        if (req.method === 'PATCH') { this.handleUpdateMemberRole(req, teamId, userId, res, auth); return true; }
+        if (req.method === 'DELETE') { this.handleRemoveMember(teamId, userId, res, auth); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
@@ -60,7 +62,7 @@ export class TeamApi {
       }
 
       if (subPath === '/invitations') {
-        if (req.method === 'POST') { this.handleCreateInvitation(req, teamId, res); return true; }
+        if (req.method === 'POST') { this.handleCreateInvitation(req, teamId, res, auth); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
@@ -92,6 +94,32 @@ export class TeamApi {
     return false;
   }
 
+  private resolveTeamRole(auth: AuthContext | null | undefined, teamId: string): TeamRole | null {
+    if (!auth) return null;
+    try {
+      return assertTeamMembership(this.db, auth.userId, teamId);
+    } catch (err: any) {
+      if (err instanceof ApiAuthError) return null;
+      throw err;
+    }
+  }
+
+  private requireTeamAdmin(auth: AuthContext | null | undefined, teamId: string, res: ServerResponse): TeamRole | null {
+    const role = this.resolveTeamRole(auth, teamId);
+    if (!role || !TEAM_ADMIN_ROLES.includes(role)) {
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: 'This operation requires elevated permissions', code: 'FORBIDDEN' }));
+      return null;
+    }
+    return role;
+  }
+
+  private isTeamOwner(auth: AuthContext | null | undefined, teamId: string): boolean {
+    const owner = this.db.exec('SELECT owner_id FROM teams WHERE id = ?', [teamId]);
+    if (owner.length === 0 || owner[0].values.length === 0) return false;
+    return owner[0].values[0][0] === auth?.userId;
+  }
+
   private handleListTeams(res: ServerResponse, auth?: AuthContext | null): void {
     const result = auth
       ? this.db.exec(
@@ -114,7 +142,7 @@ export class TeamApi {
     res.end(JSON.stringify({ teams, count: teams.length }));
   }
 
-  private handleCreateTeam(req: IncomingMessage, res: ServerResponse): void {
+  private handleCreateTeam(req: IncomingMessage, res: ServerResponse, auth?: AuthContext | null): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
@@ -123,6 +151,11 @@ export class TeamApi {
         if (!name || !slug || !ownerId) {
           res.writeHead(400);
           res.end(JSON.stringify({ error: 'name, slug, and ownerId are required' }));
+          return;
+        }
+        if (auth && ownerId !== auth.userId) {
+          res.writeHead(403);
+          res.end(JSON.stringify({ error: 'You can only create a team that you own', code: 'FORBIDDEN' }));
           return;
         }
         const id = uuidv4();
@@ -179,11 +212,12 @@ export class TeamApi {
     }));
   }
 
-  private handleUpdateTeam(req: IncomingMessage, teamId: string, res: ServerResponse): void {
+  private handleUpdateTeam(req: IncomingMessage, teamId: string, res: ServerResponse, auth?: AuthContext | null): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {
+        if (!this.requireTeamAdmin(auth, teamId, res)) return;
         const { name, slug, plan } = JSON.parse(body);
         const updates: string[] = [];
         const params: any[] = [];
@@ -209,7 +243,8 @@ export class TeamApi {
     });
   }
 
-  private handleDeleteTeam(teamId: string, res: ServerResponse): void {
+  private handleDeleteTeam(teamId: string, res: ServerResponse, auth?: AuthContext | null): void {
+    if (!this.requireTeamAdmin(auth, teamId, res)) return;
     this.db.run('DELETE FROM memberships WHERE team_id = ?', [teamId]);
     this.db.run('DELETE FROM invitations WHERE team_id = ?', [teamId]);
     this.db.run('DELETE FROM team_workspaces WHERE team_id = ?', [teamId]);
@@ -232,11 +267,12 @@ export class TeamApi {
     res.end(JSON.stringify({ members, count: members.length }));
   }
 
-  private handleAddMember(req: IncomingMessage, teamId: string, res: ServerResponse): void {
+  private handleAddMember(req: IncomingMessage, teamId: string, res: ServerResponse, auth?: AuthContext | null): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {
+        if (!this.requireTeamAdmin(auth, teamId, res)) return;
         const { userId, role } = JSON.parse(body);
         if (!userId) {
           res.writeHead(400);
@@ -247,6 +283,11 @@ export class TeamApi {
         if (!['admin', 'member', 'owner'].includes(memberRole)) {
           res.writeHead(400);
           res.end(JSON.stringify({ error: 'role must be owner, admin, or member' }));
+          return;
+        }
+        if (memberRole === 'owner' && !this.isTeamOwner(auth, teamId)) {
+          res.writeHead(403);
+          res.end(JSON.stringify({ error: 'Only the team owner can grant the owner role', code: 'FORBIDDEN' }));
           return;
         }
         const teamExists = this.db.exec('SELECT id FROM teams WHERE id = ?', [teamId]);
@@ -273,11 +314,12 @@ export class TeamApi {
     });
   }
 
-  private handleUpdateMemberRole(req: IncomingMessage, teamId: string, userId: string, res: ServerResponse): void {
+  private handleUpdateMemberRole(req: IncomingMessage, teamId: string, userId: string, res: ServerResponse, auth?: AuthContext | null): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {
+        if (!this.requireTeamAdmin(auth, teamId, res)) return;
         const { role } = JSON.parse(body);
         if (!role) {
           res.writeHead(400);
@@ -287,6 +329,21 @@ export class TeamApi {
         if (!['admin', 'member', 'owner'].includes(role)) {
           res.writeHead(400);
           res.end(JSON.stringify({ error: 'role must be owner, admin, or member' }));
+          return;
+        }
+        const existing = this.db.exec(
+          'SELECT role FROM memberships WHERE team_id = ? AND user_id = ?',
+          [teamId, userId]
+        );
+        if (existing.length === 0 || existing[0].values.length === 0) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: 'Member not found' }));
+          return;
+        }
+        const currentRole = existing[0].values[0][0];
+        if ((role === 'owner' || currentRole === 'owner') && !this.isTeamOwner(auth, teamId)) {
+          res.writeHead(403);
+          res.end(JSON.stringify({ error: 'Only the team owner can change the owner role', code: 'FORBIDDEN' }));
           return;
         }
         this.db.run(
@@ -301,7 +358,22 @@ export class TeamApi {
     });
   }
 
-  private handleRemoveMember(teamId: string, userId: string, res: ServerResponse): void {
+  private handleRemoveMember(teamId: string, userId: string, res: ServerResponse, auth?: AuthContext | null): void {
+    if (!this.requireTeamAdmin(auth, teamId, res)) return;
+    const existing = this.db.exec(
+      'SELECT role FROM memberships WHERE team_id = ? AND user_id = ?',
+      [teamId, userId]
+    );
+    if (existing.length === 0 || existing[0].values.length === 0) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'Member not found' }));
+      return;
+    }
+    if (existing[0].values[0][0] === 'owner' && !this.isTeamOwner(auth, teamId)) {
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: 'Only the team owner can change the owner role', code: 'FORBIDDEN' }));
+      return;
+    }
     this.db.run('DELETE FROM memberships WHERE team_id = ? AND user_id = ?', [teamId, userId]);
     res.end(JSON.stringify({ success: true }));
   }
@@ -364,15 +436,27 @@ export class TeamApi {
     });
   }
 
-  private handleCreateInvitation(req: IncomingMessage, teamId: string, res: ServerResponse): void {
+  private handleCreateInvitation(req: IncomingMessage, teamId: string, res: ServerResponse, auth?: AuthContext | null): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {
+        if (!this.requireTeamAdmin(auth, teamId, res)) return;
         const { email, role } = JSON.parse(body);
         if (!email) {
           res.writeHead(400);
           res.end(JSON.stringify({ error: 'email is required' }));
+          return;
+        }
+        const inviteRole = role || 'member';
+        if (!['admin', 'member', 'owner'].includes(inviteRole)) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'role must be owner, admin, or member' }));
+          return;
+        }
+        if (inviteRole === 'owner' && !this.isTeamOwner(auth, teamId)) {
+          res.writeHead(403);
+          res.end(JSON.stringify({ error: 'Only the team owner can grant the owner role', code: 'FORBIDDEN' }));
           return;
         }
         const teamExists = this.db.exec('SELECT id FROM teams WHERE id = ?', [teamId]);
@@ -386,9 +470,9 @@ export class TeamApi {
         const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
         this.db.run(
           'INSERT INTO invitations (id, team_id, email, role, token, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
-          [id, teamId, email, role || 'member', token, expiresAt]
+          [id, teamId, email, inviteRole, token, expiresAt]
         );
-        res.end(JSON.stringify({ success: true, id, teamId, email, role: role || 'member', token, expiresAt }));
+        res.end(JSON.stringify({ success: true, id, teamId, email, role: inviteRole, token, expiresAt }));
       } catch (err: any) {
         res.writeHead(400);
         res.end(JSON.stringify({ error: err.message }));

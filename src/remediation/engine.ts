@@ -207,18 +207,42 @@ export function listRuns(params: { status?: string; playbook_entry_id?: string; 
 export async function approveRun(id: string, teamId: string | null = null): Promise<any> {
   const db = getDb();
   const scope = tenantFilter('team_id', teamId);
-  db.run(`UPDATE remediation_runs SET status = 'running', started_at = datetime('now') WHERE id = ? AND ${scope.clause}`, [id, ...scope.params]);
   const run = db.exec(`SELECT * FROM remediation_runs WHERE id = ? AND ${scope.clause}`, [id, ...scope.params]);
   if (!run.length || !run[0].values.length) throw new Error('Run not found');
   const r = run[0].values[0];
   const actionName = r[2] as string;
   const handler = getAction(actionName);
-  if (!handler) throw new Error(`No handler for action: ${actionName}`);
-  const failure = { failure_type: r[2] as string, affected_resource: r[1] as string, description: r[6] as string };
-  const result = await handler(failure);
-  const status = result.success ? 'success' : 'failed';
-  db.run(`UPDATE remediation_runs SET status = ?, output = ?, completed_at = datetime('now') WHERE id = ?`, [status, result.output, id]);
-  return { id, status, output: result.output };
+  if (!handler) {
+    const error = `No handler for action: ${actionName}`;
+    db.run(
+      `UPDATE remediation_runs SET status = 'failed', error = ?, completed_at = datetime('now') WHERE id = ? AND ${scope.clause}`,
+      [error, id, ...scope.params],
+    );
+    throw new Error(error);
+  }
+
+  db.run(
+    `UPDATE remediation_runs SET status = 'running', started_at = datetime('now') WHERE id = ? AND ${scope.clause}`,
+    [id, ...scope.params],
+  );
+
+  try {
+    const failure = { failure_type: actionName, affected_resource: r[1] as string, description: r[6] as string };
+    const result = await handler(failure);
+    const status = result.success ? 'success' : 'failed';
+    db.run(
+      `UPDATE remediation_runs SET status = ?, output = ?, error = ?, completed_at = datetime('now') WHERE id = ?`,
+      [status, result.output, result.success ? null : result.output, id],
+    );
+    return { id, status, output: result.output };
+  } catch (err: any) {
+    const error = err instanceof Error ? err.message : String(err);
+    db.run(
+      `UPDATE remediation_runs SET status = 'failed', error = ?, completed_at = datetime('now') WHERE id = ? AND ${scope.clause}`,
+      [error, id, ...scope.params],
+    );
+    throw new Error(error);
+  }
 }
 
 export function rejectRun(id: string, teamId: string | null = null): any {

@@ -1,0 +1,157 @@
+name: Deploy Flyby to Render
+
+on:
+  schedule:
+    # GitHub's scheduler drops most cron ticks on this account (2 scheduled
+    # runs in the 10 hours after 2026-11-17T02:30Z, with no skipped runs and
+    # no minutes overage), so this stays a best-effort trigger as well and the
+    # board can restore native auto-deploy by re-authorizing the Render GitHub
+    # App for samuel2064/Flyby (TIR-410). A tick every 5 minutes raises the
+    # chance that one lands soon after a Flyby merge.
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: deploy-flyby
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy Flyby when main changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      FLYBY_REPO: samuel2064/Flyby
+      FLYBY_WEB_SERVICE_ID: srv-dapocsugekts73ek60t0
+      FLYBY_API_SERVICE_ID: srv-dak58lm1egvs73957l50
+    steps:
+      - name: Resolve Flyby main commit
+        run: |
+          set -euo pipefail
+          sha=$(curl -sS "https://api.github.com/repos/$FLYBY_REPO/commits/main" | jq -r '.sha')
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve the Flyby main commit"; exit 1; }
+          echo "FLYBY_SHA=$sha" >> "$GITHUB_ENV"
+          echo "Flyby main commit: $sha"
+
+      - name: Load the last deployed commit
+        id: state
+        uses: actions/cache/restore@v4
+        with:
+          path: .flyby-deploy-state
+          key: flyby-deploy-state-${{ github.run_id }}
+          restore-keys: |
+            flyby-deploy-state-
+
+      - name: Compare with the last deployed commit
+        id: compare
+        run: |
+          set -euo pipefail
+          deployed='none'
+          if [ -f .flyby-deploy-state ]; then deployed=$(tr -d '\n' < .flyby-deploy-state); fi
+          echo "last deployed commit: $deployed"
+          if [ "$deployed" = "$FLYBY_SHA" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Flyby main is already deployed"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check Flyby CI on main
+        id: ci
+        if: steps.compare.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          runs=$(curl -sS "https://api.github.com/repos/$FLYBY_REPO/actions/workflows/ci.yml/runs?branch=main&per_page=1")
+          conclusion=$(echo "$runs" | jq -r '.workflow_runs[0].conclusion // "none"')
+          head_sha=$(echo "$runs" | jq -r '.workflow_runs[0].head_sha // "none"')
+          echo "latest Flyby CI run: conclusion=$conclusion head=$head_sha"
+          if [ "$head_sha" != "$FLYBY_SHA" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::the latest CI run does not cover the Flyby main tip yet"
+          elif [ "$conclusion" != "success" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::the latest Flyby CI run on main is $conclusion; not deploying"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger Render deploys
+        if: steps.ci.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          test -n "$RENDER_API_KEY" || { echo "::error::RENDER_API_KEY is missing"; exit 1; }
+          for sid in "$FLYBY_WEB_SERVICE_ID" "$FLYBY_API_SERVICE_ID"; do
+            code=$(curl -sS -o /tmp/deploy.json -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              -H 'Content-Type: application/json' \
+              -d '{}' \
+              "https://api.render.com/v1/services/$sid/deploys")
+            echo "$sid deploy -> HTTP $code"
+            jq -c '{deploy: .deploy.id, status: .deploy.status}' /tmp/deploy.json 2>/dev/null || cat /tmp/deploy.json
+            case "$code" in
+              200|201|202) ;;
+              *) echo "::error::Render rejected the deploy for $sid"; exit 1 ;;
+            esac
+          done
+
+      - name: Wait for the deploys to go live
+        if: steps.ci.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 900))
+          for sid in "$FLYBY_WEB_SERVICE_ID" "$FLYBY_API_SERVICE_ID"; do
+            while true; do
+              status=$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" \
+                "https://api.render.com/v1/services/$sid/deploys?limit=1" \
+                | jq -r '.[0].deploy.status // "unknown"')
+              echo "$sid deploy status: $status"
+              case "$status" in
+                live) break ;;
+                failed|deactivated|canceled) echo "::error::deploy for $sid ended as $status"; exit 1 ;;
+              esac
+              if [ $SECONDS -ge $deadline ]; then echo "::error::deploy for $sid did not go live in time"; exit 1; fi
+              sleep 20
+            done
+          done
+
+      - name: Verify production
+        if: steps.ci.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          for url in \
+            https://flyby-api.onrender.com/api/health \
+            https://flyby-api.onrender.com/api/vapid-public-key \
+            https://flyby-web.onrender.com/ \
+            https://flyby-web.onrender.com/manifest.webmanifest \
+            https://flyby-web.onrender.com/icon-192.png \
+            https://flyby-web.onrender.com/icon-512.png \
+            https://flyby-web.onrender.com/icon-maskable-512.png \
+            https://flyby-web.onrender.com/apple-touch-icon.png
+          do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 30 --max-time 180 --retry 3 --retry-delay 15 --retry-all-errors "$url")
+            if [ "$code" != "200" ]; then
+              echo "::error::production check failed for $url with HTTP $code"
+              exit 1
+            fi
+            echo "OK $url"
+          done
+
+      - name: Record the deployed commit
+        if: steps.ci.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$FLYBY_SHA" > .flyby-deploy-state
+          echo "recorded FLYBY_SHA=$FLYBY_SHA"
+
+      - name: Store the deployed commit
+        if: steps.ci.outputs.ready == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .flyby-deploy-state
+          key: flyby-deploy-state-${{ github.run_id }}-${{ github.run_attempt }}
