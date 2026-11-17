@@ -3,20 +3,15 @@
 import React, { useState } from 'react'
 import { X, Check, Loader2, AlertCircle, Wifi, Server, Globe, Database, Github, Zap } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Switch } from '@/components/ui/switch'
 import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { trpc } from '@/lib/trpc'
-
-// TODO: Backend API for creating monitors is not yet implemented.
-// When available, add a `create` mutation to monitorsRouter and backend service.
-// Expected backend endpoint: POST /api/monitors with body { name, url, platform, checkType, checkUrl, interval, alertChannels }
 
 type WizardStep = 'details' | 'platform' | 'check' | 'alerts' | 'test' | 'complete'
 
@@ -90,18 +85,41 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
   const [errors, setErrors] = useState<Partial<Record<keyof WizardData, string>>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [testResult, setTestResult] = useState<'idle' | 'running' | 'success' | 'error'>('idle')
+  const [testDetails, setTestDetails] = useState<{ statusCode?: number; latencyMs?: number; error?: string } | null>(null)
 
-  // TODO: Replace with real tRPC mutation when backend supports monitor creation
-  // const createMonitor = trpc.monitors.create.useMutation({
-  //   onSuccess: () => {
-  //     showToast('App added successfully', `${data.appName} is now being monitored`)
-  //     onSuccess?.()
-  //     resetWizard()
-  //   },
-  //   onError: (err) => {
-  //     showToast('Failed to add app', err.message, 'destructive')
-  //   },
-  // })
+  const createMonitor = trpc.monitors.create.useMutation({
+    onSuccess: () => {
+      showToast('App added successfully', `${data.appName} is now being monitored`)
+      onSuccess?.()
+      resetWizard()
+    },
+    onError: (err) => {
+      showToast('Failed to add app', err.message, 'destructive')
+    },
+  })
+
+  const testCheckMutation = trpc.monitors.testCheck.useMutation({
+    onSuccess: (result) => {
+      setTestResult(result.success ? 'success' : 'error')
+      setTestDetails({
+        statusCode: result.statusCode,
+        latencyMs: result.latencyMs,
+        error: result.error,
+      })
+      if (result.success) {
+        showToast('Test check passed', `Status: ${result.statusCode}, Latency: ${result.latencyMs}ms`)
+      } else {
+        showToast('Test check failed', result.error || 'Unknown error', 'destructive')
+        setErrors({ checkUrl: result.error || 'Check failed. Verify the URL and try again.' })
+      }
+    },
+    onError: (err) => {
+      setTestResult('error')
+      setTestDetails({ error: err.message })
+      showToast('Test check failed', err.message, 'destructive')
+      setErrors({ checkUrl: err.message })
+    },
+  })
 
   const showToast = (title: string, description: string, variant?: 'default' | 'destructive') => {
     if (variant === 'destructive') {
@@ -163,46 +181,13 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
   const handleTestCheck = async () => {
     setTestResult('running')
     setErrors({})
+    setTestDetails(null)
 
-    // TODO: Replace with real backend test check endpoint when available
-    // Expected: POST /api/checks/test with body { url: data.checkUrl, type: data.checkType }
-    // const result = await trpc.monitors.testCheck.mutate({ url: data.checkUrl, type: data.checkType })
-
-    // Mock implementation for development - attempt real fetch to check URL
-    try {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 10000)
-      
-      const response = await fetch(data.checkUrl, {
-        method: 'GET',
-        signal: controller.signal,
-        mode: 'cors', // Will fail for non-CORS endpoints, which is expected
-      })
-      
-      clearTimeout(timeoutId)
-      
-      const success = response.ok
-      setTestResult(success ? 'success' : 'error')
-
-      if (success) {
-        showToast('Test check passed', `Your monitoring check returned ${response.status} ${response.statusText}`)
-      } else {
-        showToast('Test check failed', `Endpoint returned ${response.status} ${response.statusText}`, 'destructive')
-        setErrors({ checkUrl: `Endpoint returned ${response.status}. Check the URL and network access.` })
-      }
-    } catch (err) {
-      // Network error or CORS error - fall back to mock
-      await new Promise((resolve) => setTimeout(resolve, 1000))
-      const success = Math.random() > 0.3
-      setTestResult(success ? 'success' : 'error')
-
-      if (success) {
-        showToast('Test check passed (simulated)', 'Your monitoring check is working correctly (demo mode)')
-      } else {
-        showToast('Test check failed', 'Could not reach the endpoint. Please verify the URL and try again.', 'destructive')
-        setErrors({ checkUrl: 'Failed to connect. Check the URL and network access.' })
-      }
-    }
+    await testCheckMutation.mutateAsync({
+      url: data.checkUrl,
+      type: data.checkType,
+      checkType: data.checkType,
+    })
   }
 
   const handleSubmit = async () => {
@@ -211,26 +196,21 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
     setIsSubmitting(true)
     setErrors({})
 
-    // TODO: Replace with real tRPC mutation when backend supports monitor creation
-    // await createMonitor.mutateAsync({
-    //   name: data.appName,
-    //   url: data.appUrl,
-    //   platform: data.platform,
-    //   checkType: data.checkType,
-    //   checkUrl: data.checkUrl,
-    //   interval: data.checkInterval,
-    //   alertChannels: data.alertChannels,
-    //   alertEmail: data.alertEmail,
-    // })
+    const checkConfig = {
+      type: data.checkType,
+      url: data.checkUrl,
+      interval: data.checkInterval,
+      platform: data.platform,
+      alertChannels: data.alertChannels,
+      alertEmail: data.alertEmail,
+    }
 
-    // Mock implementation for development
-    await new Promise((resolve) => setTimeout(resolve, 1500))
-
-    setIsSubmitting(false)
-    setStep('complete')
-
-    showToast('App added successfully', `${data.appName} is now being monitored (demo mode)`)
-    onSuccess?.()
+    await createMonitor.mutateAsync({
+      source: 'wizard',
+      name: data.appName,
+      config: checkConfig,
+      enabled: true,
+    })
   }
 
   const resetWizard = () => {
@@ -333,7 +313,7 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
             <AlertsStep data={data} setData={setData} errors={errors} />
           )}
           {step === 'test' && (
-            <TestStep data={data} testResult={testResult} onTest={handleTestCheck} errors={errors} />
+            <TestStep data={data} testResult={testResult} onTest={handleTestCheck} errors={errors} testDetails={testDetails} isTesting={testCheckMutation.isPending} />
           )}
           {step === 'complete' && (
             <CompleteStep onClose={() => { resetWizard(); onClose(); }} />
@@ -405,7 +385,7 @@ function DetailsStep({ data, setData, errors }: { data: WizardData; setData: Rea
             value={data.appName}
             onChange={(e) => setData({ ...data, appName: e.target.value })}
             placeholder="e.g., My Production App"
-            className={errors.appName ? 'border-destructive focus-visible:ring-destructive' : undefined}
+            className={cn(errors.appName ? 'border-destructive focus-visible:ring-destructive' : '', 'text-base h-11')}
             aria-invalid={!!errors.appName}
             aria-describedby={errors.appName ? 'appName-error' : undefined}
           />
@@ -424,7 +404,7 @@ function DetailsStep({ data, setData, errors }: { data: WizardData; setData: Rea
             value={data.appUrl}
             onChange={(e) => setData({ ...data, appUrl: e.target.value })}
             placeholder="https://myapp.example.com"
-            className={errors.appUrl ? 'border-destructive focus-visible:ring-destructive' : undefined}
+            className={cn(errors.appUrl ? 'border-destructive focus-visible:ring-destructive' : '', 'text-base h-11')}
             aria-invalid={!!errors.appUrl}
             aria-describedby={errors.appUrl ? 'appUrl-error' : undefined}
           />
@@ -530,7 +510,7 @@ function CheckStep({ data, setData, errors }: { data: WizardData; setData: React
             value={data.checkUrl}
             onChange={(e) => setData({ ...data, checkUrl: e.target.value })}
             placeholder={data.checkType === 'tcp' ? 'example.com:443' : 'https://myapp.example.com/health'}
-            className={errors.checkUrl ? 'border-destructive focus-visible:ring-destructive' : undefined}
+            className={cn(errors.checkUrl ? 'border-destructive focus-visible:ring-destructive' : '', 'text-base h-11')}
             aria-invalid={!!errors.checkUrl}
             aria-describedby={errors.checkUrl ? 'checkUrl-error' : undefined}
           />
@@ -555,7 +535,7 @@ function CheckStep({ data, setData, errors }: { data: WizardData; setData: React
             max="3600"
             value={data.checkInterval}
             onChange={(e) => setData({ ...data, checkInterval: parseInt(e.target.value) || 10 })}
-            className={errors.checkInterval ? 'border-destructive focus-visible:ring-destructive' : undefined}
+            className={cn(errors.checkInterval ? 'border-destructive focus-visible:ring-destructive' : '', 'text-base h-11')}
             aria-invalid={!!errors.checkInterval}
           />
           {errors.checkInterval && (
@@ -640,7 +620,7 @@ function AlertsStep({ data, setData, errors }: { data: WizardData; setData: Reac
               value={data.alertEmail}
               onChange={(e) => setData({ ...data, alertEmail: e.target.value })}
               placeholder="alerts@example.com"
-              className={errors.alertEmail ? 'border-destructive focus-visible:ring-destructive' : undefined}
+              className={cn(errors.alertEmail ? 'border-destructive focus-visible:ring-destructive' : '', 'text-base h-11')}
               aria-invalid={!!errors.alertEmail}
               aria-describedby={errors.alertEmail ? 'alertEmail-error' : undefined}
             />
@@ -656,7 +636,7 @@ function AlertsStep({ data, setData, errors }: { data: WizardData; setData: Reac
   )
 }
 
-function TestStep({ data, testResult, onTest, errors }: { data: WizardData; testResult: 'idle' | 'running' | 'success' | 'error'; onTest: () => void; errors: Partial<Record<keyof WizardData, string>> }) {
+function TestStep({ data, testResult, onTest, errors, testDetails, isTesting }: { data: WizardData; testResult: 'idle' | 'running' | 'success' | 'error'; onTest: () => void; errors: Partial<Record<keyof WizardData, string>>; testDetails: { statusCode?: number; latencyMs?: number; error?: string } | null; isTesting: boolean }) {
   return (
     <div className="space-y-6">
       <div>
@@ -702,11 +682,11 @@ function TestStep({ data, testResult, onTest, errors }: { data: WizardData; test
       <div className="space-y-4">
         <Button
           onClick={onTest}
-          disabled={testResult === 'running'}
+          disabled={testResult === 'running' || isTesting}
           className="w-full sm:w-auto"
           size="lg"
         >
-          {testResult === 'running' ? (
+          {testResult === 'running' || isTesting ? (
             <>
               <Loader2 className="size-4 mr-2 animate-spin" />
               Running test check...
@@ -731,6 +711,28 @@ function TestStep({ data, testResult, onTest, errors }: { data: WizardData; test
 
         {testResult === 'error' && errors.checkUrl && (
           <p className="text-sm text-destructive" role="alert">{errors.checkUrl}</p>
+        )}
+
+        {testDetails && (
+          <Card className="border-border bg-surface-secondary/50">
+            <CardContent className="pt-4 pb-2 space-y-2">
+              <p className="text-sm font-medium">Test Result Details</p>
+              <div className="grid gap-2 sm:grid-cols-3 text-sm">
+                <div>
+                  <p className="text-muted-foreground">Status Code</p>
+                  <p className="font-medium">{testDetails.statusCode ?? 'N/A'}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Latency</p>
+                  <p className="font-medium">{testDetails.latencyMs !== undefined ? `${testDetails.latencyMs}ms` : 'N/A'}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Error</p>
+                  <p className="font-medium text-destructive">{testDetails.error ?? 'None'}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         )}
 
         {testResult !== 'idle' && testResult !== 'running' && (
