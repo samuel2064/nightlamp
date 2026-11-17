@@ -1,4 +1,5 @@
 const fs = require('fs');
+const { execFileSync } = require('child_process');
 
 const renderApi = process.env.RENDER_API || 'https://api.render.com/v1';
 const renderKey = process.env.RENDER_API_KEY;
@@ -108,6 +109,17 @@ function errorCodes(response) {
   return codes;
 }
 
+function readPreviousSessionId() {
+  try {
+    const output = execFileSync('git', ['show', 'origin/ops/render-auth-report:reports/signed-in-verification.json'], { encoding: 'utf8' });
+    const previous = JSON.parse(output);
+    const id = previous && previous.identity && previous.identity.sessionId;
+    return typeof id === 'string' && id ? id : null;
+  } catch (error) {
+    return null;
+  }
+}
+
 async function run() {
   const envVars = await renderRequest('GET', `/services/${frontendId}/env-vars`);
   log(`GET the frontend environment variables -> HTTP ${envVars.status}`);
@@ -195,6 +207,7 @@ async function run() {
     return;
   }
   report.identity.tokenMinted = true;
+  report.identity.sessionId = sessionId;
   let claims = {};
   try {
     claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
@@ -249,6 +262,12 @@ async function run() {
 }
 
 async function cleanup() {
+  const previous = readPreviousSessionId();
+  if (previous) {
+    const response = await clerkRequest('POST', `/sessions/${previous}/revoke`, {});
+    log(`POST revoke the session published by the previous run -> HTTP ${response.status}`);
+    report.identity.previousSessionRevoked = response.status === 204 || response.status === 200;
+  }
   if (sessionId) {
     const revoked = await clerkRequest('POST', `/sessions/${sessionId}/revoke`, {});
     log(`POST revoke the verification session -> HTTP ${revoked.status}`);
