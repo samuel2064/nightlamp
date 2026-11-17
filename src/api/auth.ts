@@ -238,6 +238,9 @@ function validateClaims(claims: Record<string, any>, config: JwtVerificationConf
   };
 }
 
+/**
+ * @deprecated Use verifyAccessTokenAsync instead. This synchronous version does not support JWKS fallback.
+ */
 export function verifyAccessToken(token: string): VerifiedTokenClaims {
   const parsed = parseToken(token);
   const config = getVerificationConfig();
@@ -338,6 +341,9 @@ function buildAuthContext(db: Database, claims: VerifiedTokenClaims, token: stri
   };
 }
 
+/**
+ * @deprecated Use authenticateRequestAsync instead. This synchronous version does not support JWKS fallback.
+ */
 export function authenticateRequest(db: Database, req: IncomingMessage): AuthContext {
   const token = extractBearerToken(req.headers);
   if (!token) {
