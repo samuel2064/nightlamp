@@ -20,7 +20,9 @@ export type TenantTable =
   | 'onboarding_sessions'
   | 'x_scheduled_posts'
   | 'usage_records'
-  | 'webhook_events';
+  | 'webhook_events'
+  | 'monitored_apps'
+  | 'health_snapshots';
 
 export function tenantFilter(column: string, teamId: string | null): TenantFilter {
   if (teamId === null) {

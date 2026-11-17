@@ -5,6 +5,7 @@ import { ChannelType, ChannelConfig } from '../alerting/channels';
 import { processNotification, sendDirectNotification, getChannelType, getChannelConfig, checkRateLimit, logDelivery, markDelivered } from './service';
 import { AuthContext } from '../api/auth';
 import { tenantFilter, rowBelongsToTenant } from '../api/tenant';
+import { isChannelAttachedToApp } from '../apps/attachment';
 
 export class NotificationApi {
   private validTypes: Set<string> = new Set(['slack-webhook', 'email-smtp', 'in-app-websocket']);
@@ -133,6 +134,11 @@ export class NotificationApi {
     if (!rowBelongsToTenant(this.db, 'alert_channels', channelId, teamId)) {
       res.writeHead(404);
       res.end(JSON.stringify({ error: 'Channel not found' }));
+      return;
+    }
+    if (isChannelAttachedToApp(this.db, channelId)) {
+      res.writeHead(409);
+      res.end(JSON.stringify({ error: 'Channel is attached to an application' }));
       return;
     }
     this.db.run('DELETE FROM alert_rules WHERE channel_id = ?', [channelId]);
