@@ -788,5 +788,4 @@ async function main() {
   }
 }
 
-main();#   T r i g g e r   c o n t r o l l e d   i d e n t i t y   v e r i f i c a t i o n  
- 
+main();
