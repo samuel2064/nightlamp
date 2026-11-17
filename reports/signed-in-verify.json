@@ -1,6 +1,6 @@
 {
-  "run": "44020335960",
-  "startedAt": "2026-11-17T04:54:16.714Z",
+  "run": "44020841265",
+  "startedAt": "2026-11-17T04:59:02.876Z",
   "backendUrl": "https://nightlamp-api.onrender.com",
   "probes": [],
   "steps": [
@@ -22,35 +22,39 @@
     },
     {
       "name": "clerk-user-create-attempt",
-      "detail": "version=2025-04-10 body=email_address -> 400 request_body_invalid Request body invalid"
+      "detail": "version=2025-04-10 body=email_address email=noc263-verify+44020841265@nightlamp.dev -> 400 request_body_invalid The request body is invalid. Please consult the API documentation for more information."
     },
     {
       "name": "clerk-user-create-attempt",
-      "detail": "version=2025-04-10 body=email_address+skip_email_verification -> 400 request_body_invalid Request body invalid"
+      "detail": "version=2025-04-10 body=email_address+skip_email_verification email=noc263-verify+44020841265@nightlamp.dev -> 400 request_body_invalid The request body is invalid. Please consult the API documentation for more information."
     },
     {
       "name": "clerk-user-create-attempt",
-      "detail": "version=2025-04-10 body=email_address+first_name+last_name -> 400 request_body_invalid Request body invalid"
+      "detail": "version=2025-04-10 body=email_address+first_name+last_name email=noc263-verify+44020841265@nightlamp.dev -> 400 request_body_invalid The request body is invalid. Please consult the API documentation for more information."
     },
     {
       "name": "clerk-user-create-attempt",
-      "detail": "version=2025-04-10 body=email_address+first_name+last_name+skip_email_verification -> 400 request_body_invalid Request body invalid"
+      "detail": "version=2025-04-10 body=email_address+first_name+last_name+skip_email_verification email=noc263-verify+44020841265@nightlamp.dev -> 400 request_body_invalid The request body is invalid. Please consult the API documentation for more information."
     },
     {
       "name": "clerk-user-create-attempt",
-      "detail": "version=default body=email_address -> 400 request_body_invalid Request body invalid"
+      "detail": "version=default body=email_address email=noc263-verify+44020841265@nightlamp.dev -> 400 request_body_invalid The request body is invalid. Please consult the API documentation for more information."
     },
     {
       "name": "clerk-user-create-attempt",
-      "detail": "version=default body=email_address+skip_email_verification -> 400 request_body_invalid Request body invalid"
+      "detail": "version=default body=email_address+skip_email_verification email=noc263-verify+44020841265@nightlamp.dev -> 400 request_body_invalid The request body is invalid. Please consult the API documentation for more information."
     },
     {
       "name": "clerk-user-create-attempt",
-      "detail": "version=default body=email_address+first_name+last_name -> 400 request_body_invalid Request body invalid"
+      "detail": "version=default body=email_address+first_name+last_name email=noc263-verify+44020841265@nightlamp.dev -> 400 request_body_invalid The request body is invalid. Please consult the API documentation for more information."
     },
     {
       "name": "clerk-user-create-attempt",
-      "detail": "version=default body=email_address+first_name+last_name+skip_email_verification -> 400 request_body_invalid Request body invalid"
+      "detail": "version=default body=email_address+first_name+last_name+skip_email_verification email=noc263-verify+44020841265@nightlamp.dev -> 400 request_body_invalid The request body is invalid. Please consult the API documentation for more information."
+    },
+    {
+      "name": "clerk-user-create-attempt",
+      "detail": "version=2025-04-10 body=email_address+skip_email_verification email=noc263-verify+44020841265@example.com -> 400 request_body_invalid The request body is invalid. Please consult the API documentation for more information."
     }
   ],
   "findings": [
@@ -61,5 +65,5 @@
   "createdArtifacts": [],
   "valuesIncluded": false,
   "finished": true,
-  "finishedAt": "2026-11-17T04:54:18.445Z"
+  "finishedAt": "2026-11-17T04:59:04.821Z"
 }
