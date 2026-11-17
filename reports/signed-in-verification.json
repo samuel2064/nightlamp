@@ -2,15 +2,18 @@
   "probes": [],
   "identity": {
     "frontendHasClerkSecret": true,
-    "frontendHasPublishableKey": true
+    "frontendHasPublishableKey": true,
+    "existingUserCount": 4
   },
   "diagnostics": [
     "GET the frontend environment variables -> HTTP 200",
-    "the frontend publishable key belongs to the Clerk instance: capable-goldfish-98.clerk.accounts.dev$"
+    "the frontend publishable key belongs to the Clerk instance: capable-goldfish-98.clerk.accounts.dev",
+    "GET the Clerk users -> HTTP 200",
+    "POST the verification user -> HTTP 400"
   ],
   "valuesIncluded": false,
   "bodiesIncluded": false,
-  "error": "the frontend publishable key belongs to a different Clerk instance",
+  "error": "the verification identity could not be created (HTTP 400)",
   "probesPassed": 0,
   "probesTotal": 0
 }
