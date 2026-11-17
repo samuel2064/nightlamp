@@ -23,7 +23,7 @@ import { nodeHTTPRequestHandler } from '@trpc/server/adapters/node-http';
 import { handleSSERequest } from './sse';
 import { createPlaybookEngine } from '../playbook/engine';
 import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
-import { ApiAuthError, AuthContext, assertTeamMembership, authenticateRequest, requireRole } from './auth';
+import { ApiAuthError, AuthContext, assertTeamMembership, authenticateRequestAsync, requireRole } from './auth';
 import { tenantFilter, rowBelongsToTenant } from './tenant';
 
 export interface ApiConfig {
@@ -173,7 +173,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
   const playbookEngine = createPlaybookEngine(db);
   const latencyTracker = new ApiLatencyTracker();
   const hotCache = new ApiCache(15_000);
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     const start = process.hrtime.bigint();
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -190,7 +190,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       let auth: AuthContext | null = null;
       if (!isPublicEndpoint(path, req.method)) {
         try {
-          auth = authenticateRequest(db, req);
+          auth = await authenticateRequestAsync(db, req);
         } catch (err: any) {
           if (err instanceof ApiAuthError) {
             res.writeHead(err.statusCode);
