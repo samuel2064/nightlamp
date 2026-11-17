@@ -1,0 +1,77 @@
+name: Verify signed-in access
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ops/signed-in-verification
+
+permissions:
+  contents: write
+
+env:
+  RENDER_API: https://api.render.com/v1
+  CLERK_API: https://api.clerk.com/v1
+  CLERK_INSTANCE: capable-goldfish-98.clerk.accounts.dev
+  NIGHTLAMP_API: https://nightlamp-api.onrender.com
+  REPORT_BRANCH: ops/render-auth-report
+  RESULT_FILE: /tmp/signed-in-result.json
+
+jobs:
+  verify:
+    name: Verify that a legitimate signed-in user gets in and a stranger does not
+    runs-on: ubuntu-latest
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      FRONTEND_SERVICE_ID: ${{ secrets.RENDER_FRONTEND_SERVICE_ID }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 1
+
+      - name: Preflight
+        run: |
+          set -euo pipefail
+          test -n "$RENDER_API_KEY" || { echo "::error::RENDER_API_KEY secret is missing or empty"; exit 1; }
+          test -n "$FRONTEND_SERVICE_ID" || { echo "::error::RENDER_FRONTEND_SERVICE_ID secret is missing or empty"; exit 1; }
+          echo "preflight ok"
+
+      - name: Run the signed-in verification
+        run: |
+          set -uo pipefail
+          export FRONTEND_SERVICE_ID
+          node ops/verify-signed-in-access.js
+          echo "--- the report, values excluded ---"
+          cat "$RESULT_FILE"
+
+      - name: Publish the status-only report
+        if: always()
+        run: |
+          set -uo pipefail
+          if [ ! -f "$RESULT_FILE" ]; then
+            echo '{"error":"the verification script produced no report","valuesIncluded":false,"bodiesIncluded":false}' > /tmp/report.json
+          else
+            cp "$RESULT_FILE" /tmp/report.json
+          fi
+          {
+            echo "## Signed-in access verification"
+            echo
+            jq -r '"- probes as expected: \(.probesPassed // 0)/\(.probesTotal // 0)"' /tmp/report.json
+            jq -r '.probes[]? | "- \(.ok|if . then "PASS" else "FAIL" end) \(.label): expected \(.expected|join("/")) got \(.status)\(if .code then " " + .code else "" end)"' /tmp/report.json
+            jq -r '"- error: \(.error // "none")"' /tmp/report.json
+            jq -r '"- the verification identity was created and removed: \(.identity.identityCreated // false) / \(.identity.userRemoved // false)"' /tmp/report.json
+            jq -r '"- no token, secret or response body is included in this report"' /tmp/report.json
+          } >> "$GITHUB_STEP_SUMMARY"
+          git config user.name "nightlamp-ci"
+          git config user.email "ci@nightlamp.local"
+          git fetch --depth=1 origin "$REPORT_BRANCH" || true
+          if git rev-parse --verify FETCH_HEAD >/dev/null 2>&1; then
+            git checkout -B "$REPORT_BRANCH" FETCH_HEAD
+          fi
+          mkdir -p reports
+          cp /tmp/report.json reports/signed-in-verification.json
+          git add reports/signed-in-verification.json
+          git commit -m "signed-in access verification report $GITHUB_RUN_ID" || true
+          git push origin "HEAD:$REPORT_BRANCH"
