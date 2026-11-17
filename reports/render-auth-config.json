@@ -1,6 +1,6 @@
 {
-  "run": "43987583655",
-  "sha": "3a2b3a3d18018013f41fbc5682f0e47ac1f222fd",
+  "run": "43990161402",
+  "sha": "8ba6cbd50c13a3d5d0b4ca82bfdc57808038695e",
   "branch": "ops/render-auth-config",
   "backendService": "nightlamp-api (srv-d8j0vsnlk1mc738mvha0)",
   "frontendService": "nightlamp-frontend (srv-d957nkvaqgkc73eq2iq0)",
