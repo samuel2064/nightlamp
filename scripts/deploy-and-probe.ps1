@@ -78,7 +78,17 @@ try {
   $remote = (git rev-parse "origin/$Branch").Trim()
   "local  $local"
   "remote $remote"
-  if ($ExpectedSha -and $local -ne $ExpectedSha) { throw "local HEAD $local does not match the expected SHA $ExpectedSha" }
+  if ($ExpectedSha) {
+    $expectedFull = $null
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    try { $expectedFull = (git rev-parse --verify "$ExpectedSha^{commit}" 2>$null) } finally { $ErrorActionPreference = $previousPreference }
+    if ($LASTEXITCODE -ne 0 -or -not $expectedFull) { throw "the expected SHA $ExpectedSha could not be resolved in this repository" }
+    $expectedFull = ($expectedFull | Select-Object -First 1).Trim()
+    if ($expectedFull -notmatch '^[0-9a-f]{40}$') { throw "the expected SHA $ExpectedSha did not resolve to a commit" }
+    "expect $expectedFull"
+    if ($local -ne $expectedFull) { throw "local HEAD $local does not match the expected SHA $expectedFull" }
+  }
   if ($local -ne $remote) { throw "local HEAD $local does not match origin/$Branch $remote - refusing to push" }
   $dirty = git status --porcelain
   if ($dirty) { throw "the working tree is not clean - refusing to push:`n$dirty" }
