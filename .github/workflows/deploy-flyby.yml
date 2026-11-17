@@ -2,7 +2,13 @@ name: Deploy Flyby to Render
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    # GitHub's scheduler drops most cron ticks on this account (2 scheduled
+    # runs in the 10 hours after 2026-11-17T02:30Z, with no skipped runs and
+    # no minutes overage), so this stays a best-effort trigger as well and the
+    # board can restore native auto-deploy by re-authorizing the Render GitHub
+    # App for samuel2064/Flyby (TIR-410). A tick every 5 minutes raises the
+    # chance that one lands soon after a Flyby merge.
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 permissions:
