@@ -68,6 +68,7 @@
     "identityCreated": false,
     "usedExistingUser": true,
     "tokenMinted": true,
+    "sessionId": "sess_3METRlaYoHoCTqkGn5NGXa38ICx",
     "tokenClaims": [
       "exp",
       "fva",
