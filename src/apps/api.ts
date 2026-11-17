@@ -2,11 +2,17 @@ import { Database } from 'sql.js';
 import { IncomingMessage, ServerResponse } from 'http';
 import { v4 as uuidv4 } from 'uuid';
 import { AuthContext } from '../api/auth';
-import { rowBelongsToTenant, tenantFilter } from '../api/tenant';
+import { rowBelongsToScope, scopedTenantFilter, tenantFilter } from '../api/tenant';
 import {
+  EndpointCheckConfig,
+  EndpointCheckDeps,
+  EndpointCheckResult,
   EndpointCheckType,
+  assertTargetAllowed,
+  parseTcpTarget,
   runEndpointCheck,
 } from '../engine/health-check';
+import { BlockedTargetError, TargetResolutionError } from '../engine/outbound-safety';
 
 export const SUPPORTED_PLATFORMS = [
   'vercel',
@@ -23,10 +29,15 @@ export const SUPPORTED_CHECK_TYPES: EndpointCheckType[] = ['http', 'tcp', 'keywo
 const MAX_NAME_LENGTH = 120;
 const MAX_KEYWORD_LENGTH = 256;
 const MAX_BODY_LENGTH = 1_000_000;
+const MAX_URL_LENGTH = 2048;
 const MIN_INTERVAL_SEC = 10;
 const MAX_INTERVAL_SEC = 86_400;
 const MIN_TIMEOUT_SEC = 1;
 const MAX_TIMEOUT_SEC = 30;
+const DEFAULT_COOLDOWN_MS = 5_000;
+const MAX_TENANT_IN_FLIGHT = 10;
+const MAX_SNAPSHOTS_PER_APP = 100;
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
 type AppPlatform = typeof SUPPORTED_PLATFORMS[number];
 
@@ -70,6 +81,9 @@ function validateName(value: unknown): string {
   if (name.length > MAX_NAME_LENGTH) {
     throw new AppValidationError({ name: `name must be at most ${MAX_NAME_LENGTH} characters` });
   }
+  if (CONTROL_CHARACTERS.test(name)) {
+    throw new AppValidationError({ name: 'name must not contain control characters' });
+  }
   return name;
 }
 
@@ -78,6 +92,12 @@ function validateHttpUrl(value: unknown, field: string): string {
     throw new AppValidationError({ [field]: `${field} must be a non-empty URL` });
   }
   const url = value.trim();
+  if (url.length > MAX_URL_LENGTH) {
+    throw new AppValidationError({ [field]: `${field} must be at most ${MAX_URL_LENGTH} characters` });
+  }
+  if (/\s/.test(url)) {
+    throw new AppValidationError({ [field]: `${field} must not contain whitespace` });
+  }
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -89,6 +109,9 @@ function validateHttpUrl(value: unknown, field: string): string {
   }
   if (parsed.username || parsed.password) {
     throw new AppValidationError({ [field]: `${field} must not contain embedded credentials` });
+  }
+  if (!parsed.hostname) {
+    throw new AppValidationError({ [field]: `${field} must include a hostname` });
   }
   return url;
 }
@@ -153,24 +176,41 @@ function validateCheckTarget(value: unknown, checkType: EndpointCheckType): stri
     throw new AppValidationError({ checkTarget: 'checkTarget must be a non-empty string' });
   }
   const target = value.trim();
+  if (target.length > MAX_URL_LENGTH) {
+    throw new AppValidationError({ checkTarget: `checkTarget must be at most ${MAX_URL_LENGTH} characters` });
+  }
+  if (/\s/.test(target)) {
+    throw new AppValidationError({ checkTarget: 'checkTarget must not contain whitespace' });
+  }
   if (checkType === 'tcp') {
+    if (target.includes('@')) {
+      throw new AppValidationError({ checkTarget: 'checkTarget must not contain credentials' });
+    }
     if (target.startsWith('tcp://')) {
+      let parsed: URL;
       try {
-        const parsed = new URL(target);
-        const port = Number(parsed.port);
-        if (!parsed.hostname || !Number.isInteger(port) || port < 1 || port > 65535) {
-          throw new Error('Invalid TCP target');
-        }
+        parsed = new URL(target);
       } catch {
         throw new AppValidationError({ checkTarget: 'checkTarget must use host:port format' });
       }
-      return target;
-    }
-    const separator = target.lastIndexOf(':');
-    const host = separator > 0 ? target.slice(0, separator) : '';
-    const port = Number(separator >= 0 ? target.slice(separator + 1) : '');
-    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+      if (parsed.username || parsed.password) {
+        throw new AppValidationError({ checkTarget: 'checkTarget must not contain credentials' });
+      }
+      if (parsed.pathname && parsed.pathname !== '/') {
+        throw new AppValidationError({ checkTarget: 'checkTarget must not contain a path' });
+      }
+      if (parsed.search || parsed.hash) {
+        throw new AppValidationError({ checkTarget: 'checkTarget must not contain a query or fragment' });
+      }
+    } else if (target.includes('/')) {
       throw new AppValidationError({ checkTarget: 'checkTarget must use host:port format' });
+    }
+    const parsedTarget = parseTcpTarget(target);
+    if (!parsedTarget || !parsedTarget.host) {
+      throw new AppValidationError({ checkTarget: 'checkTarget must use host:port format' });
+    }
+    if (!/^[A-Za-z0-9._-]+$/.test(parsedTarget.host) && !/^[0-9A-Fa-f:.]+$/.test(parsedTarget.host)) {
+      throw new AppValidationError({ checkTarget: 'checkTarget host is not valid' });
     }
     return target;
   }
@@ -188,8 +228,20 @@ function validationError(fields: Record<string, string>): AppValidationError {
   return new AppValidationError(fields);
 }
 
+export interface AppsApiDeps {
+  assertTargetAllowed?: (target: string, checkType: EndpointCheckType) => Promise<void>;
+  runCheck?: (config: EndpointCheckConfig) => Promise<EndpointCheckResult>;
+  endpointDeps?: EndpointCheckDeps;
+  cooldownMs?: number;
+  now?: () => number;
+}
+
 export class AppsApi {
-  constructor(private db: Database) {}
+  private readonly inFlightApps = new Set<string>();
+  private readonly inFlightScopes = new Map<string, string>();
+  private readonly lastRunAt = new Map<string, number>();
+
+  constructor(private db: Database, private deps: AppsApiDeps = {}) {}
 
   handle(req: IncomingMessage, res: ServerResponse, auth: AuthContext): boolean {
     const path = (new URL(req.url || '/', `http://${req.headers.host}`).pathname).replace(/\/+$/, '');
@@ -197,7 +249,7 @@ export class AppsApi {
 
     if (path === '/api/apps') {
       if (req.method === 'GET') {
-        this.handleList(res, auth.teamId);
+        this.handleList(res, auth);
         return true;
       }
       if (req.method === 'POST') {
@@ -209,7 +261,13 @@ export class AppsApi {
     }
 
     if (appMatch) {
-      const appId = decodeURIComponent(appMatch[1]);
+      let appId: string;
+      try {
+        appId = decodeURIComponent(appMatch[1]);
+      } catch {
+        this.send(res, 400, { error: 'Invalid app id' });
+        return true;
+      }
       if (appMatch[2] === 'test-check') {
         if (req.method !== 'POST') {
           this.send(res, 405, { error: 'Method not allowed' });
@@ -219,7 +277,7 @@ export class AppsApi {
         return true;
       }
       if (req.method === 'GET') {
-        this.handleGet(appId, res, auth.teamId);
+        this.handleGet(appId, res, auth);
         return true;
       }
       if (req.method === 'PATCH') {
@@ -227,7 +285,7 @@ export class AppsApi {
         return true;
       }
       if (req.method === 'DELETE') {
-        this.handleDelete(appId, res, auth.teamId);
+        this.handleDelete(appId, res, auth);
         return true;
       }
       this.send(res, 405, { error: 'Method not allowed' });
@@ -263,8 +321,8 @@ export class AppsApi {
     return parsed;
   }
 
-  private handleList(res: ServerResponse, teamId: string | null): void {
-    const scope = tenantFilter('team_id', teamId);
+  private handleList(res: ServerResponse, auth: AuthContext): void {
+    const scope = scopedTenantFilter('monitored_apps', auth.teamId, auth.userId, true);
     const result = this.db.exec(
       `SELECT id, team_id, name, url, platform, check_type, check_target, check_interval_sec, check_timeout_sec, keyword, enabled, alert_channel_id, created_at, updated_at
        FROM monitored_apps WHERE ${scope.clause} ORDER BY created_at DESC`,
@@ -275,8 +333,8 @@ export class AppsApi {
     this.send(res, 200, { apps, count: apps.length });
   }
 
-  private handleGet(appId: string, res: ServerResponse, teamId: string | null): void {
-    if (!rowBelongsToTenant(this.db, 'monitored_apps', appId, teamId)) {
+  private handleGet(appId: string, res: ServerResponse, auth: AuthContext): void {
+    if (!this.appInScope(auth, appId, true)) {
       this.send(res, 404, { error: 'App not found' });
       return;
     }
@@ -337,32 +395,37 @@ export class AppsApi {
         body.alertChannelId === undefined ? body.channelId : body.alertChannelId,
       );
 
-      if (!rowBelongsToTenant(this.db, 'alert_channels', alertChannelId, auth.teamId)) {
+      await this.assertTargetAllowed(checkTarget, checkType);
+
+      if (!rowBelongsToScope(this.db, 'alert_channels', alertChannelId, auth.teamId, auth.userId, true)) {
         this.send(res, 404, { error: 'Alert channel not found' });
         return;
       }
 
       const id = uuidv4();
-      this.db.run(
-        `INSERT INTO monitored_apps (
-          id, team_id, name, url, platform, check_type, check_target,
-          check_interval_sec, check_timeout_sec, keyword, enabled, alert_channel_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          id,
-          auth.teamId,
-          name,
-          url,
-          platform,
-          checkType,
-          checkTarget,
-          checkIntervalSec,
-          checkTimeoutSec,
-          keyword,
-          enabled ? 1 : 0,
-          alertChannelId,
-        ],
-      );
+      this.withForeignKeys(() => {
+        this.db.run(
+          `INSERT INTO monitored_apps (
+            id, team_id, owner_id, name, url, platform, check_type, check_target,
+            check_interval_sec, check_timeout_sec, keyword, enabled, alert_channel_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            id,
+            auth.teamId,
+            auth.userId,
+            name,
+            url,
+            platform,
+            checkType,
+            checkTarget,
+            checkIntervalSec,
+            checkTimeoutSec,
+            keyword,
+            enabled ? 1 : 0,
+            alertChannelId,
+          ],
+        );
+      });
       const record = this.getRecord(id);
       this.send(res, 201, { app: record ? this.toResponse(record) : null });
     } catch (error) {
@@ -381,8 +444,7 @@ export class AppsApi {
     auth: AuthContext,
   ): Promise<void> {
     try {
-      if (!rowBelongsToTenant(this.db, 'monitored_apps', appId, auth.teamId)) {
-        this.send(res, 404, { error: 'App not found' });
+      if (!this.assertMutable(auth, appId, res)) {
         return;
       }
       const current = this.getRecord(appId);
@@ -486,13 +548,14 @@ export class AppsApi {
         throw validationError({ keyword: 'keyword is required for keyword checks' });
       }
       checkTarget = validateCheckTarget(checkTarget, checkType);
-      if (!rowBelongsToTenant(this.db, 'alert_channels', alertChannelId, auth.teamId)) {
+      await this.assertTargetAllowed(checkTarget, checkType);
+      if (!rowBelongsToScope(this.db, 'alert_channels', alertChannelId, auth.teamId, auth.userId, true)) {
         this.send(res, 404, { error: 'Alert channel not found' });
         return;
       }
 
       updates.push("updated_at = datetime('now')");
-      const scope = tenantFilter('team_id', auth.teamId);
+      const scope = scopedTenantFilter('monitored_apps', auth.teamId, auth.userId, false, false);
       this.db.run(
         `UPDATE monitored_apps SET ${updates.join(', ')} WHERE id = ? AND ${scope.clause}`,
         [...params, appId, ...scope.params],
@@ -508,26 +571,27 @@ export class AppsApi {
     }
   }
 
-  private handleDelete(appId: string, res: ServerResponse, teamId: string | null): void {
-    if (!rowBelongsToTenant(this.db, 'monitored_apps', appId, teamId)) {
-      this.send(res, 404, { error: 'App not found' });
+  private handleDelete(appId: string, res: ServerResponse, auth: AuthContext): void {
+    if (!this.assertMutable(auth, appId, res)) {
       return;
     }
-    const scope = tenantFilter('team_id', teamId);
-    this.db.run(
-      `DELETE FROM health_snapshots WHERE app_id = ? AND ${scope.clause}`,
-      [appId, ...scope.params],
-    );
-    this.db.run(
-      `DELETE FROM monitored_apps WHERE id = ? AND ${scope.clause}`,
-      [appId, ...scope.params],
-    );
+    const scope = scopedTenantFilter('monitored_apps', auth.teamId, auth.userId, false, false);
+    const snapshotScope = tenantFilter('team_id', auth.teamId);
+    this.withForeignKeys(() => {
+      this.db.run(
+        `DELETE FROM health_snapshots WHERE app_id = ? AND ${snapshotScope.clause}`,
+        [appId, ...snapshotScope.params],
+      );
+      this.db.run(
+        `DELETE FROM monitored_apps WHERE id = ? AND ${scope.clause}`,
+        [appId, ...scope.params],
+      );
+    });
     this.send(res, 200, { success: true });
   }
 
   private async handleTestCheck(appId: string, res: ServerResponse, auth: AuthContext): Promise<void> {
-    if (!rowBelongsToTenant(this.db, 'monitored_apps', appId, auth.teamId)) {
-      this.send(res, 404, { error: 'App not found' });
+    if (!this.assertMutable(auth, appId, res)) {
       return;
     }
     const record = this.getRecord(appId);
@@ -536,42 +600,159 @@ export class AppsApi {
       return;
     }
 
-    const result = await runEndpointCheck({
+    const scopeKey = auth.teamId || `personal:${auth.userId}`;
+    const cooldownMs = this.deps.cooldownMs ?? DEFAULT_COOLDOWN_MS;
+    const now = this.currentTime();
+
+    if (this.inFlightApps.has(appId)) {
+      this.sendTooManyRequests(res, 'A check is already running for this app', cooldownMs);
+      return;
+    }
+
+    let scopeInFlight = 0;
+    for (const scope of this.inFlightScopes.values()) {
+      if (scope === scopeKey) scopeInFlight += 1;
+    }
+    if (scopeInFlight >= MAX_TENANT_IN_FLIGHT) {
+      this.sendTooManyRequests(res, 'Too many checks are already running for this organization', cooldownMs);
+      return;
+    }
+
+    const lastRun = this.lastRunAt.get(appId);
+    if (lastRun !== undefined && cooldownMs > 0) {
+      const elapsed = now - lastRun;
+      if (elapsed < cooldownMs) {
+        this.sendTooManyRequests(res, 'Please wait before running another check for this app', cooldownMs - elapsed);
+        return;
+      }
+    }
+
+    this.inFlightApps.add(appId);
+    this.inFlightScopes.set(appId, scopeKey);
+
+    try {
+      const result = await this.runCheck(record);
+      const snapshotId = uuidv4();
+      const checkedAt = new Date().toISOString();
+      this.withForeignKeys(() => {
+        this.db.run(
+          `INSERT INTO health_snapshots (
+            id, app_id, team_id, status, status_code, latency_ms, error_type, error_detail, checked_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            snapshotId,
+            appId,
+            record.teamId,
+            result.status,
+            result.statusCode,
+            result.latencyMs,
+            result.errorType,
+            result.errorDetail,
+            checkedAt,
+          ],
+        );
+      });
+      this.pruneSnapshots(appId, record.teamId);
+      this.send(res, 200, {
+        result: {
+          id: snapshotId,
+          appId,
+          status: result.status,
+          statusCode: result.statusCode,
+          latencyMs: result.latencyMs,
+          errorType: result.errorType,
+          errorDetail: result.errorDetail,
+          checkedAt,
+        },
+      });
+    } finally {
+      this.inFlightApps.delete(appId);
+      this.inFlightScopes.delete(appId);
+      this.lastRunAt.set(appId, this.currentTime());
+    }
+  }
+
+  private currentTime(): number {
+    return this.deps.now ? this.deps.now() : Date.now();
+  }
+
+  /**
+   * Run a write with foreign key enforcement enabled.
+   *
+   * The monitored app tables declare their references, so the insert must fail
+   * when the channel or application row is missing. Enforcement is toggled per
+   * statement batch because the legacy tables intentionally keep their existing
+   * (unenforced) behaviour.
+   */
+  private withForeignKeys<T>(action: () => T): T {
+    this.db.run('PRAGMA foreign_keys = ON');
+    try {
+      return action();
+    } finally {
+      this.db.run('PRAGMA foreign_keys = OFF');
+    }
+  }
+
+  private appInScope(auth: AuthContext, appId: string, includeLegacy: boolean): boolean {
+    return rowBelongsToScope(this.db, 'monitored_apps', appId, auth.teamId, auth.userId, includeLegacy);
+  }
+
+  private assertMutable(auth: AuthContext, appId: string, res: ServerResponse): boolean {
+    if (this.appInScope(auth, appId, false)) {
+      return true;
+    }
+    if (auth.teamId === null && this.appInScope(auth, appId, true)) {
+      this.send(res, 403, { error: 'Legacy personal applications are read-only' });
+      return false;
+    }
+    this.send(res, 404, { error: 'App not found' });
+    return false;
+  }
+
+  private async runCheck(record: AppRecord): Promise<EndpointCheckResult> {
+    const config: EndpointCheckConfig = {
       type: record.checkType,
       target: record.checkTarget,
       timeoutMs: record.checkTimeoutSec * 1000,
       keyword: record.keyword || undefined,
-    });
-    const snapshotId = uuidv4();
-    const checkedAt = new Date().toISOString();
+    };
+    if (this.deps.runCheck) {
+      return this.deps.runCheck(config);
+    }
+    return runEndpointCheck(config, this.deps.endpointDeps);
+  }
+
+  private async assertTargetAllowed(target: string, checkType: EndpointCheckType): Promise<void> {
+    const checker = this.deps.assertTargetAllowed
+      || ((value: string, type: EndpointCheckType) => assertTargetAllowed(value, type, this.deps.endpointDeps));
+    try {
+      await checker(target, checkType);
+    } catch (error) {
+      if (error instanceof BlockedTargetError || error instanceof TargetResolutionError) {
+        throw validationError({ checkTarget: error.message });
+      }
+      throw error;
+    }
+  }
+
+  private pruneSnapshots(appId: string, teamId: string | null): void {
     this.db.run(
-      `INSERT INTO health_snapshots (
-        id, app_id, team_id, status, status_code, latency_ms, error_type, error_detail, checked_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        snapshotId,
-        appId,
-        record.teamId,
-        result.status,
-        result.statusCode,
-        result.latencyMs,
-        result.errorType,
-        result.errorDetail,
-        checkedAt,
-      ],
+      `DELETE FROM health_snapshots
+       WHERE app_id = ? AND team_id IS ?
+         AND id NOT IN (
+           SELECT id FROM health_snapshots
+           WHERE app_id = ? AND team_id IS ?
+           ORDER BY checked_at DESC, id DESC
+           LIMIT ?
+         )`,
+      [appId, teamId, appId, teamId, MAX_SNAPSHOTS_PER_APP],
     );
-    this.send(res, 200, {
-      result: {
-        id: snapshotId,
-        appId,
-        status: result.status,
-        statusCode: result.statusCode,
-        latencyMs: result.latencyMs,
-        errorType: result.errorType,
-        errorDetail: result.errorDetail,
-        checkedAt,
-      },
-    });
+  }
+
+  private sendTooManyRequests(res: ServerResponse, message: string, retryAfterMs: number): void {
+    const retryAfterSec = Math.max(1, Math.ceil(retryAfterMs / 1000));
+    res.setHeader('Retry-After', String(retryAfterSec));
+    this.send(res, 429, { error: message, retryAfterSec });
   }
 
   private getRecord(appId: string): AppRecord | null {
