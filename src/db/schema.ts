@@ -451,6 +451,7 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
     CREATE TABLE IF NOT EXISTS playbook_executions (
       id TEXT PRIMARY KEY,
       playbook_id TEXT NOT NULL,
+      team_id TEXT,
       status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'running', 'waiting_decision', 'completed', 'failed', 'cancelled')),
       current_step_id TEXT,
       context TEXT NOT NULL DEFAULT '{}',
@@ -467,6 +468,8 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   db.run('CREATE INDEX IF NOT EXISTS idx_playbook_edges_playbook ON playbook_edges(playbook_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_playbook_versions_playbook ON playbook_versions(playbook_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_custom_playbooks_team ON custom_playbooks(team_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_playbook_executions_team ON playbook_executions(team_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_playbook_executions_playbook ON playbook_executions(playbook_id)');
 
   db.run(`
     CREATE TABLE IF NOT EXISTS notification_rate_limits (

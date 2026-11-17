@@ -94,6 +94,7 @@ describe('Playbook Engine', () => {
     id: 'http-test',
     name: 'HTTP Test',
     description: '',
+    teamId: 'test-team',
     variables: { apiUrl: 'https://httpbin.org' },
     steps: [
       {
@@ -112,6 +113,7 @@ describe('Playbook Engine', () => {
     id: 'http-error-test',
     name: 'HTTP Error Test',
     description: '',
+    teamId: 'test-team',
     variables: {},
     steps: [
       {
@@ -130,6 +132,7 @@ describe('Playbook Engine', () => {
     id: 'interpolation-test',
     name: 'Interpolation Test',
     description: '',
+    teamId: 'test-team',
     variables: { baseUrl: 'https://httpbin.org', endpoint: '/get', param: 'test' },
     steps: [
       {
@@ -148,6 +151,7 @@ describe('Playbook Engine', () => {
     id: 'assert-pass-test',
     name: 'Assertion Pass Test',
     description: '',
+    teamId: 'test-team',
     variables: { value: 42 },
     steps: [
       {
@@ -166,6 +170,7 @@ describe('Playbook Engine', () => {
     id: 'assert-fail-test',
     name: 'Assertion Fail Test',
     description: '',
+    teamId: 'test-team',
     variables: { value: 10 },
     steps: [
       {
@@ -184,6 +189,7 @@ describe('Playbook Engine', () => {
     id: 'wait-duration-test',
     name: 'Wait Duration Test',
     description: '',
+    teamId: 'test-team',
     variables: {},
     steps: [
       {
@@ -202,6 +208,7 @@ describe('Playbook Engine', () => {
     id: 'wait-condition-test',
     name: 'Wait Condition Test',
     description: '',
+    teamId: 'test-team',
     variables: { counter: 6 },
     steps: [
       {
@@ -220,6 +227,7 @@ describe('Playbook Engine', () => {
     id: 'wait-timeout-test',
     name: 'Wait Timeout Test',
     description: '',
+    teamId: 'test-team',
     variables: { counter: 0 },
     steps: [
       {
@@ -238,6 +246,7 @@ describe('Playbook Engine', () => {
     id: 'cond-true-test',
     name: 'Conditional True Test',
     description: '',
+    teamId: 'test-team',
     variables: { flag: true },
     steps: [
       {
@@ -269,6 +278,7 @@ describe('Playbook Engine', () => {
     id: 'cond-false-test',
     name: 'Conditional False Test',
     description: '',
+    teamId: 'test-team',
     variables: { flag: false },
     steps: [
       {
@@ -300,6 +310,7 @@ describe('Playbook Engine', () => {
     id: 'notif-test',
     name: 'Notification Test',
     description: '',
+    teamId: 'test-team',
     variables: { alertMsg: 'Test Alert' },
     steps: [
       {
@@ -319,6 +330,7 @@ describe('Playbook Engine', () => {
     id: 'custom-code-test',
     name: 'Custom Code Test',
     description: '',
+    teamId: 'test-team',
     variables: { input: 5 },
     steps: [
       {
@@ -337,6 +349,7 @@ describe('Playbook Engine', () => {
     id: 'custom-error-test',
     name: 'Custom Code Error Test',
     description: '',
+    teamId: 'test-team',
     variables: {},
     steps: [
       {
@@ -355,6 +368,7 @@ describe('Playbook Engine', () => {
     id: 'failure-test',
     name: 'Failure Handling Test',
     description: '',
+    teamId: 'test-team',
     variables: {},
     steps: [
       {
@@ -377,6 +391,7 @@ describe('Playbook Engine', () => {
     id: 'no-recovery-test',
     name: 'No Recovery Test',
     description: '',
+    teamId: 'test-team',
     variables: {},
     steps: [
       {
@@ -392,6 +407,7 @@ describe('Playbook Engine', () => {
     id: 'decision-test',
     name: 'Decision Test',
     description: '',
+    teamId: 'test-team',
     variables: {},
     steps: [
       {
@@ -416,6 +432,7 @@ describe('Playbook Engine', () => {
     id: 'cancel-test',
     name: 'Cancel Test',
     description: '',
+    teamId: 'test-team',
     variables: {},
     steps: [
       {
@@ -431,6 +448,7 @@ describe('Playbook Engine', () => {
     id: 'complete-test',
     name: 'Complete Test',
     description: '',
+    teamId: 'test-team',
     variables: {},
     steps: [
       {

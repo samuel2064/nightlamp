@@ -5,6 +5,7 @@ const TENANT_TABLES = [
   'check_results',
   'failure_events',
   'playbook_entries',
+  'playbook_executions',
   'dependencies',
   'dependency_updates',
   'customers',
@@ -73,6 +74,28 @@ export function up(db: Database): void {
   }
 }
 
+function dropColumnWithFK(db: Database, table: string, column: string): void {
+  if (!tableExists(db, table) || !hasColumn(db, table, column)) return;
+  
+  const colsResult = db.exec(`PRAGMA table_info(${table})`);
+  if (!colsResult.length) return;
+  const columns = colsResult[0].values.map((row: any) => row[1] as string).filter(c => c !== column);
+  const colsDef = columns.map(c => `${c} ${getColumnType(db, table, c)}`).join(', ');
+  
+  db.run(`CREATE TABLE ${table}_no_${column} (${colsDef})`);
+  const colList = columns.join(', ');
+  db.run(`INSERT INTO ${table}_no_${column} (${colList}) SELECT ${colList} FROM ${table}`);
+  db.run(`DROP TABLE ${table}`);
+  db.run(`ALTER TABLE ${table}_no_${column} RENAME TO ${table}`);
+}
+
+function getColumnType(db: Database, table: string, column: string): string {
+  const result = db.exec(`PRAGMA table_info(${table})`);
+  if (!result.length) return 'TEXT';
+  const row = result[0].values.find((r: any) => r[1] === column);
+  return row ? `${row[2]}${row[3] ? ' NOT NULL' : ''}${row[4] !== null && row[4] !== undefined ? ' DEFAULT ' + row[4] : ''}` : 'TEXT';
+}
+
 export function down(db: Database): void {
   const indexes = [
     'idx_checks_team',
@@ -101,7 +124,11 @@ export function down(db: Database): void {
   for (const table of TENANT_TABLES) {
     if (table === 'remediation_policies') continue;
     if (tableExists(db, table) && hasColumn(db, table, 'team_id')) {
-      db.run(`ALTER TABLE ${table} DROP COLUMN team_id`);
+      if (table === 'alert_channels') {
+        dropColumnWithFK(db, table, 'team_id');
+      } else {
+        db.run(`ALTER TABLE ${table} DROP COLUMN team_id`);
+      }
     }
   }
 
@@ -110,16 +137,18 @@ export function down(db: Database): void {
     db.run(`
       CREATE TABLE remediation_policies_legacy (
         id TEXT PRIMARY KEY,
+        team_id TEXT,
         failure_type TEXT NOT NULL,
         auto_approve INTEGER NOT NULL DEFAULT 0,
         require_dry_run INTEGER NOT NULL DEFAULT 1,
         cooldown_minutes INTEGER NOT NULL DEFAULT 60,
-        UNIQUE(failure_type)
+        UNIQUE(team_id, failure_type)
       )
     `);
+    const teamId = hasColumn(db, 'remediation_policies', 'team_id') ? 'team_id' : 'NULL AS team_id';
     db.run(`
-      INSERT INTO remediation_policies_legacy (id, failure_type, auto_approve, require_dry_run, cooldown_minutes)
-      SELECT id, failure_type, auto_approve, require_dry_run, cooldown_minutes
+      INSERT INTO remediation_policies_legacy (id, team_id, failure_type, auto_approve, require_dry_run, cooldown_minutes)
+      SELECT id, ${teamId}, failure_type, auto_approve, require_dry_run, cooldown_minutes
       FROM remediation_policies
     `);
     db.run('DROP TABLE remediation_policies');

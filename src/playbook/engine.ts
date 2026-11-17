@@ -25,6 +25,7 @@ export interface PlaybookDefinition {
   id: string;
   name: string;
   description: string;
+  teamId: string | null;
   steps: PlaybookStep[];
   variables: Record<string, unknown>;
 }
@@ -32,6 +33,7 @@ export interface PlaybookDefinition {
 export interface PlaybookExecution {
   id: string;
   playbookId: string;
+  teamId: string | null;
   status: PlaybookExecutionStatus;
   currentStepId: string | null;
   context: Record<string, unknown>;
@@ -78,25 +80,26 @@ export class PlaybookEngine {
     this.loadExecutions();
   }
 
-  private loadExecutions(): void {
+private loadExecutions(): void {
     const result = this.db.exec(
-      `SELECT id, playbook_id, status, current_step_id, context, step_results, 
+      `SELECT id, playbook_id, team_id, status, current_step_id, context, step_results, 
               created_at, updated_at, completed_at, error 
-       FROM playbook_executions`
+         FROM playbook_executions`
     );
     if (result.length > 0 && result[0].values.length > 0) {
       for (const row of result[0].values) {
         const execution: PlaybookExecution = {
           id: row[0] as string,
           playbookId: row[1] as string,
-          status: row[2] as PlaybookExecutionStatus,
-          currentStepId: row[3] as string | null,
-          context: JSON.parse(row[4] as string),
-          stepResults: JSON.parse(row[5] as string),
-          createdAt: row[6] as string,
-          updatedAt: row[7] as string,
-          completedAt: row[8] as string | null,
-          error: row[9] as string | null,
+          teamId: row[2] as string | null,
+          status: row[3] as PlaybookExecutionStatus,
+          currentStepId: row[4] as string | null,
+          context: JSON.parse(row[5] as string),
+          stepResults: JSON.parse(row[6] as string),
+          createdAt: row[7] as string,
+          updatedAt: row[8] as string,
+          completedAt: row[9] as string | null,
+          error: row[10] as string | null,
         };
         this.executions.set(execution.id, execution);
       }
@@ -115,6 +118,7 @@ export class PlaybookEngine {
     const execution: PlaybookExecution = {
       id,
       playbookId: playbook.id,
+      teamId: playbook.teamId,
       status: 'pending',
       currentStepId: firstStep.id,
       context: { ...playbook.variables, ...initialContext },
@@ -126,9 +130,9 @@ export class PlaybookEngine {
     };
 
     this.db.run(
-      `INSERT INTO playbook_executions (id, playbook_id, status, current_step_id, context, step_results, created_at, updated_at) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, playbook.id, 'pending', firstStep.id, JSON.stringify(execution.context), '{}', now, now]
+      `INSERT INTO playbook_executions (id, playbook_id, team_id, status, current_step_id, context, step_results, created_at, updated_at) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, playbook.id, playbook.teamId, 'pending', firstStep.id, JSON.stringify(execution.context), '{}', now, now]
     );
 
     this.executions.set(id, execution);
@@ -492,7 +496,7 @@ export class PlaybookEngine {
   private persistExecution(execution: PlaybookExecution): void {
     this.db.run(
       `UPDATE playbook_executions SET status = ?, current_step_id = ?, context = ?, step_results = ?, 
-              updated_at = ?, completed_at = ?, error = ? WHERE id = ?`,
+              updated_at = ?, completed_at = ?, error = ?, team_id = ? WHERE id = ?`,
       [
         execution.status,
         execution.currentStepId,
@@ -501,6 +505,7 @@ export class PlaybookEngine {
         execution.updatedAt,
         execution.completedAt,
         execution.error,
+        execution.teamId,
         execution.id,
       ]
     );
@@ -509,7 +514,7 @@ export class PlaybookEngine {
 
   getPlaybookDefinition(playbookId: string): PlaybookDefinition | null {
     const result = this.db.exec(
-      `SELECT id, name, description, variables FROM custom_playbooks WHERE id = ?`,
+      `SELECT id, name, description, team_id, variables FROM custom_playbooks WHERE id = ?`,
       [playbookId]
     );
     if (result.length === 0 || result[0].values.length === 0) return null;
@@ -590,17 +595,25 @@ export class PlaybookEngine {
       id: row[0] as string,
       name: row[1] as string,
       description: row[2] as string,
+      teamId: row[3] as string | null,
       steps: Array.from(stepMap.values()),
-      variables: JSON.parse(row[3] as string),
+      variables: JSON.parse(row[4] as string),
     };
   }
 
-  getExecution(executionId: string): PlaybookExecution | undefined {
-    return this.executions.get(executionId);
+  getExecution(executionId: string, teamId?: string | null): PlaybookExecution | undefined {
+    const execution = this.executions.get(executionId);
+    if (execution && teamId !== undefined && execution.teamId !== teamId) {
+      return undefined;
+    }
+    return execution;
   }
 
-  listExecutions(playbookId?: string): PlaybookExecution[] {
+  listExecutions(playbookId?: string, teamId?: string | null): PlaybookExecution[] {
     let executions = Array.from(this.executions.values());
+    if (teamId !== undefined) {
+      executions = executions.filter(e => e.teamId === teamId);
+    }
     if (playbookId) {
       executions = executions.filter(e => e.playbookId === playbookId);
     }

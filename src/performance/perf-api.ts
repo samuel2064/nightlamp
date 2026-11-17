@@ -4,6 +4,7 @@ import { PerfOrchestrator } from './perf-orchestrator';
 import { RegressionDetector } from './regression-detector';
 import { PerfDiagnosis } from './perf-diagnosis';
 import { PerfStorage } from './perf-storage';
+import { AuthContext, requireRole, ApiAuthError } from '../api/auth';
 
 export class PerfApi {
   private orchestrator: PerfOrchestrator;
@@ -18,9 +19,29 @@ export class PerfApi {
     this.diagnosis = new PerfDiagnosis(this.storage);
   }
 
-  handle(req: IncomingMessage, res: ServerResponse): boolean {
+  handle(req: IncomingMessage, res: ServerResponse, auth: AuthContext | null = null): boolean {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = parsedUrl.pathname;
+
+    // /api/performance/latency is public (handled elsewhere)
+    if (path === '/api/performance/latency') return false;
+
+    // All other performance endpoints require admin role
+    if (!auth) {
+      res.writeHead(401);
+      res.end(JSON.stringify({ error: 'Authentication required' }));
+      return true;
+    }
+    try {
+      requireRole(auth, ['owner', 'admin']);
+    } catch (err: any) {
+      if (err instanceof ApiAuthError) {
+        res.writeHead(err.statusCode);
+        res.end(JSON.stringify({ error: err.message, code: err.code }));
+        return true;
+      }
+      throw err;
+    }
 
     if (path === '/api/performance/run' && req.method === 'POST') {
       this.handleRun(req, res);

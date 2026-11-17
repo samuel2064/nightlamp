@@ -1,12 +1,14 @@
 import { IncomingMessage, ServerResponse } from 'http';
 import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
+import { AuthContext } from './auth';
 
 export interface SSEClient {
   id: string;
   res: ServerResponse;
   connectedAt: Date;
   lastHeartbeat: Date;
+  teamId: string | null;
 }
 
 export type SSEEventType = 
@@ -23,17 +25,19 @@ export interface SSEEvent {
   type: SSEEventType;
   timestamp: string;
   data: any;
+  teamId?: string | null;
 }
 
 const clients = new Map<string, SSEClient>();
 
-export function addSSEClient(req: IncomingMessage, res: ServerResponse): string {
+export function addSSEClient(req: IncomingMessage, res: ServerResponse, teamId: string | null): string {
   const clientId = uuidv4();
   const client: SSEClient = {
     id: clientId,
     res,
     connectedAt: new Date(),
     lastHeartbeat: new Date(),
+    teamId,
   };
   clients.set(clientId, client);
 
@@ -93,18 +97,23 @@ export function sendEvent(client: SSEClient, event: SSEEvent): boolean {
   }
 }
 
-export function broadcastEvent(type: SSEEventType, data: any): number {
+export function broadcastEvent(type: SSEEventType, data: any, teamId?: string | null): number {
   const event: SSEEvent = {
     id: uuidv4(),
     type,
     timestamp: new Date().toISOString(),
     data,
+    teamId,
   };
 
   let sent = 0;
   for (const client of clients.values()) {
-    if (sendEvent(client, event)) {
-      sent++;
+    // Only send to clients with matching teamId, or to admin clients (teamId === null for admin)
+    // Events without teamId (global events) go to all clients
+    if (!event.teamId || client.teamId === event.teamId || client.teamId === null) {
+      if (sendEvent(client, event)) {
+        sent++;
+      }
     }
   }
   return sent;
@@ -115,22 +124,22 @@ export function broadcastHeartbeat(): number {
 }
 
 export function notifyMonitorUpdate(monitor: any): number {
-  return broadcastEvent('monitor_update', monitor);
+  return broadcastEvent('monitor_update', monitor, monitor?.teamId || null);
 }
 
 export function notifyIncidentAlert(incident: any): number {
-  return broadcastEvent('incident_alert', incident);
+  return broadcastEvent('incident_alert', incident, incident?.teamId || null);
 }
 
 export function notifyPlaybookProgress(progress: any): number {
-  return broadcastEvent('playbook_progress', progress);
+  return broadcastEvent('playbook_progress', progress, progress?.teamId || null);
 }
 
 export function notifyBillingEvent(event: any): number {
-  return broadcastEvent('billing_event', event);
+  return broadcastEvent('billing_event', event, event?.teamId || null);
 }
 
-export function handleSSERequest(req: IncomingMessage, res: ServerResponse, db: Database): boolean {
+export function handleSSERequest(req: IncomingMessage, res: ServerResponse, db: Database, auth: AuthContext | null): boolean {
   try {
     const host = req.headers.host;
     if (!host) {
@@ -140,7 +149,13 @@ export function handleSSERequest(req: IncomingMessage, res: ServerResponse, db: 
     const path = parsedUrl.pathname;
 
     if (path === '/api/realtime' || path === '/api/realtime/') {
-      addSSEClient(req, res);
+      // Require authentication for realtime stream
+      if (!auth) {
+        res.writeHead(401);
+        res.end(JSON.stringify({ error: 'Authentication required' }));
+        return true;
+      }
+      addSSEClient(req, res, auth.teamId);
       return true;
     }
   } catch {

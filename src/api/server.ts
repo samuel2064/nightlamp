@@ -571,7 +571,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         return;
       }
 
-      if (perfApi.handle(req, res)) {
+      if (perfApi.handle(req, res, auth)) {
         return;
       }
 
@@ -1440,39 +1440,62 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           return;
         }
 
-        const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit') || '100', 10), 500);
-        const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
-        const source = parsedUrl.searchParams.get('source') || '';
+        // GET /api/leads requires admin role (owner/admin)
+        if (req.method === 'GET') {
+          if (!auth) {
+            res.writeHead(401);
+            res.end(JSON.stringify({ error: 'Authentication required' }));
+            return;
+          }
+          try {
+            requireRole(auth, ['owner', 'admin']);
+          } catch (err: any) {
+            if (err instanceof ApiAuthError) {
+              res.writeHead(err.statusCode);
+              res.end(JSON.stringify({ error: err.message, code: err.code }));
+              return;
+            }
+            throw err;
+          }
 
-        let sql = 'SELECT id, email, source, name, created_at FROM leads WHERE 1=1';
-        const params: any[] = [];
-        if (source) {
-          sql += ' AND source = ?';
-          params.push(source);
+          const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit') || '100', 10), 500);
+          const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
+          const source = parsedUrl.searchParams.get('source') || '';
+
+          let sql = 'SELECT id, email, source, name, created_at FROM leads WHERE 1=1';
+          const params: any[] = [];
+          if (source) {
+            sql += ' AND source = ?';
+            params.push(source);
+          }
+          sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+          params.push(limit, offset);
+
+          const result = db.exec(sql, params);
+          const leads = result.length > 0 ? result[0].values.map((row: any) => ({
+            id: row[0],
+            email: row[1],
+            source: row[2],
+            name: row[3],
+            createdAt: row[4],
+          })) : [];
+          res.end(JSON.stringify({ leads, count: leads.length, limit, offset }));
+          return;
         }
-        sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
-        params.push(limit, offset);
 
-        const result = db.exec(sql, params);
-        const leads = result.length > 0 ? result[0].values.map((row: any) => ({
-          id: row[0],
-          email: row[1],
-          source: row[2],
-          name: row[3],
-          createdAt: row[4],
-        })) : [];
-        res.end(JSON.stringify({ leads, count: leads.length, limit, offset }));
+        res.writeHead(405);
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
         return;
       }
 
-      if (handleSSERequest(req, res, db)) {
+      if (handleSSERequest(req, res, db, auth)) {
         return;
       }
 
       if (path === '/api/playbook/executions' || path === '/api/playbook/executions/') {
         if (req.method === 'GET') {
           const playbookId = parsedUrl.searchParams.get('playbookId') || undefined;
-          const executions = playbookEngine.listExecutions(playbookId);
+          const executions = playbookEngine.listExecutions(playbookId, teamId);
           res.end(JSON.stringify({ executions, count: executions.length }));
           return;
         }
@@ -1494,9 +1517,14 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
                   res.end(JSON.stringify({ error: 'Playbook not found' }));
                   return;
                 }
+                if (playbook.teamId !== teamId) {
+                  res.writeHead(404);
+                  res.end(JSON.stringify({ error: 'Playbook not found' }));
+                  return;
+                }
                 const execution = await playbookEngine.createExecution(playbook, context || {});
                 await playbookEngine.startExecution(execution.id);
-                res.end(JSON.stringify({ execution: playbookEngine.getExecution(execution.id) }));
+                res.end(JSON.stringify({ execution: playbookEngine.getExecution(execution.id, teamId) }));
               } catch (err: any) {
                 res.writeHead(400);
                 res.end(JSON.stringify({ error: err.message }));
@@ -1516,7 +1544,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         const action = executionMatch[2] || '';
 
         if (!action && req.method === 'GET') {
-          const execution = playbookEngine.getExecution(executionId);
+          const execution = playbookEngine.getExecution(executionId, teamId);
           if (!execution) {
             res.writeHead(404);
             res.end(JSON.stringify({ error: 'Execution not found' }));
@@ -1538,8 +1566,14 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
                   res.end(JSON.stringify({ error: 'decision is required' }));
                   return;
                 }
-                const execution = await playbookEngine.provideDecision(executionId, decision);
-                res.end(JSON.stringify({ execution }));
+                const execution = playbookEngine.getExecution(executionId, teamId);
+                if (!execution) {
+                  res.writeHead(404);
+                  res.end(JSON.stringify({ error: 'Execution not found' }));
+                  return;
+                }
+                const updatedExecution = await playbookEngine.provideDecision(executionId, decision);
+                res.end(JSON.stringify({ execution: updatedExecution }));
               } catch (err: any) {
                 res.writeHead(err.message.includes('not found') ? 404 : 400);
                 res.end(JSON.stringify({ error: err.message }));
@@ -1552,8 +1586,14 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         if (action === '/cancel' && req.method === 'POST') {
           (async () => {
             try {
-              const execution = await playbookEngine.cancelExecution(executionId);
-              res.end(JSON.stringify({ execution }));
+              const execution = playbookEngine.getExecution(executionId, teamId);
+              if (!execution) {
+                res.writeHead(404);
+                res.end(JSON.stringify({ error: 'Execution not found' }));
+                return;
+              }
+              const cancelledExecution = await playbookEngine.cancelExecution(executionId);
+              res.end(JSON.stringify({ execution: cancelledExecution }));
             } catch (err: any) {
               res.writeHead(err.message.includes('not found') ? 404 : 400);
               res.end(JSON.stringify({ error: err.message }));
