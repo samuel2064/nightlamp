@@ -166,6 +166,49 @@ async function enumerateClerkUsers() {
   return existingUsers;
 }
 
+async function createControlledOwner() {
+  const email = `controlled-owner-${Date.now()}@${emailDomain}`;
+  const password = 'controlled-verification-' + Date.now();
+  const firstName = 'Controlled';
+  const lastName = 'Owner';
+  
+  const createResponse = await clerkRequest('POST', '/users', {
+    email_address: [email],
+    password,
+    first_name: firstName,
+    last_name: lastName,
+    skip_password_requirement: true,
+    skip_password_confirmation: true,
+  });
+  
+  log(`POST create controlled owner user -> HTTP ${createResponse.status}`);
+  if (createResponse.status < 200 || createResponse.status >= 300 || !createResponse.body || !createResponse.body.id) {
+    log(`  Failed to create controlled owner: ${createResponse.status}`);
+    return null;
+  }
+  
+  const userId = createResponse.body.id;
+  log(`Created controlled owner: ${userId} (${email})`);
+  report.identity.controlledOwnerCreated = true;
+  report.identity.controlledOwnerId = userId;
+  
+  return userId;
+}
+
+async function deleteControlledOwner(userId) {
+  const deleteResponse = await clerkRequest('DELETE', `/users/${userId}`);
+  log(`DELETE controlled owner user ${userId} -> HTTP ${deleteResponse.status}`);
+  const success = deleteResponse.status === 204 || deleteResponse.status === 200;
+  if (success) {
+    log(`Controlled owner ${userId} deleted successfully`);
+    report.identity.controlledOwnerDeleted = true;
+  } else {
+    log(`Failed to delete controlled owner ${userId}`);
+    report.identity.controlledOwnerDeleted = false;
+  }
+  return success;
+}
+
 async function mintAndRevokeSession(userId, label) {
   const session = await clerkRequest('POST', '/sessions', { user_id: userId });
   log(`POST a session for ${label} -> HTTP ${session.status}`);
@@ -308,11 +351,60 @@ async function deleteTeam(ownerToken, teamId) {
   return response.status >= 200 && response.status < 300;
 }
 
+async function probeWithForeignRowCheck(label, url, options, expected, userId, userRole) {
+  const response = await fetch(url, options);
+  const text = await response.text();
+  let code = null;
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+    code = typeof parsed.code === 'string' ? parsed.code : null;
+  } catch (error) {
+    parsed = null;
+  }
+  
+  let foreignRows = 0;
+  let ownRows = 0;
+  if (response.status === 200 && parsed && Array.isArray(parsed.events)) {
+    for (const event of parsed.events) {
+      if (event.teamId && userRole && !userRole.isOwner && !userRole.isMember) {
+        foreignRows++;
+      } else if (!event.teamId) {
+        ownRows++;
+      }
+    }
+  } else if (response.status === 200 && parsed && Array.isArray(parsed.runs)) {
+    for (const run of parsed.runs) {
+      if (run.teamId && userRole && !userRole.isOwner && !userRole.isMember) {
+        foreignRows++;
+      } else if (!run.teamId) {
+        ownRows++;
+      }
+    }
+  }
+  
+  if (foreignRows > 0 || ownRows > 0) {
+    log(`  Foreign rows: ${foreignRows}, Own rows: ${ownRows}`);
+  }
+  
+  const entry = {
+    label,
+    expected,
+    status: response.status,
+    code,
+    ok: expected.includes(response.status),
+    foreignRows,
+    ownRows,
+  };
+  report.probes.push(entry);
+  log(`${entry.ok ? 'PASS' : 'FAIL'} ${label} expected ${expected.join('/')} got ${response.status}${code ? ` ${code}` : ''}${foreignRows > 0 || ownRows > 0 ? ` (foreignRows: ${foreignRows}, ownRows: ${ownRows})` : ''}`);
+  return entry;
+}
+
 async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
   const json = { 'Content-Type': 'application/json' };
   const results = [];
   
-  // 1. Self-promotion attempt (PATCH /api/teams/:id/members/:userId with role=owner/admin)
   log('--- NOC-280: Self-promotion attempt ---');
   const selfPromote = await fetch(`${nightlampApi}/api/teams/${teamId}/members/${memberId}`, {
     method: 'PATCH',
@@ -348,7 +440,6 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
   });
   log(`Self-promotion to admin: ${selfPromoteAdmin.status} ${selfPromoteAdmin.status === 403 ? 'PASS' : 'FAIL'}`);
   
-  // 2. Member add/remove members
   log('--- NOC-280: Member add/remove members ---');
   const fakeUserId = 'fake-user-' + Date.now();
   const addMember = await fetch(`${nightlampApi}/api/teams/${teamId}/members`, {
@@ -368,7 +459,6 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
   });
   log(`Member add member: ${addMember.status} ${addMember.status === 403 ? 'PASS' : 'FAIL'}`);
   
-  // Try to remove the member (should fail - not owner/admin)
   const removeMember = await fetch(`${nightlampApi}/api/teams/${teamId}/members/${memberId}`, {
     method: 'DELETE',
     headers: bearer(memberToken)
@@ -385,7 +475,6 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
   });
   log(`Member remove self: ${removeMember.status} ${removeMember.status === 403 ? 'PASS' : 'FAIL'}`);
   
-  // 3. Member rewrite/delete team
   log('--- NOC-280: Member rewrite/delete team ---');
   const rewriteTeam = await fetch(`${nightlampApi}/api/teams/${teamId}`, {
     method: 'PATCH',
@@ -420,7 +509,6 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
   });
   log(`Member delete team: ${deleteTeamAttempt.status} ${deleteTeamAttempt.status === 403 ? 'PASS' : 'FAIL'}`);
   
-  // 4. Member create privileged invitation
   log('--- NOC-280: Member create privileged invitation ---');
   const createInvite = await fetch(`${nightlampApi}/api/teams/${teamId}/invitations`, {
     method: 'POST',
@@ -439,7 +527,6 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
   });
   log(`Member create admin invitation: ${createInvite.status} ${createInvite.status === 403 ? 'PASS' : 'FAIL'}`);
   
-  // 5. Admin endpoint remains 403 for member
   log('--- NOC-280: Admin endpoint ---');
   const adminEndpoint = await fetch(`${nightlampApi}/api/remediation/approve`, {
     method: 'POST',
@@ -458,7 +545,6 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
   });
   log(`Member admin endpoint: ${adminEndpoint.status} ${adminEndpoint.status === 403 ? 'PASS' : 'FAIL'}`);
   
-  // 6. Unknown team returns 404
   log('--- NOC-280: Unknown team ---');
   const unknownTeam = await fetch(`${nightlampApi}/api/teams/unknown-team-id/members/${memberId}`, {
     method: 'PATCH',
@@ -477,7 +563,6 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
   });
   log(`Unknown team: ${unknownTeam.status} ${unknownTeam.status === 404 ? 'PASS' : 'FAIL'}`);
   
-  // 7. Non-member role target does not return false success
   log('--- NOC-280: Non-member role target ---');
   const nonMemberTarget = await fetch(`${nightlampApi}/api/teams/${teamId}/members/non-existent-user`, {
     method: 'PATCH',
@@ -496,8 +581,6 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
   });
   log(`Non-member target: ${nonMemberTarget.status} ${nonMemberTarget.status === 404 ? 'PASS' : 'FAIL'}`);
   
-  // Also verify the role persists as 'member' in the database
-  // We'll check by listing members
   const listMembers = await fetch(`${nightlampApi}/api/teams/${teamId}/members`, {
     headers: bearer(ownerToken)
   });
@@ -525,23 +608,12 @@ async function runNoc274Matrix(ownerToken, teamId) {
   const json = { 'Content-Type': 'application/json' };
   const results = [];
   
-  log('--- NOC-274: Create a pending retry-webhook run ---');
-  // First, we need to create a remediation run with retry-webhook action
-  // This might require creating a playbook entry first, but let's try the direct API
-  // The API expects a team context via x-nightlamp-team-id header
-  
-  // We'll use the owner token with the team header
+  log('--- NOC-274: Owner/admin approval reaches truthful terminal result ---');
   const ownerHeaders = bearer(ownerToken, { 
     'Content-Type': 'application/json',
     'x-nightlamp-team-id': teamId
   });
   
-  // Try to create a remediation run - this might not be directly exposed
-  // Let's check if there's a way to create one
-  // For now, we'll test the approve/reject/retry endpoints with unknown IDs
-  
-  log('--- NOC-274: Owner/admin approval reaches truthful terminal result ---');
-  // Try to approve an unknown run (should get 404)
   const approveUnknown = await fetch(`${nightlampApi}/api/remediation/approve`, {
     method: 'POST',
     headers: ownerHeaders,
@@ -559,7 +631,6 @@ async function runNoc274Matrix(ownerToken, teamId) {
   });
   log(`Approve unknown run: ${approveUnknown.status} ${approveUnknown.status === 404 ? 'PASS' : 'FAIL'}`);
   
-  // Try to reject an unknown run
   const rejectUnknown = await fetch(`${nightlampApi}/api/remediation/reject`, {
     method: 'POST',
     headers: ownerHeaders,
@@ -577,7 +648,6 @@ async function runNoc274Matrix(ownerToken, teamId) {
   });
   log(`Reject unknown run: ${rejectUnknown.status} ${rejectUnknown.status === 404 ? 'PASS' : 'FAIL'}`);
   
-  // Try to retry an unknown run
   const retryUnknown = await fetch(`${nightlampApi}/api/remediation/retry`, {
     method: 'POST',
     headers: ownerHeaders,
@@ -595,7 +665,6 @@ async function runNoc274Matrix(ownerToken, teamId) {
   });
   log(`Retry unknown run: ${retryUnknown.status} ${retryUnknown.status === 404 ? 'PASS' : 'FAIL'}`);
   
-  // Try unknown action (not retry-webhook)
   const unknownAction = await fetch(`${nightlampApi}/api/remediation/approve`, {
     method: 'POST',
     headers: ownerHeaders,
@@ -648,7 +717,6 @@ async function run() {
     return;
   }
   
-  // Mint sessions for all users and query their team membership
   const userRoles = new Map();
   
   for (const user of existingUsers) {
@@ -660,7 +728,6 @@ async function run() {
     }
   }
   
-  // Find an owner and a second identity (member of a different team or no team)
   let ownerEntry = null;
   let memberEntry = null;
   
@@ -672,7 +739,6 @@ async function run() {
     }
   }
   
-  // If no member with different team, use a user with no team access
   if (!memberEntry) {
     for (const [userId, data] of userRoles.entries()) {
       if (userId !== ownerEntry?.userId && !data.isOwner && !data.isMember) {
@@ -701,7 +767,32 @@ async function run() {
     log('No second identity identified among existing users');
   }
   
-  // If we have both an owner and a second identity, run the full matrix
+  let controlledOwnerId = null;
+  let controlledOwnerToken = null;
+  let controlledOwnerSessionUserId = null;
+  
+  if (!ownerEntry) {
+    log('--- Creating controlled owner ---');
+    controlledOwnerId = await createControlledOwner();
+    if (controlledOwnerId) {
+      const sessionData = await mintAndRevokeSession(controlledOwnerId, 'controlled-owner');
+      if (sessionData) {
+        controlledOwnerToken = sessionData.token;
+        controlledOwnerSessionUserId = controlledOwnerId;
+        const membership = await queryTeamMembership(controlledOwnerToken, controlledOwnerId);
+        ownerEntry = { userId: controlledOwnerId, ...membership, token: controlledOwnerToken };
+        report.identity.ownerIdentified = true;
+        report.identity.ownerId = controlledOwnerId;
+        report.identity.controlledOwnerUsed = true;
+        log(`Controlled owner created and session minted: ${controlledOwnerId}`);
+      } else {
+        log('Failed to mint session for controlled owner');
+        await deleteControlledOwner(controlledOwnerId);
+        controlledOwnerId = null;
+      }
+    }
+  }
+  
   if (ownerEntry && memberEntry) {
     const testTeamId = await createTestTeam(ownerEntry.token, ownerEntry.userId, memberEntry.userId);
     if (testTeamId) {
@@ -712,15 +803,12 @@ async function run() {
       if (added) {
         report.identity.memberAddedToTestTeam = true;
         
-        // Run NOC-280 matrix
         const noc280Results = await runNoc280Matrix(memberEntry.token, testTeamId, memberEntry.userId, ownerEntry.token);
         report.probes.push(...noc280Results);
         
-        // Run NOC-274 matrix
         const noc274Results = await runNoc274Matrix(ownerEntry.token, testTeamId);
         report.probes.push(...noc274Results);
         
-        // Cleanup test team
         await cleanupTestTeam(ownerEntry.token, testTeamId);
         report.identity.testTeamRemoved = true;
       } else {
@@ -730,28 +818,35 @@ async function run() {
     } else {
       report.identity.testTeamCreated = false;
     }
+    report.identity.fullMatrixRun = true;
   } else {
     log('Cannot run full matrix: missing owner or second identity');
     report.identity.fullMatrixRun = false;
   }
   
-  // Basic probes for all users with sessions
   for (const [userId, sessionData] of userSessions.entries()) {
-    const userRole = userRoles.get(userId);
-    const label = userRole?.isOwner ? 'owner' : (userRole?.isMember ? 'member' : 'no-team');
+    const userRole = userRoles.get(userId) || (userId === controlledOwnerSessionUserId ? { isOwner: false, isMember: false } : null);
+    if (!userRole) continue;
     
-    await probe(
+    const label = userRole.isOwner ? 'owner' : (userRole.isMember ? 'member' : 'no-team');
+    const expectedStatus = userRole.isOwner || userRole.isMember ? [200] : [200];
+    
+    await probeWithForeignRowCheck(
       `a signed-in ${label} can list the events`,
       `${nightlampApi}/api/events`,
       { headers: bearer(sessionData.token) },
-      userRole?.isOwner || userRole?.isMember ? [200] : [403]
+      expectedStatus,
+      userId,
+      userRole
     );
     
-    await probe(
+    await probeWithForeignRowCheck(
       `a signed-in ${label} can list the remediation runs`,
       `${nightlampApi}/api/remediation/runs`,
       { headers: bearer(sessionData.token) },
-      userRole?.isOwner || userRole?.isMember ? [200] : [403]
+      expectedStatus,
+      userId,
+      userRole
     );
     
     await probe(
@@ -760,6 +855,12 @@ async function run() {
       { method: 'POST', headers: bearer(sessionData.token, { 'Content-Type': 'application/json' }), body: JSON.stringify({ id: 'nightlamp-controlled-unknown-id' }) },
       [404]
     );
+  }
+  
+  if (controlledOwnerId) {
+    log('--- Cleanup: Deleting controlled owner ---');
+    await revokeSession(controlledOwnerId);
+    await deleteControlledOwner(controlledOwnerId);
   }
 }
 
