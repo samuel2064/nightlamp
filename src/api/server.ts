@@ -23,7 +23,7 @@ import { nodeHTTPRequestHandler } from '@trpc/server/adapters/node-http';
 import { handleSSERequest } from './sse';
 import { createPlaybookEngine } from '../playbook/engine';
 import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
-import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership, authenticateRequest, authenticateRequestAsync, requireRole } from './auth';
+import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership, authenticateRequestAsync, requireRole } from './auth';
 import { tenantFilter, rowBelongsToTenant } from './tenant';
 
 export interface ApiConfig {

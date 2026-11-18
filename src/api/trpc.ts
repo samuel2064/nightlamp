@@ -3,7 +3,7 @@ import { z } from 'zod';
 import superjson from 'superjson';
 import { Database } from 'sql.js';
 import { PlaybookEngine, createPlaybookEngine, PlaybookExecution, PlaybookDefinition, PlaybookStep } from '../playbook/engine';
-import { ApiAuthError, TeamRole, VerifiedTokenClaims, upsertUser, verifyAccessToken, verifyAccessTokenAsync, extractBearerToken } from './auth';
+import { ApiAuthError, TeamRole, VerifiedTokenClaims, upsertUser, verifyAccessTokenAsync, extractBearerToken } from './auth';
 import { IncomingMessage } from 'http';
 import * as crypto from 'crypto';
 

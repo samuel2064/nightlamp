@@ -1,7 +1,7 @@
 import { createDatabase } from '../db/schema';
 import { startApiServer } from '../api/server';
 import { appRouter, createTRPCContext, createTRPCContextFromNodeRequest } from '../api/trpc';
-import { ApiAuthError, authenticateRequest, verifyAccessToken } from '../api/auth';
+import { ApiAuthError, authenticateRequestAsync, verifyAccessTokenAsync } from '../api/auth';
 import { createPlaybookEngine } from '../playbook/engine';
 import initSqlJs, { Database } from 'sql.js';
 import { Server } from 'http';
@@ -93,48 +93,48 @@ describe('P0 API authorization', () => {
   });
 
   describe('token verification', () => {
-    it('accepts a correctly signed token', () => {
-      const claims = verifyAccessToken(createTestToken({ sub: TEST_CLERK_USER_ID }));
+    it('accepts a correctly signed token', async () => {
+      const claims = await verifyAccessTokenAsync(createTestToken({ sub: TEST_CLERK_USER_ID }));
       assert.strictEqual(claims.sub, TEST_CLERK_USER_ID);
     });
 
-    it('rejects a token signed with a different secret', () => {
+    it('rejects a token signed with a different secret', async () => {
       const forged = createTestToken({ sub: 'attacker' }, 'not-the-real-secret');
-      assert.throws(() => verifyAccessToken(forged), (err: any) => err instanceof ApiAuthError && err.statusCode === 401);
+      await assert.rejects(verifyAccessTokenAsync(forged), (err: any) => err instanceof ApiAuthError && err.statusCode === 401);
     });
 
-    it('rejects an expired token', () => {
+    it('rejects an expired token', async () => {
       const expired = createTestToken({ sub: TEST_CLERK_USER_ID, exp: Math.floor(Date.now() / 1000) - 120 });
-      assert.throws(() => verifyAccessToken(expired), (err: any) => err instanceof ApiAuthError && err.statusCode === 401);
+      await assert.rejects(verifyAccessTokenAsync(expired), (err: any) => err instanceof ApiAuthError && err.statusCode === 401);
     });
 
-    it('rejects a malformed token', () => {
-      assert.throws(() => verifyAccessToken('not-a-jwt'), (err: any) => err instanceof ApiAuthError && err.statusCode === 401);
+    it('rejects a malformed token', async () => {
+      await assert.rejects(verifyAccessTokenAsync('not-a-jwt'), (err: any) => err instanceof ApiAuthError && err.statusCode === 401);
     });
 
-    it('rejects a token whose subject is a non-string', () => {
+    it('rejects a token whose subject is a non-string', async () => {
       const malformed = createTestToken({ sub: 42 });
-      assert.throws(() => verifyAccessToken(malformed), (err: any) => err instanceof ApiAuthError && err.statusCode === 401);
+      await assert.rejects(verifyAccessTokenAsync(malformed), (err: any) => err instanceof ApiAuthError && err.statusCode === 401);
     });
   });
 
   describe('request authentication', () => {
-    it('rejects a request without an Authorization header', () => {
-      assert.throws(
-        () => authenticateRequest(db, nodeRequest({})),
+    it('rejects a request without an Authorization header', async () => {
+      await assert.rejects(
+        authenticateRequestAsync(db, nodeRequest({})),
         (err: any) => err instanceof ApiAuthError && err.statusCode === 401
       );
     });
 
-    it('rejects a request with an invalid bearer token', () => {
-      assert.throws(
-        () => authenticateRequest(db, nodeRequest({ authorization: 'Bearer forged.token.value' })),
+    it('rejects a request with an invalid bearer token', async () => {
+      await assert.rejects(
+        authenticateRequestAsync(db, nodeRequest({ authorization: 'Bearer forged.token.value' })),
         (err: any) => err instanceof ApiAuthError && err.statusCode === 401
       );
     });
 
-    it('resolves the team and role for a valid token', () => {
-      const auth = authenticateRequest(db, nodeRequest({
+    it('resolves the team and role for a valid token', async () => {
+      const auth = await authenticateRequestAsync(db, nodeRequest({
         authorization: `Bearer ${createTestToken({ sub: TEST_CLERK_USER_ID })}`,
       }));
       assert.strictEqual(auth.userId, TEST_LOCAL_USER_ID);
@@ -142,9 +142,9 @@ describe('P0 API authorization', () => {
       assert.strictEqual(auth.role, 'owner');
     });
 
-    it('forbids access to a team the caller does not belong to', () => {
-      assert.throws(
-        () => authenticateRequest(db, nodeRequest({
+    it('forbids access to a team the caller does not belong to', async () => {
+      await assert.rejects(
+        authenticateRequestAsync(db, nodeRequest({
           authorization: `Bearer ${createTestToken({ sub: TEST_CLERK_USER_ID, org_id: otherTeamId })}`,
         })),
         (err: any) => err instanceof ApiAuthError && err.statusCode === 403
