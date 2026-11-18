@@ -2,9 +2,6 @@ name: Configure Render auth env vars
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - ops/render-auth-config
 
 permissions:
   contents: write
@@ -26,7 +23,6 @@ jobs:
       BACKEND_SERVICE_ID: ${{ secrets.RENDER_BACKEND_SERVICE_ID }}
       FRONTEND_SERVICE_ID: ${{ secrets.RENDER_FRONTEND_SERVICE_ID }}
       GITHUB_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
-      GITHUB_CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
       CLERK_JWT_PUBLIC_KEY: |
         -----BEGIN PUBLIC KEY-----
         MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6+uwb+X/QKQQp/8A0Sy3
@@ -49,6 +45,7 @@ jobs:
           set -euo pipefail
           test -n "$RENDER_API_KEY" || { echo "::error::RENDER_API_KEY secret is missing or empty"; exit 1; }
           test -n "$BACKEND_SERVICE_ID" || { echo "::error::RENDER_BACKEND_SERVICE_ID secret is missing or empty"; exit 1; }
+          test -n "$FRONTEND_SERVICE_ID" || { echo "::error::RENDER_FRONTEND_SERVICE_ID secret is missing or empty"; exit 1; }
           echo "preflight ok"
 
       - name: List the Render services

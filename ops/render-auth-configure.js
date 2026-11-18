@@ -10,7 +10,6 @@ const issuer = process.env.CLERK_ISSUER;
 const instance = process.env.CLERK_INSTANCE;
 const publicKey = process.env.CLERK_JWT_PUBLIC_KEY;
 const githubPublishable = process.env.GITHUB_CLERK_PUBLISHABLE_KEY;
-const githubSecret = process.env.GITHUB_CLERK_SECRET_KEY;
 const audienceSource = process.env.CLERK_AUDIENCE_SOURCE || 'auto';
 const clerkApi = process.env.CLERK_API || 'https://api.clerk.com/v1';
 
@@ -82,13 +81,13 @@ function clerkInstance(keyValue) {
   }
 }
 
-async function clerkRequest(method, path, body) {
+async function clerkRequest(method, path, body, secretKey) {
   const options = {
     method,
-    headers: { Authorization: `Bearer ${githubSecret}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${secretKey}`, 'Content-Type': 'application/json' },
   };
   if (body) options.body = JSON.stringify(body);
-  const response = await fetch(`${clerkApi}${path}`, options);
+  const response = await fetch(`${process.env.CLERK_API || 'https://api.clerk.com/v1'}${path}`, options);
   const text = await response.text();
   let parsed = null;
   try {
@@ -99,48 +98,93 @@ async function clerkRequest(method, path, body) {
   return { status: response.status, body: parsed };
 }
 
-async function extractAudienceFromSession() {
-  if (!githubSecret) {
-    log('CLERK_SECRET_KEY not available, cannot extract audience from session');
+async function extractAudienceFromSession(frontendSecretKey) {
+  if (!frontendSecretKey) {
+    log('CLERK_SECRET_KEY not available on frontend service, cannot extract audience from session');
     return null;
   }
 
-  const users = await clerkRequest('GET', '/users?limit=1');
+  const users = await clerkRequest('GET', '/users?limit=1', {}, frontendSecretKey);
   if (users.status !== 200 || !Array.isArray(users.body) || users.body.length === 0) {
     log('Failed to get a user to mint session for audience extraction');
     return null;
   }
 
   const userId = users.body[0].id;
-  const session = await clerkRequest('POST', '/sessions', { user_id: userId });
-  if (session.status < 200 || session.status >= 300 || !session.body || !session.body.id) {
-    log(`Failed to create session for audience extraction: ${session.status}`);
-    return null;
-  }
+  let sessionId = null;
+  let token = null;
 
-  const tokenResponse = await clerkRequest('POST', `/sessions/${session.body.id}/tokens`, {});
-  const token = tokenResponse.body && tokenResponse.body.jwt;
-  if (!token) {
-    log('Failed to mint token for audience extraction');
-    return null;
-  }
-
-  let claims = {};
   try {
-    claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
-  } catch (error) {
-    log('Failed to parse JWT claims for audience');
+    const session = await clerkRequest('POST', '/sessions', { user_id: userId }, frontendSecretKey);
+    if (session.status < 200 || session.status >= 300 || !session.body || !session.body.id) {
+      log(`Failed to create session for audience extraction: ${session.status}`);
+      return null;
+    }
+    sessionId = session.body.id;
+
+    const tokenResponse = await clerkRequest('POST', `/sessions/${sessionId}/tokens`, {}, frontendSecretKey);
+    const tokenValue = tokenResponse.body && tokenResponse.body.jwt;
+    if (tokenResponse.status < 200 || tokenResponse.status >= 300 || !tokenValue) {
+      log('Failed to mint token for audience extraction');
+      return null;
+    }
+    token = tokenValue;
+
+    let claims = {};
+    try {
+      claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+    } catch (error) {
+      log('Failed to parse JWT claims for audience');
+      return null;
+    }
+
+    const aud = claims.aud;
+    if (!aud) {
+      log('No aud claim found in session token');
+      return null;
+    }
+
+    log(`Extracted audience from session token: ${Array.isArray(aud) ? aud.join(',') : aud}`);
+    return Array.isArray(aud) ? aud[0] : aud;
+  } finally {
+    if (sessionId) {
+      try {
+        const revoked = await clerkRequest('POST', `/sessions/${sessionId}/revoke`, {}, frontendSecretKey);
+        log(`Revoked session for audience extraction: HTTP ${revoked.status}`);
+      } catch (error) {
+        log(`Failed to revoke session: ${error.message}`);
+      }
+    }
+  }
+}
+
+async function getFrontendSecretKey() {
+  if (!frontendId) {
+    log('FRONTEND_SERVICE_ID not provided, cannot read frontend env vars');
     return null;
   }
 
-  const aud = claims.aud;
-  if (!aud) {
-    log('No aud claim found in session token');
+  const envVars = await listEnvVars(frontendId);
+  if (!envVars) {
+    log('Failed to read frontend environment variables');
     return null;
   }
 
-  log(`Extracted audience from session token: ${Array.isArray(aud) ? aud.join(',') : aud}`);
-  return Array.isArray(aud) ? aud[0] : aud;
+  const secret = envVars.find((entry) => entry.key === 'CLERK_SECRET_KEY');
+  if (!secret || !secret.value) {
+    log('CLERK_SECRET_KEY not found on frontend service');
+    return null;
+  }
+
+  const publishable = envVars.find((entry) => entry.key === 'NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY');
+  const publishableInstance = clerkInstance(publishable?.value || '');
+  log(`frontend publishable key instance: ${publishableInstance || 'unknown'}`);
+  if (!publishableInstance || publishableInstance !== instance) {
+    log('frontend publishable key belongs to a different Clerk instance');
+    return null;
+  }
+
+  return String(secret.value).trim();
 }
 
 function replaceEnvVars(serviceId, current, additions) {
@@ -192,6 +236,13 @@ function replaceEnvVars(serviceId, current, additions) {
 }
 
 async function run() {
+  const frontendSecretKey = await getFrontendSecretKey();
+  if (!frontendSecretKey) {
+    result.actions.push('failed to obtain CLERK_SECRET_KEY from frontend service');
+    fs.writeFileSync(resultFile, JSON.stringify(result));
+    process.exit(1);
+  }
+
   const backend = listEnvVars(backendId);
   if (backend) {
     log(`backend env var object keys: ${backend.length ? Object.keys(backend[0]).join(',') : 'empty'}`);
@@ -201,12 +252,15 @@ async function run() {
     ];
 
     if (!backend.some((entry) => entry.key === 'CLERK_JWT_AUDIENCE')) {
-      const audience = await extractAudienceFromSession();
+      const audience = await extractAudienceFromSession(frontendSecretKey);
       if (audience) {
         additions.push({ key: 'CLERK_JWT_AUDIENCE', value: audience });
         log(`Adding CLERK_JWT_AUDIENCE to backend service`);
       } else {
-        log('Could not extract audience, skipping CLERK_JWT_AUDIENCE');
+        log('Could not extract audience, failing closed - CLERK_JWT_AUDIENCE not set');
+        result.actions.push('failed to extract audience, backend unchanged');
+        fs.writeFileSync(resultFile, JSON.stringify(result));
+        process.exit(1);
       }
     } else {
       log('CLERK_JWT_AUDIENCE already present on backend service');
@@ -227,39 +281,6 @@ async function run() {
     }
   } else {
     result.actions.push('could not read the backend environment variables');
-  }
-
-  if (frontendId) {
-    const frontend = listEnvVars(frontendId);
-    if (frontend) {
-      const additions = [];
-      const publishableInstance = clerkInstance(githubPublishable);
-      const secretInstance = clerkInstance(githubSecret);
-      log(`github publishable key instance: ${publishableInstance || 'unknown'}`);
-      log(`github secret key instance: ${secretInstance || 'unknown'}`);
-      if (!frontend.some((entry) => entry.key === 'NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY')) {
-        if (publishableInstance === instance) {
-          additions.push({ key: 'NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY', value: githubPublishable });
-        } else {
-          result.actions.push('refused NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY because the instance does not match');
-        }
-      }
-      if (!frontend.some((entry) => entry.key === 'CLERK_SECRET_KEY')) {
-        if (secretInstance === instance) {
-          additions.push({ key: 'CLERK_SECRET_KEY', value: githubSecret });
-        } else {
-          result.actions.push('refused CLERK_SECRET_KEY because the instance does not match');
-        }
-      }
-      if (additions.length) {
-        const outcome = replaceEnvVars(frontendId, frontend, additions);
-        if (outcome.ok) {
-          result.actions.push('added the missing Clerk variables to the frontend service');
-        }
-      } else {
-        result.actions.push('the frontend Clerk variables were already present, nothing changed');
-      }
-    }
   }
 
   fs.writeFileSync(resultFile, JSON.stringify(result));
