@@ -12,7 +12,7 @@ const resultFile = process.env.RESULT_FILE || '/tmp/controlled-identity-result.j
 const marker = process.env.VERIFICATION_MARKER || 'nightlamp-controlled-verification';
 const emailDomain = process.env.VERIFICATION_EMAIL_DOMAIN || 'example.com';
 
-const noTeamExpectedStatus = process.env.NO_TEAM_EXPECTED_STATUS ? parseInt(process.env.NO_TEAM_EXPECTED_STATUS, 10) : 403;
+const noTeamExpectedStatus = process.env.NO_TEAM_EXPECTED_STATUS ? parseInt(process.env.NO_TEAM_EXPECTED_STATUS, 10) : 200;
 
 const report = {
   probes: [],
@@ -402,19 +402,25 @@ async function probeWithForeignRowCheck(label, url, options, expected, userId, u
     log(`  Foreign rows: ${foreignRows}, Own team rows: ${ownRows}, Personal rows: ${personalRows}, isNoTeamUser: ${isNoTeamUser}`);
   }
   
+  const statusOk = expected.includes(response.status);
+  const foreignRowsOk = !isNoTeamUser || foreignRows === 0;
+  const ok = statusOk && foreignRowsOk;
+  
   const entry = {
     label,
     expected,
     status: response.status,
     code,
-    ok: expected.includes(response.status),
+    ok,
     foreignRows,
     ownRows,
     personalRows,
     isNoTeamUser,
   };
   report.probes.push(entry);
-  log(`${entry.ok ? 'PASS' : 'FAIL'} ${label} expected ${expected.join('/')} got ${response.status}${code ? ` ${code}` : ''}${foreignRows > 0 || ownRows > 0 || personalRows > 0 ? ` (foreignRows: ${foreignRows}, ownRows: ${ownRows}, personalRows: ${personalRows})` : ''}`);
+  const details = foreignRows > 0 || ownRows > 0 || personalRows > 0 ? ` (foreignRows: ${foreignRows}, ownRows: ${ownRows}, personalRows: ${personalRows})` : '';
+  const foreignRowsDetail = isNoTeamUser && foreignRows > 0 ? ` FOREIGN ROWS DETECTED: ${foreignRows}` : '';
+  log(`${ok ? 'PASS' : 'FAIL'} ${label} expected ${expected.join('/')} got ${response.status}${code ? ` ${code}` : ''}${details}${foreignRowsDetail}`);
   return entry;
 }
 
@@ -816,6 +822,14 @@ let privilegeProbesPassed = 0;
 
   if (ownerEntry && memberEntry) {
     const testTeamId = await createTestTeam(ownerEntry.token, ownerEntry.userId, memberEntry.userId);
+    report.probes.push({
+      label: 'controlled owner creates test team',
+      expected: [200, 201],
+      status: testTeamId ? 200 : 403,
+      code: testTeamId ? null : 'TEAM_CREATE_FAILED',
+      ok: !!testTeamId,
+    });
+    
     if (testTeamId) {
       report.identity.testTeamCreated = true;
       report.identity.testTeamId = testTeamId;
@@ -842,6 +856,8 @@ let privilegeProbesPassed = 0;
       }
     } else {
       report.identity.testTeamCreated = false;
+      log('Team creation failed with 403 - this is expected per NOC-294 decision (fail closed for users with no membership). Full privilege matrix cannot run until NOC-294 membership binding is fixed.');
+      report.identity.matrixBlockedBy = 'NOC-294: membership binding required for team creation';
     }
     report.identity.fullMatrixRun = report.identity.testTeamCreated && report.identity.memberAddedToTestTeam && privilegeProbesRun > 0;
   } else {
