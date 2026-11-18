@@ -555,7 +555,7 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
     test: 'member-admin-endpoint',
     expected: [403],
     status: adminEndpoint.status,
-    code: aePars�?.code,
+    code: aeParsed?.code,
     ok: adminEndpoint.status === 403
   });
   log(`Member admin endpoint: ${adminEndpoint.status} ${adminEndpoint.status === 403 ? 'PASS' : 'FAIL'}`);
