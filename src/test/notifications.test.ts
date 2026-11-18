@@ -306,6 +306,10 @@ describe('Notification Service', function () {
   describe('API Endpoints', function () {
     let server: any;
     let port: number;
+    // NOC-319: channel routes are tenant-owned. main has no owner column, so the
+    // API fixtures authenticate as a member of a real team instead of a teamless
+    // identity (the unscoped bucket is closed to everyone by the P0 port).
+    const NOTIFICATION_TEAM_ID = 'notif-api-team';
 
     beforeEach(function (done) {
       const { startApiServer } = require('../api/server');
@@ -314,6 +318,12 @@ describe('Notification Service', function () {
         port = server.address().port;
         done();
       });
+    });
+
+    beforeEach(function () {
+      db.run('INSERT OR IGNORE INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)', [TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID, 'owner@example.com', 'Owner']);
+      db.run('INSERT INTO teams (id, name, slug, owner_id) VALUES (?, ?, ?, ?)', [NOTIFICATION_TEAM_ID, 'Notif API Team', 'notif-api-team', TEST_LOCAL_USER_ID]);
+      db.run('INSERT INTO memberships (id, team_id, user_id, role) VALUES (?, ?, ?, ?)', [uuidv4(), NOTIFICATION_TEAM_ID, TEST_LOCAL_USER_ID, 'owner']);
     });
 
     afterEach(function () {
@@ -327,7 +337,7 @@ describe('Notification Service', function () {
           ...(options || { method: 'GET' }),
           headers: {
             ...(options?.headers || {}),
-            Authorization: `Bearer ${options?.token || createTestToken()}`,
+            Authorization: `Bearer ${options?.token || createTestToken({ org_id: NOTIFICATION_TEAM_ID })}`,
           },
         };
         const req = require('http').request(url, requestOptions, (res: any) => {

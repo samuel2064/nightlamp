@@ -29,6 +29,22 @@ export function tenantFilter(column: string, teamId: string | null): TenantFilte
   return { clause: `${column} = ?`, params: [teamId] };
 }
 
+/**
+ * Scope for rows that always belong to a tenant.
+ *
+ * The monitoring tables (failure_events, check_results, checks, remediation_runs,
+ * dependencies) have no owner column, so the unscoped bucket (`team_id IS NULL`)
+ * is shared by every personal identity. A caller without a team membership has
+ * no rows of its own there, so the filter matches nothing and the routes that
+ * use it answer 403 through `requireTenantScope` (NOC-319).
+ */
+export function tenantOwnedFilter(column: string, teamId: string | null): TenantFilter {
+  if (teamId === null) {
+    return { clause: '1 = 0', params: [] };
+  }
+  return { clause: `${column} = ?`, params: [teamId] };
+}
+
 export function tenantFilterForTables(
   table: TenantTable,
   teamId: string | null,

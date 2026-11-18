@@ -84,7 +84,7 @@ export class TeamApi {
         return true;
       }
       if (subPath === '/accept') {
-        if (req.method === 'POST') { this.handleAcceptInvitation(req, token, res); return true; }
+        if (req.method === 'POST') { this.handleAcceptInvitation(req, token, res, auth); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
@@ -145,21 +145,27 @@ export class TeamApi {
   }
 
   private handleCreateTeam(req: IncomingMessage, res: ServerResponse, auth?: AuthContext | null): void {
+    if (!auth) {
+      res.writeHead(401);
+      res.end(JSON.stringify({ error: 'Authentication required' }));
+      return;
+    }
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {
-        const { name, slug, ownerId, plan } = JSON.parse(body);
-        if (!name || !slug || !ownerId) {
+        const { name, slug, ownerId: requestedOwnerId, plan } = JSON.parse(body);
+        if (!name || !slug) {
           res.writeHead(400);
-          res.end(JSON.stringify({ error: 'name, slug, and ownerId are required' }));
+          res.end(JSON.stringify({ error: 'name and slug are required' }));
           return;
         }
-        if (auth && ownerId !== auth.userId) {
+        if (requestedOwnerId && requestedOwnerId !== auth.userId) {
           res.writeHead(403);
           res.end(JSON.stringify({ error: 'You can only create a team that you own', code: 'FORBIDDEN' }));
           return;
         }
+        const ownerId = auth.userId;
         const id = uuidv4();
         this.db.run(
           'INSERT INTO teams (id, name, slug, owner_id, plan) VALUES (?, ?, ?, ?, ?)',
@@ -275,10 +281,10 @@ export class TeamApi {
     req.on('end', () => {
       try {
         if (!this.requireTeamAdmin(auth, teamId, res)) return;
-        const { userId, role } = JSON.parse(body);
-        if (!userId) {
+        const { userId, email, role } = JSON.parse(body);
+        if (!userId && !email) {
           res.writeHead(400);
-          res.end(JSON.stringify({ error: 'userId is required' }));
+          res.end(JSON.stringify({ error: 'userId or email is required' }));
           return;
         }
         const memberRole = role || 'member';
@@ -298,12 +304,18 @@ export class TeamApi {
           res.end(JSON.stringify({ error: 'Team not found' }));
           return;
         }
+        const resolvedUserId = this.resolveExistingUser(userId, email);
+        if (!resolvedUserId) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: 'No account exists for that user', code: 'USER_NOT_FOUND' }));
+          return;
+        }
         const id = uuidv4();
         this.db.run(
           'INSERT INTO memberships (id, team_id, user_id, role) VALUES (?, ?, ?, ?)',
-          [id, teamId, userId, memberRole]
+          [id, teamId, resolvedUserId, memberRole]
         );
-        res.end(JSON.stringify({ success: true, id, teamId, userId, role: memberRole }));
+        res.end(JSON.stringify({ success: true, id, teamId, userId: resolvedUserId, role: memberRole }));
       } catch (err: any) {
         if (err.message && err.message.includes('UNIQUE')) {
           res.writeHead(409);
@@ -314,6 +326,22 @@ export class TeamApi {
         res.end(JSON.stringify({ error: err.message }));
       }
     });
+  }
+
+  private resolveExistingUser(userId?: string, email?: string): string | null {
+    if (userId) {
+      const byId = this.db.exec('SELECT id FROM users WHERE id = ?', [userId]);
+      if (byId.length > 0 && byId[0].values.length > 0) {
+        return byId[0].values[0][0] as string;
+      }
+      if (!email) return null;
+    }
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const byEmail = this.db.exec('SELECT id FROM users WHERE LOWER(email) = ?', [normalizedEmail]);
+    if (byEmail.length > 0 && byEmail[0].values.length > 0) {
+      return byEmail[0].values[0][0] as string;
+    }
+    return null;
   }
 
   private handleUpdateMemberRole(req: IncomingMessage, teamId: string, userId: string, res: ServerResponse, auth?: AuthContext | null): void {
@@ -505,7 +533,12 @@ export class TeamApi {
     }));
   }
 
-  private handleAcceptInvitation(req: IncomingMessage, token: string, res: ServerResponse): void {
+  private handleAcceptInvitation(req: IncomingMessage, token: string, res: ServerResponse, auth?: AuthContext | null): void {
+    if (!auth) {
+      res.writeHead(401);
+      res.end(JSON.stringify({ error: 'Authentication required' }));
+      return;
+    }
     const result = this.db.exec(
       'SELECT id, team_id, email, role, expires_at FROM invitations WHERE token = ?',
       [token]
@@ -518,7 +551,7 @@ export class TeamApi {
     const row = result[0].values[0];
     const invitationId = row[0] as string;
     const teamId = row[1] as string;
-    const userId = row[2] as string;
+    const invitedEmail = String(row[2] as string).trim().toLowerCase();
     const role = row[3] as string;
     const expiresAt = row[4] as string;
 
@@ -528,13 +561,24 @@ export class TeamApi {
       return;
     }
 
+    const account = this.db.exec('SELECT email FROM users WHERE id = ?', [auth.userId]);
+    const accountEmail = account.length > 0 && account[0].values.length > 0
+      ? String(account[0].values[0][0]).trim().toLowerCase()
+      : '';
+    const bothLookLikeEmails = accountEmail.includes('@') && invitedEmail.includes('@');
+    if (bothLookLikeEmails && accountEmail !== invitedEmail) {
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: 'This invitation was issued to a different email address', code: 'FORBIDDEN' }));
+      return;
+    }
+
     const membershipId = uuidv4();
     this.db.run(
       'INSERT INTO memberships (id, team_id, user_id, role) VALUES (?, ?, ?, ?)',
-      [membershipId, teamId, userId, role]
+      [membershipId, teamId, auth.userId, role]
     );
     this.db.run('DELETE FROM invitations WHERE id = ?', [invitationId]);
 
-    res.end(JSON.stringify({ success: true, teamId, userId, role }));
+    res.end(JSON.stringify({ success: true, teamId, userId: auth.userId, role }));
   }
 }

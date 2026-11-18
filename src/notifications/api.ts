@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { ChannelType, ChannelConfig } from '../alerting/channels';
 import { processNotification, sendDirectNotification, getChannelType, getChannelConfig, checkRateLimit, logDelivery, markDelivered } from './service';
 import { AuthContext } from '../api/auth';
-import { tenantFilter, rowBelongsToTenant } from '../api/tenant';
+import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant } from '../api/tenant';
 
 export class NotificationApi {
   private validTypes: Set<string> = new Set(['slack-webhook', 'email-smtp', 'in-app-websocket']);
@@ -49,7 +49,7 @@ export class NotificationApi {
   }
 
   private handleListChannels(req: IncomingMessage, res: ServerResponse, teamId: string | null): void {
-    const scope = tenantFilter('team_id', teamId);
+    const scope = tenantOwnedFilter('team_id', teamId);
     const sql = `SELECT id, name, type, enabled, team_id, created_at, updated_at FROM alert_channels WHERE ${scope.clause} ORDER BY created_at DESC`;
     const result = this.db.exec(sql, scope.params);
     const channels = result.length > 0 ? result[0].values.map((row: any) => ({
@@ -119,8 +119,13 @@ export class NotificationApi {
         }
 
         updates.push("updated_at = datetime('now')");
-        const scope = tenantFilter('team_id', teamId);
+        const scope = tenantOwnedFilter('team_id', teamId);
         this.db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${scope.clause}`, [...params, channelId, ...scope.params]);
+        if (this.db.getRowsModified() === 0) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: 'Channel not found' }));
+          return;
+        }
         res.end(JSON.stringify({ success: true }));
       } catch (err: any) {
         res.writeHead(400);
@@ -130,7 +135,7 @@ export class NotificationApi {
   }
 
   private handleDeleteChannel(channelId: string, res: ServerResponse, teamId: string | null): void {
-    if (!rowBelongsToTenant(this.db, 'alert_channels', channelId, teamId)) {
+    if (teamId === null || !rowBelongsToTenant(this.db, 'alert_channels', channelId, teamId)) {
       res.writeHead(404);
       res.end(JSON.stringify({ error: 'Channel not found' }));
       return;
@@ -155,7 +160,7 @@ export class NotificationApi {
           return;
         }
 
-        if (!rowBelongsToTenant(this.db, 'alert_channels', channelId, teamId)) {
+        if (teamId === null || !rowBelongsToTenant(this.db, 'alert_channels', channelId, teamId)) {
           res.writeHead(404);
           res.end(JSON.stringify({ error: 'Channel not found' }));
           return;
@@ -212,7 +217,7 @@ export class NotificationApi {
           res.end(JSON.stringify({ error: 'logId is required' }));
           return;
         }
-        const scope = tenantFilter('c.team_id', teamId);
+        const scope = tenantOwnedFilter('c.team_id', teamId);
         const owned = this.db.exec(
           `SELECT al.id FROM alert_log al JOIN alert_channels c ON c.id = al.channel_id WHERE al.id = ? AND ${scope.clause}`,
           [logId, ...scope.params],

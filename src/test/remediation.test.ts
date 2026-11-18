@@ -91,6 +91,7 @@ describe('Remediation - Scripts', () => {
 
 describe('Remediation - Engine', () => {
   let db: Database;
+  const TEAM_ID = 'team-remediation-engine';
 
   beforeEach(async () => {
     db = await createDatabase();
@@ -129,10 +130,10 @@ describe('Remediation - Engine', () => {
   });
 
   it('logs remediation to database', async () => {
-    const entry = getOrCreatePlaybookEntry(db, 'expired_token');
+    const entry = getOrCreatePlaybookEntry(db, 'expired_token', TEAM_ID);
     await runRemediation(db, entry);
 
-    const { logs, count } = getRemediationLogs(db);
+    const { logs, count } = getRemediationLogs(db, 50, 0, undefined, TEAM_ID);
     expect(count).to.equal(1);
     expect(logs[0].failureType).to.equal('expired_token');
     expect(logs[0].script).to.equal('token-refresh');
@@ -140,23 +141,32 @@ describe('Remediation - Engine', () => {
     expect(logs[0].playbookEntryId).to.equal(entry.id);
   });
 
+  it('keeps remediation logs out of the teamless scope', async () => {
+    const entry = getOrCreatePlaybookEntry(db, 'expired_token', TEAM_ID);
+    await runRemediation(db, entry);
+
+    const { logs, count } = getRemediationLogs(db);
+    expect(count).to.equal(0);
+    expect(logs).to.have.lengthOf(0);
+  });
+
   it('lists multiple remediation logs', async () => {
-    const e1 = getOrCreatePlaybookEntry(db, 'expired_token');
-    const e2 = getOrCreatePlaybookEntry(db, 'rate_limit_shift');
+    const e1 = getOrCreatePlaybookEntry(db, 'expired_token', TEAM_ID);
+    const e2 = getOrCreatePlaybookEntry(db, 'rate_limit_shift', TEAM_ID);
     await runRemediation(db, e1);
     await runRemediation(db, e2);
 
-    const { logs, count } = getRemediationLogs(db);
+    const { logs, count } = getRemediationLogs(db, 50, 0, undefined, TEAM_ID);
     expect(count).to.equal(2);
   });
 
   it('filters remediation logs by failure type', async () => {
-    const e1 = getOrCreatePlaybookEntry(db, 'expired_token');
-    const e2 = getOrCreatePlaybookEntry(db, 'rate_limit_shift');
+    const e1 = getOrCreatePlaybookEntry(db, 'expired_token', TEAM_ID);
+    const e2 = getOrCreatePlaybookEntry(db, 'rate_limit_shift', TEAM_ID);
     await runRemediation(db, e1);
     await runRemediation(db, e2);
 
-    const { logs, count } = getRemediationLogs(db, 50, 0, 'expired_token');
+    const { logs, count } = getRemediationLogs(db, 50, 0, 'expired_token', TEAM_ID);
     expect(count).to.equal(1);
     expect(logs[0].failureType).to.equal('expired_token');
   });
@@ -169,28 +179,29 @@ describe('Remediation - Engine', () => {
 
   it('supports pagination', async () => {
     for (let i = 0; i < 5; i++) {
-      const entry = getOrCreatePlaybookEntry(db, 'expired_token');
+      const entry = getOrCreatePlaybookEntry(db, 'expired_token', TEAM_ID);
       await runRemediation(db, entry);
     }
 
-    const page1 = getRemediationLogs(db, 2, 0);
+    const page1 = getRemediationLogs(db, 2, 0, undefined, TEAM_ID);
     expect(page1.logs).to.have.lengthOf(2);
     expect(page1.count).to.equal(5);
 
-    const page2 = getRemediationLogs(db, 2, 2);
+    const page2 = getRemediationLogs(db, 2, 2, undefined, TEAM_ID);
     expect(page2.logs).to.have.lengthOf(2);
   });
 });
 
 describe('Remediation - Integration', () => {
   let db: Database;
+  const TEAM_ID = 'team-remediation-integration';
 
   beforeEach(async () => {
     db = await createDatabase();
   });
 
   it('creates playbook entry, runs remediation, and logs it', async () => {
-    const entry = getOrCreatePlaybookEntry(db, 'expired_token');
+    const entry = getOrCreatePlaybookEntry(db, 'expired_token', TEAM_ID);
     expect(entry.occurrenceCount).to.equal(1);
 
     const result = await runRemediation(db, entry, {
@@ -201,7 +212,7 @@ describe('Remediation - Integration', () => {
 
     expect(result.status).to.equal('failed');
 
-    const { logs } = getRemediationLogs(db);
+    const { logs } = getRemediationLogs(db, 50, 0, undefined, TEAM_ID);
     expect(logs).to.have.lengthOf(1);
     expect(logs[0].status).to.equal('failed');
   });
@@ -210,13 +221,13 @@ describe('Remediation - Integration', () => {
     const types: FailureType[] = ['broken_webhook', 'expired_token', 'schema_drift', 'rate_limit_shift', 'error_spike', 'new_error_pattern'];
 
     for (const ft of types) {
-      const entry = getOrCreatePlaybookEntry(db, ft);
+      const entry = getOrCreatePlaybookEntry(db, ft, TEAM_ID);
       const result = await runRemediation(db, entry);
       expect(result.status).to.equal('success', `Expected success for ${ft}, got ${result.status}: ${result.output}`);
       expect(result.logId).to.be.a('string');
     }
 
-    const { logs, count } = getRemediationLogs(db);
+    const { logs, count } = getRemediationLogs(db, 50, 0, undefined, TEAM_ID);
     expect(count).to.equal(types.length);
   });
 });

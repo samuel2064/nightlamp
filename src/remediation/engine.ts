@@ -13,7 +13,7 @@ import { handleClearCache } from './actions/clear-cache';
 import { handleNpmUpdate } from './actions/npm-update';
 import { handleRotateToken } from './actions/rotate-token';
 import { handleRestartService } from './actions/restart-service';
-import { tenantFilter } from '../api/tenant';
+import { tenantOwnedFilter } from '../api/tenant';
 
 export interface RemediationLogEntry {
   id: string;
@@ -119,7 +119,7 @@ export function getRemediationLogs(
   failureType?: string,
   teamId: string | null = null,
 ): { logs: RemediationLogEntry[]; count: number } {
-  const scope = tenantFilter('team_id', teamId);
+  const scope = tenantOwnedFilter('team_id', teamId);
   let sql = `SELECT id, playbook_entry_id, failure_type, script, status, output, executed_at FROM remediation_log WHERE ${scope.clause}`;
   const params: any[] = [...scope.params];
 
@@ -159,8 +159,8 @@ export function getRemediationRuns(
   db: Database,
   params: { status?: string; limit?: number; offset?: number; teamId?: string | null } = {},
 ): { runs: Record<string, SqlValue>[]; count: number } {
-  const scope = tenantFilter('team_id', params.teamId ?? null);
-  const playbookScope = tenantFilter('p.team_id', params.teamId ?? null);
+  const scope = tenantOwnedFilter('team_id', params.teamId ?? null);
+  const playbookScope = tenantOwnedFilter('p.team_id', params.teamId ?? null);
   const status = params.status || 'pending';
   const filterParams = [...scope.params, status];
   const countResult = db.exec(
@@ -192,7 +192,7 @@ function getDb(): Database {
 
 export function listRuns(params: { status?: string; playbook_entry_id?: string; limit?: number; offset?: number; teamId?: string | null } = {}): any {
   const db = getDb();
-  const scope = tenantFilter('team_id', params.teamId ?? null);
+  const scope = tenantOwnedFilter('team_id', params.teamId ?? null);
   let sql = `SELECT id, playbook_entry_id, action_name, status, initiated_by, approved_by, output, error, started_at, completed_at, created_at FROM remediation_runs WHERE ${scope.clause}`;
   const q: any[] = [...scope.params];
   if (params.status) { sql += ' AND status = ?'; q.push(params.status); }
@@ -206,7 +206,7 @@ export function listRuns(params: { status?: string; playbook_entry_id?: string; 
 
 export async function approveRun(id: string, teamId: string | null = null): Promise<any> {
   const db = getDb();
-  const scope = tenantFilter('team_id', teamId);
+  const scope = tenantOwnedFilter('team_id', teamId);
   const run = db.exec(`SELECT * FROM remediation_runs WHERE id = ? AND ${scope.clause}`, [id, ...scope.params]);
   if (!run.length || !run[0].values.length) throw new Error('Run not found');
   const r = run[0].values[0];
@@ -247,7 +247,7 @@ export async function approveRun(id: string, teamId: string | null = null): Prom
 
 export function rejectRun(id: string, teamId: string | null = null): any {
   const db = getDb();
-  const scope = tenantFilter('team_id', teamId);
+  const scope = tenantOwnedFilter('team_id', teamId);
   db.run(`UPDATE remediation_runs SET status = 'rejected', completed_at = datetime('now') WHERE id = ? AND ${scope.clause}`, [id, ...scope.params]);
   if (db.getRowsModified() === 0) throw new Error('Run not found');
   return { id, status: 'rejected' };
@@ -255,7 +255,7 @@ export function rejectRun(id: string, teamId: string | null = null): any {
 
 export async function retryRun(id: string, teamId: string | null = null): Promise<any> {
   const db = getDb();
-  const scope = tenantFilter('team_id', teamId);
+  const scope = tenantOwnedFilter('team_id', teamId);
   const run = db.exec(`SELECT * FROM remediation_runs WHERE id = ? AND ${scope.clause}`, [id, ...scope.params]);
   if (!run.length || !run[0].values.length) throw new Error('Run not found');
   const r = run[0].values[0];
@@ -272,7 +272,7 @@ export async function retryRun(id: string, teamId: string | null = null): Promis
 
 export function listPolicies(teamId: string | null = null): Policy[] {
   const db = getDb();
-  const scope = tenantFilter('team_id', teamId);
+  const scope = tenantOwnedFilter('team_id', teamId);
   const res = db.exec(`SELECT id, failure_type, auto_approve, require_dry_run, cooldown_minutes FROM remediation_policies WHERE ${scope.clause}`, scope.params);
   return res.length ? res[0].values.map(r => ({ id: r[0] as string, failure_type: r[1] as string, auto_approve: r[2] as number, require_dry_run: r[3] as number, cooldown_minutes: r[4] as number })) : [];
 }
@@ -289,7 +289,7 @@ export function updatePolicy(
   if (data.require_dry_run !== undefined) { updates.push('require_dry_run = ?'); params.push(data.require_dry_run ? 1 : 0); }
   if (data.cooldown_minutes !== undefined) { updates.push('cooldown_minutes = ?'); params.push(data.cooldown_minutes); }
   if (!updates.length) throw new Error('No fields to update');
-  const scope = tenantFilter('team_id', teamId);
+  const scope = tenantOwnedFilter('team_id', teamId);
   params.push(id, ...scope.params);
   db.run(`UPDATE remediation_policies SET ${updates.join(', ')} WHERE id = ? AND ${scope.clause}`, params);
   return listPolicies(teamId).find((p: Policy) => p.id === id) ?? null;
