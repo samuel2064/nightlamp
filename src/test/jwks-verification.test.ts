@@ -239,11 +239,23 @@ describe('Clerk JWKS verification (NOC-237)', () => {
     it('accepts a JWKS-signed token on a protected route', async () => {
       const token = rsToken({ iss: ISSUER }, primary.privateKey, 'kid-primary');
 
-      const res = await fetch(`http://127.0.0.1:${port}/api/events`, {
+      const res = await fetch(`http://127.0.0.1:${port}/api/teams`, {
         headers: { authorization: `Bearer ${token}` },
       });
 
       assert.strictEqual(res.status, 200);
+    });
+
+    it('fails closed on a tenant-scoped route for a JWKS-signed principal without a team', async () => {
+      const token = rsToken({ iss: ISSUER }, primary.privateKey, 'kid-primary');
+
+      const res = await fetch(`http://127.0.0.1:${port}/api/events`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+
+      assert.strictEqual(res.status, 403);
+      const body = await res.json() as any;
+      assert.strictEqual(body.code, 'FORBIDDEN');
     });
 
     it('refuses a protected route without a token', async () => {

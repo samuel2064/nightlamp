@@ -3,17 +3,34 @@ import { startApiServer } from '../api/server';
 import { Database } from 'sql.js';
 import { Server } from 'http';
 import assert from 'assert';
-import { TEST_CLERK_USER_ID, TEST_LOCAL_USER_ID } from './setup';
+import { v4 as uuidv4 } from 'uuid';
+import { createTestToken, fetchWithoutAuth, TEST_CLERK_USER_ID, TEST_LOCAL_USER_ID } from './setup';
 
 describe('Teams API', () => {
   let db: Database;
   let server: Server;
   let port: number;
+  let memberOneId: string;
+  let memberTwoId: string;
+  let inviteeId: string;
+  let inviteeClerkId: string;
+  let inviteeMarker: string;
 
   before(async () => {
     db = await createDatabase();
     db.run('INSERT INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)',
       [TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID, 'owner@example.com', 'Owner']);
+    memberOneId = uuidv4();
+    memberTwoId = uuidv4();
+    inviteeId = uuidv4();
+    inviteeClerkId = uuidv4();
+    inviteeMarker = `invitee-${uuidv4()}`;
+    db.run('INSERT INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)',
+      [memberOneId, uuidv4(), `member-${uuidv4()}`, null]);
+    db.run('INSERT INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)',
+      [memberTwoId, uuidv4(), `member-${uuidv4()}`, null]);
+    db.run('INSERT INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)',
+      [inviteeId, inviteeClerkId, inviteeMarker, null]);
     server = startApiServer(db, { port: 0 });
     const addr = server.address() as any;
     port = addr.port;
@@ -143,7 +160,7 @@ describe('Teams API', () => {
       const res = await fetch(`http://127.0.0.1:${port}/api/teams/${teamId}/members`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: 'member-1', role: 'admin' }),
+        body: JSON.stringify({ userId: memberOneId, role: 'admin' }),
       });
       const data = await res.json() as any;
       assert.strictEqual(data.success, true);
@@ -154,7 +171,7 @@ describe('Teams API', () => {
       const res = await fetch(`http://127.0.0.1:${port}/api/teams/${teamId}/members`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: 'member-2' }),
+        body: JSON.stringify({ userId: memberTwoId }),
       });
       const data = await res.json() as any;
       assert.strictEqual(data.role, 'member');
@@ -164,7 +181,7 @@ describe('Teams API', () => {
       const res = await fetch(`http://127.0.0.1:${port}/api/teams/${teamId}/members`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: 'member-1' }),
+        body: JSON.stringify({ userId: memberOneId }),
       });
       assert.strictEqual(res.status, 409);
     });
@@ -181,12 +198,12 @@ describe('Teams API', () => {
     it('GET /api/teams/:id/members lists members', async () => {
       const res = await (await fetch(`http://127.0.0.1:${port}/api/teams/${teamId}/members`)).json() as any;
       assert.strictEqual(res.count, 3);
-      assert.ok(res.members.some((m: any) => m.userId === 'member-1'));
-      assert.ok(res.members.some((m: any) => m.userId === 'member-2'));
+      assert.ok(res.members.some((m: any) => m.userId === memberOneId));
+      assert.ok(res.members.some((m: any) => m.userId === memberTwoId));
     });
 
     it('PATCH /api/teams/:id/members/:userId updates role', async () => {
-      const res = await fetch(`http://127.0.0.1:${port}/api/teams/${teamId}/members/member-1`, {
+      const res = await fetch(`http://127.0.0.1:${port}/api/teams/${teamId}/members/${memberOneId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ role: 'member' }),
@@ -194,12 +211,12 @@ describe('Teams API', () => {
       assert.strictEqual((await res.json()).success, true);
 
       const membersRes = await (await fetch(`http://127.0.0.1:${port}/api/teams/${teamId}/members`)).json() as any;
-      const member = membersRes.members.find((m: any) => m.userId === 'member-1');
+      const member = membersRes.members.find((m: any) => m.userId === memberOneId);
       assert.strictEqual(member.role, 'member');
     });
 
     it('DELETE /api/teams/:id/members/:userId removes member', async () => {
-      const res = await fetch(`http://127.0.0.1:${port}/api/teams/${teamId}/members/member-2`, {
+      const res = await fetch(`http://127.0.0.1:${port}/api/teams/${teamId}/members/${memberTwoId}`, {
         method: 'DELETE',
       });
       assert.strictEqual((await res.json()).success, true);
@@ -291,19 +308,22 @@ describe('Teams API', () => {
       const createRes = await fetch(`http://127.0.0.1:${port}/api/teams/${teamId}/invitations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'accept-user', role: 'admin' }),
+        body: JSON.stringify({ email: inviteeMarker, role: 'admin' }),
       });
       const { token } = await createRes.json() as any;
 
-      const res = await fetch(`http://127.0.0.1:${port}/api/invitations/${token}/accept`, {
+      const res = await fetchWithoutAuth(`http://127.0.0.1:${port}/api/invitations/${token}/accept`, {
         method: 'POST',
+        headers: {
+          Authorization: `Bearer ${createTestToken({ sub: inviteeClerkId, email: inviteeMarker })}`,
+        },
       });
       const data = await res.json() as any;
       assert.strictEqual(data.success, true);
       assert.strictEqual(data.role, 'admin');
 
       const membersRes = await (await fetch(`http://127.0.0.1:${port}/api/teams/${teamId}/members`)).json() as any;
-      assert.ok(membersRes.members.some((m: any) => m.userId === 'accept-user'));
+      assert.ok(membersRes.members.some((m: any) => m.userId === inviteeId));
     });
   });
 });
