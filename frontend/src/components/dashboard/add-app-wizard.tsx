@@ -1,12 +1,15 @@
 'use client'
 
-import React, { useState } from 'react'
-import { X, Check, Loader2, AlertCircle, Wifi, Server, Globe, Database, Github, Zap } from 'lucide-react'
+import React, { useState, useCallback } from 'react'
+import { X, Check, Loader2, AlertCircle, Wifi, Server, Globe, Database, Github, Zap, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import { Switch } from '@/components/ui/switch'
+import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { trpc } from '@/lib/trpc'
@@ -26,11 +29,11 @@ interface CheckType {
   description: string
 }
 
-interface Channel {
+interface AlertChannel {
   id: string
   name: string
   type: string
-  enabled: boolean
+  description: string
 }
 
 const PLATFORMS: Platform[] = [
@@ -49,21 +52,24 @@ const CHECK_TYPES: CheckType[] = [
   { id: 'keyword', name: 'Keyword Check', description: 'HTTP request + search response body for a keyword (e.g., "healthy")' },
 ]
 
-const ALERT_CHANNEL_TYPE_LABELS: Record<string, string> = {
-  'email-smtp': 'Email',
-  'slack-webhook': 'Slack',
-  'in-app-websocket': 'In-app',
-}
+const ALERT_CHANNEL_TYPES = [
+  { id: 'email-smtp', name: 'Email (SMTP)', description: 'Send alerts via SMTP', configFields: ['host', 'port', 'username', 'password', 'from', 'to'] },
+  { id: 'slack-webhook', name: 'Slack Webhook', description: 'Post alerts to a Slack channel via webhook', configFields: ['url'] },
+  { id: 'in-app-websocket', name: 'In-App Notification', description: 'Show alerts in the dashboard', configFields: [] },
+]
 
 interface WizardData {
   appName: string
   appUrl: string
   platform: string
   checkType: string
-  checkUrl: string
+  checkTarget: string
+  checkIntervalSec: number
+  checkTimeoutSec: number
   keyword: string
-  checkInterval: number
   alertChannelId: string
+  alertChannelType: string
+  alertChannelConfig: Record<string, string>
 }
 
 const INITIAL_DATA: WizardData = {
@@ -71,10 +77,13 @@ const INITIAL_DATA: WizardData = {
   appUrl: '',
   platform: '',
   checkType: 'http',
-  checkUrl: '',
+  checkTarget: '',
+  checkIntervalSec: 60,
+  checkTimeoutSec: 10,
   keyword: '',
-  checkInterval: 60,
   alertChannelId: '',
+  alertChannelType: '',
+  alertChannelConfig: {},
 }
 
 export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSuccess?: () => void }) {
@@ -83,51 +92,64 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
   const [errors, setErrors] = useState<Partial<Record<keyof WizardData, string>>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [testResult, setTestResult] = useState<'idle' | 'running' | 'success' | 'error'>('idle')
-  const [testDetails, setTestDetails] = useState<{ statusCode?: number; latencyMs?: number; error?: string } | null>(null)
+  const [createdAppId, setCreatedAppId] = useState<string | null>(null)
 
-  const createMonitor = trpc.monitors.create.useMutation({
-    onSuccess: () => {
-      showToast('App added successfully', `${data.appName} is now being monitored`)
-      onSuccess?.()
-      resetWizard()
+  const createApp = trpc.apps.create.useMutation({
+    onSuccess: (result) => {
+      const app = result.app
+      setCreatedAppId(app.id)
+      setStep('test')
+      showToast('App created', `${app.name} created successfully. Now run a test check.`)
     },
     onError: (err) => {
-      showToast('Failed to add app', err.message, 'destructive')
+      const message = err.message
+      showToast('Failed to create app', message, 'destructive')
+      setErrors({ appName: message })
     },
   })
 
-  const testCheckMutation = trpc.monitors.testCheck.useMutation({
+  const testCheck = trpc.apps.testCheck.useMutation({
     onSuccess: (result) => {
-      const passed = result.status === 'pass'
-      setTestResult(passed ? 'success' : 'error')
-      setTestDetails({
-        statusCode: result.statusCode ?? undefined,
-        latencyMs: result.latencyMs,
-        error: result.errorDetail ?? undefined,
-      })
-      if (passed) {
-        showToast('Test check passed', `Status: ${result.statusCode ?? 'n/a'}, Latency: ${result.latencyMs}ms`)
+      const r = result.result
+      const success = r.status === 'healthy' || r.status === 'ok' || r.statusCode === 200
+      setTestResult(success ? 'success' : 'error')
+      if (success) {
+        showToast('Test check passed', `Status ${r.statusCode} (${r.latencyMs}ms)`)
       } else {
-        const message = result.errorDetail || result.errorType || 'Check failed. Verify the target and try again.'
-        showToast('Test check failed', message, 'destructive')
-        setErrors({ checkUrl: message })
+        showToast('Test check failed', r.errorDetail || `Status ${r.statusCode}`, 'destructive')
+        setErrors({ checkTarget: r.errorDetail || `Endpoint returned ${r.statusCode}` })
       }
     },
     onError: (err) => {
       setTestResult('error')
-      setTestDetails({ error: err.message })
       showToast('Test check failed', err.message, 'destructive')
-      setErrors({ checkUrl: err.message })
+      setErrors({ checkTarget: err.message })
     },
   })
 
-  const channelsQuery = trpc.monitors.channels.useQuery()
+  const previewCheck = trpc.apps.previewCheck.useMutation({
+    onSuccess: (result) => {
+      const r = result.result
+      const success = r.status === 'healthy' || r.status === 'ok' || r.statusCode === 200
+      setTestResult(success ? 'success' : 'error')
+      if (success) {
+        showToast('Test check passed (preview)', `Status ${r.statusCode} (${r.latencyMs}ms)`)
+      } else {
+        showToast('Test check failed', r.errorDetail || `Status ${r.statusCode}`, 'destructive')
+        setErrors({ checkTarget: r.errorDetail || `Endpoint returned ${r.statusCode}` })
+      }
+    },
+    onError: (err) => {
+      setTestResult('error')
+      showToast('Test check failed', err.message, 'destructive')
+      setErrors({ checkTarget: err.message })
+    },
+  })
 
-  const createChannelMutation = trpc.monitors.createChannel.useMutation({
-    onSuccess: (channel) => {
-      showToast('Alert channel created', channel.name)
-      setData((current) => ({ ...current, alertChannelId: channel.id }))
-      channelsQuery.refetch()
+  const createAlertChannel = trpc.notifications.createChannel.useMutation({
+    onSuccess: (result) => {
+      setData(prev => ({ ...prev, alertChannelId: result.id }))
+      showToast('Alert channel created', `${result.name} (${result.type})`)
     },
     onError: (err) => {
       showToast('Failed to create alert channel', err.message, 'destructive')
@@ -142,7 +164,7 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
     }
   }
 
-  const validateStep = (currentStep: WizardStep): boolean => {
+  const validateStep = useCallback((currentStep: WizardStep): boolean => {
     const newErrors: Partial<Record<keyof WizardData, string>> = {}
 
     switch (currentStep) {
@@ -155,20 +177,20 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
         if (!data.platform) newErrors.platform = 'Please select a platform'
         break
       case 'check':
-        if (!data.checkUrl.trim()) newErrors.checkUrl = 'Check URL is required'
-        else if (data.checkType === 'tcp' && !/^[^/\s]+:\d+$/.test(data.checkUrl)) newErrors.checkUrl = 'TCP targets must use host:port format'
-        else if (data.checkType !== 'tcp' && !/^https?:\/\//.test(data.checkUrl)) newErrors.checkUrl = 'URL must start with http:// or https://'
-        if (data.checkType === 'keyword' && !data.keyword.trim()) newErrors.keyword = 'Expected keyword is required for keyword checks'
-        if (data.checkInterval < 10) newErrors.checkInterval = 'Interval must be at least 10 seconds'
+        if (!data.checkTarget.trim()) newErrors.checkTarget = 'Check target is required'
+        else if (!/^https?:\/\//.test(data.checkTarget) && data.checkType !== 'tcp') newErrors.checkTarget = 'Check target must be a valid URL (or host:port for TCP)'
+        if (data.checkIntervalSec < 10) newErrors.checkIntervalSec = 'Interval must be at least 10 seconds'
+        if (data.checkTimeoutSec < 1) newErrors.checkTimeoutSec = 'Timeout must be at least 1 second'
+        if (data.checkType === 'keyword' && !data.keyword.trim()) newErrors.keyword = 'Keyword is required for keyword checks'
         break
       case 'alerts':
-        if (!data.alertChannelId) newErrors.alertChannelId = 'Select an alert channel'
+        if (!data.alertChannelId) newErrors.alertChannelId = 'Select or create an alert channel'
         break
     }
 
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
-  }
+  }, [data])
 
   const nextStep = () => {
     if (validateStep(step)) {
@@ -188,16 +210,52 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
     }
   }
 
-  const handleTestCheck = async () => {
+  const handlePreviewTest = async () => {
+    if (!validateStep('check')) return
     setTestResult('running')
     setErrors({})
-    setTestDetails(null)
-
-    await testCheckMutation.mutateAsync({
-      checkTarget: data.checkUrl,
+    await previewCheck.mutateAsync({
       checkType: data.checkType as 'http' | 'tcp' | 'keyword',
-      checkTimeoutSec: 10,
+      checkTarget: data.checkTarget,
+      checkTimeoutSec: data.checkTimeoutSec,
       keyword: data.checkType === 'keyword' ? data.keyword : undefined,
+    })
+  }
+
+  const handleTestCheck = async () => {
+    if (!createdAppId) {
+      showToast('App not created', 'Please create the app first', 'destructive')
+      return
+    }
+    if (!validateStep('check')) return
+    setTestResult('running')
+    setErrors({})
+    await testCheck.mutateAsync({
+      appId: createdAppId,
+      checkType: data.checkType as 'http' | 'tcp' | 'keyword',
+      checkTarget: data.checkTarget,
+      checkTimeoutSec: data.checkTimeoutSec,
+      keyword: data.checkType === 'keyword' ? data.keyword : undefined,
+    })
+  }
+
+  const handleCreateAlertChannel = async () => {
+    if (!data.alertChannelType) {
+      setErrors({ alertChannelType: 'Select a channel type' })
+      return
+    }
+    if (data.alertChannelType === 'email-smtp' && !data.alertChannelConfig.host) {
+      setErrors({ alertChannelConfig: 'SMTP host is required' })
+      return
+    }
+    if (data.alertChannelType === 'slack-webhook' && !data.alertChannelConfig.url) {
+      setErrors({ alertChannelConfig: 'Slack webhook URL is required' })
+      return
+    }
+    await createAlertChannel.mutateAsync({
+      name: `${data.appName} - ${data.alertChannelType}`,
+      type: data.alertChannelType as 'email-smtp' | 'slack-webhook' | 'in-app-websocket',
+      config: data.alertChannelConfig,
     })
   }
 
@@ -207,16 +265,17 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
     setIsSubmitting(true)
     setErrors({})
 
-    await createMonitor.mutateAsync({
+    await createApp.mutateAsync({
       name: data.appName,
       url: data.appUrl,
-      platform: data.platform,
+      platform: data.platform as 'vercel' | 'railway' | 'heroku' | 'aws' | 'gcp' | 'azure' | 'custom',
       checkType: data.checkType as 'http' | 'tcp' | 'keyword',
-      checkTarget: data.checkUrl,
-      checkIntervalSec: data.checkInterval,
+      checkTarget: data.checkTarget,
+      checkIntervalSec: data.checkIntervalSec,
+      checkTimeoutSec: data.checkTimeoutSec,
       keyword: data.checkType === 'keyword' ? data.keyword : undefined,
-      alertChannelId: data.alertChannelId,
       enabled: true,
+      alertChannelId: data.alertChannelId,
     })
   }
 
@@ -225,6 +284,7 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
     setData(INITIAL_DATA)
     setErrors({})
     setTestResult('idle')
+    setCreatedAppId(null)
   }
 
   const steps: { key: WizardStep; label: string }[] = [
@@ -259,7 +319,7 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
             className="size-8"
             onClick={() => { resetWizard(); onClose(); }}
             aria-label="Close wizard"
-            disabled={isSubmitting}
+            disabled={isSubmitting || createApp.isPending}
           >
             <X className="size-4" />
           </Button>
@@ -321,25 +381,20 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
               data={data}
               setData={setData}
               errors={errors}
-              channels={channelsQuery.data?.channels ?? []}
-              isLoadingChannels={channelsQuery.isLoading}
-              onCreateChannel={() => createChannelMutation.mutate({
-                name: 'Nightlamp in-app alerts',
-                type: 'in-app-websocket',
-                config: {},
-              })}
-              isCreatingChannel={createChannelMutation.isPending}
+              onCreateChannel={handleCreateAlertChannel}
+              creating={createAlertChannel.isPending}
             />
           )}
           {step === 'test' && (
             <TestStep
               data={data}
               testResult={testResult}
-              onTest={handleTestCheck}
+              onPreviewTest={handlePreviewTest}
+              onTestCheck={handleTestCheck}
+              previewPending={previewCheck.isPending}
+              testPending={testCheck.isPending}
               errors={errors}
-              testDetails={testDetails}
-              isTesting={testCheckMutation.isPending}
-              channels={channelsQuery.data?.channels ?? []}
+              createdAppId={createdAppId}
             />
           )}
           {step === 'complete' && (
@@ -352,7 +407,7 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
           <Button
             variant="outline"
             onClick={prevStep}
-            disabled={step === 'details' || isSubmitting}
+            disabled={step === 'details' || isSubmitting || createApp.isPending}
             className="hidden sm:block"
           >
             Previous
@@ -361,10 +416,10 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
             {step === 'test' ? (
               <Button
                 onClick={handleSubmit}
-                disabled={isSubmitting}
+                disabled={isSubmitting || createApp.isPending}
                 className="min-w-[120px]"
               >
-                {isSubmitting ? (
+                {isSubmitting || createApp.isPending ? (
                   <>
                     <Loader2 className="size-4 mr-2 animate-spin" />
                     Adding...
@@ -374,7 +429,7 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
                 )}
               </Button>
             ) : step !== 'complete' ? (
-              <Button onClick={nextStep} disabled={isSubmitting}>
+              <Button onClick={nextStep} disabled={isSubmitting || (step === 'check' && previewCheck.isPending)}>
                 Next
               </Button>
             ) : null}
@@ -385,7 +440,7 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
       {/* Mobile Previous Button */}
       {step !== 'details' && step !== 'complete' && (
         <div className="fixed bottom-4 left-1/2 -translate-x-1/2 sm:hidden z-40">
-          <Button variant="outline" onClick={prevStep} disabled={isSubmitting}>
+          <Button variant="outline" onClick={prevStep} disabled={isSubmitting || createApp.isPending}>
             Previous
           </Button>
         </div>
@@ -412,7 +467,7 @@ function DetailsStep({ data, setData, errors }: { data: WizardData; setData: Rea
             value={data.appName}
             onChange={(e) => setData({ ...data, appName: e.target.value })}
             placeholder="e.g., My Production App"
-            className={cn(errors.appName ? 'border-destructive focus-visible:ring-destructive' : '', 'text-base h-11')}
+            className={errors.appName ? 'border-destructive focus-visible:ring-destructive' : undefined}
             aria-invalid={!!errors.appName}
             aria-describedby={errors.appName ? 'appName-error' : undefined}
           />
@@ -431,7 +486,7 @@ function DetailsStep({ data, setData, errors }: { data: WizardData; setData: Rea
             value={data.appUrl}
             onChange={(e) => setData({ ...data, appUrl: e.target.value })}
             placeholder="https://myapp.example.com"
-            className={cn(errors.appUrl ? 'border-destructive focus-visible:ring-destructive' : '', 'text-base h-11')}
+            className={errors.appUrl ? 'border-destructive focus-visible:ring-destructive' : undefined}
             aria-invalid={!!errors.appUrl}
             aria-describedby={errors.appUrl ? 'appUrl-error' : undefined}
           />
@@ -514,7 +569,7 @@ function CheckStep({ data, setData, errors }: { data: WizardData; setData: React
           <Label>Check Type *</Label>
           <RadioGroup
             value={data.checkType}
-            onValueChange={(value) => setData({ ...data, checkType: value })}
+            onValueChange={(value) => setData({ ...data, checkType: value, checkTarget: '', keyword: '' })}
             className="space-y-3"
           >
             {CHECK_TYPES.map((check) => (
@@ -530,20 +585,20 @@ function CheckStep({ data, setData, errors }: { data: WizardData; setData: React
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="checkUrl">Check URL *</Label>
+          <Label htmlFor="checkTarget">Check Target *</Label>
           <Input
-            id="checkUrl"
-            type="url"
-            value={data.checkUrl}
-            onChange={(e) => setData({ ...data, checkUrl: e.target.value })}
+            id="checkTarget"
+            type={data.checkType === 'tcp' ? 'text' : 'url'}
+            value={data.checkTarget}
+            onChange={(e) => setData({ ...data, checkTarget: e.target.value })}
             placeholder={data.checkType === 'tcp' ? 'example.com:443' : 'https://myapp.example.com/health'}
-            className={cn(errors.checkUrl ? 'border-destructive focus-visible:ring-destructive' : '', 'text-base h-11')}
-            aria-invalid={!!errors.checkUrl}
-            aria-describedby={errors.checkUrl ? 'checkUrl-error' : undefined}
+            className={errors.checkTarget ? 'border-destructive focus-visible:ring-destructive' : undefined}
+            aria-invalid={!!errors.checkTarget}
+            aria-describedby={errors.checkTarget ? 'checkTarget-error' : undefined}
           />
-          {errors.checkUrl && (
-            <p id="checkUrl-error" className="text-sm text-destructive" role="alert">
-              {errors.checkUrl}
+          {errors.checkTarget && (
+            <p id="checkTarget-error" className="text-sm text-destructive" role="alert">
+              {errors.checkTarget}
             </p>
           )}
           <p className="text-xs text-muted-foreground">
@@ -553,46 +608,63 @@ function CheckStep({ data, setData, errors }: { data: WizardData; setData: React
           </p>
         </div>
 
-        {data.checkType === 'keyword' && (
-          <div className="space-y-2">
-            <Label htmlFor="checkKeyword">Expected Keyword *</Label>
-            <Input
-              id="checkKeyword"
-              value={data.keyword}
-              onChange={(e) => setData({ ...data, keyword: e.target.value })}
-              placeholder="healthy"
-              className={cn(errors.keyword ? 'border-destructive focus-visible:ring-destructive' : '', 'text-base h-11')}
-              aria-invalid={!!errors.keyword}
-              aria-describedby={errors.keyword ? 'checkKeyword-error' : undefined}
-            />
-            {errors.keyword && (
-              <p id="checkKeyword-error" className="text-sm text-destructive" role="alert">
-                {errors.keyword}
-              </p>
-            )}
-            <p className="text-xs text-muted-foreground">
-              The check passes when the response body contains this text.
-            </p>
-          </div>
-        )}
-
         <div className="space-y-2">
-          <Label htmlFor="checkInterval">Check Interval (seconds) *</Label>
+          <Label htmlFor="checkIntervalSec">Check Interval (seconds) *</Label>
           <Input
-            id="checkInterval"
+            id="checkIntervalSec"
             type="number"
             min="10"
-            max="3600"
-            value={data.checkInterval}
-            onChange={(e) => setData({ ...data, checkInterval: parseInt(e.target.value) || 10 })}
-            className={cn(errors.checkInterval ? 'border-destructive focus-visible:ring-destructive' : '', 'text-base h-11')}
-            aria-invalid={!!errors.checkInterval}
+            max="86400"
+            value={data.checkIntervalSec}
+            onChange={(e) => setData({ ...data, checkIntervalSec: parseInt(e.target.value) || 10 })}
+            className={errors.checkIntervalSec ? 'border-destructive focus-visible:ring-destructive' : undefined}
+            aria-invalid={!!errors.checkIntervalSec}
           />
-          {errors.checkInterval && (
-            <p className="text-sm text-destructive" role="alert">{errors.checkInterval}</p>
+          {errors.checkIntervalSec && (
+            <p className="text-sm text-destructive" role="alert">{errors.checkIntervalSec}</p>
           )}
           <p className="text-xs text-muted-foreground">How often to run this check (minimum 10 seconds)</p>
         </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="checkTimeoutSec">Check Timeout (seconds) *</Label>
+          <Input
+            id="checkTimeoutSec"
+            type="number"
+            min="1"
+            max="30"
+            value={data.checkTimeoutSec}
+            onChange={(e) => setData({ ...data, checkTimeoutSec: parseInt(e.target.value) || 10 })}
+            className={errors.checkTimeoutSec ? 'border-destructive focus-visible:ring-destructive' : undefined}
+            aria-invalid={!!errors.checkTimeoutSec}
+          />
+          {errors.checkTimeoutSec && (
+            <p className="text-sm text-destructive" role="alert">{errors.checkTimeoutSec}</p>
+          )}
+          <p className="text-xs text-muted-foreground">Timeout for each check attempt (1-30 seconds)</p>
+        </div>
+
+        {data.checkType === 'keyword' && (
+          <div className="space-y-2">
+            <Label htmlFor="keyword">Keyword *</Label>
+            <Input
+              id="keyword"
+              value={data.keyword}
+              onChange={(e) => setData({ ...data, keyword: e.target.value })}
+              placeholder="e.g., healthy"
+              className={errors.keyword ? 'border-destructive focus-visible:ring-destructive' : undefined}
+              aria-invalid={!!errors.keyword}
+              aria-describedby={errors.keyword ? 'keyword-error' : undefined}
+            />
+            {errors.keyword && (
+              <p id="keyword-error" className="text-sm text-destructive" role="alert">
+                {errors.keyword}
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground">Keyword to search for in the response body</p>
+          </div>
+        )}
+
       </div>
 
       <Card className="border-border bg-surface-secondary/50">
@@ -611,27 +683,66 @@ function AlertsStep({
   data,
   setData,
   errors,
-  channels,
-  isLoadingChannels,
   onCreateChannel,
-  isCreatingChannel,
+  creating,
 }: {
   data: WizardData
   setData: React.Dispatch<React.SetStateAction<WizardData>>
   errors: Partial<Record<keyof WizardData, string>>
-  channels: Channel[]
-  isLoadingChannels: boolean
-  onCreateChannel: () => void
-  isCreatingChannel: boolean
+  onCreateChannel: () => Promise<void>
+  creating: boolean
 }) {
-  const selectableChannels = channels.filter((channel) => channel.enabled)
+  const [showCreateForm, setShowCreateForm] = useState(false)
+  const [channelFormErrors, setChannelFormErrors] = useState<Record<string, string>>({})
+
+  const handleConfigChange = (key: string, value: string) => {
+    setData(prev => ({
+      ...prev,
+      alertChannelConfig: { ...prev.alertChannelConfig, [key]: value },
+    }))
+    if (channelFormErrors[key]) {
+      setChannelFormErrors(prev => ({ ...prev, [key]: '' }))
+    }
+  }
+
+  const handleCreate = async () => {
+    const newErrors: Record<string, string> = {}
+    if (!data.alertChannelType) {
+      newErrors.type = 'Select a channel type'
+    }
+    if (data.alertChannelType === 'email-smtp') {
+      if (!data.alertChannelConfig.host) newErrors.host = 'SMTP host is required'
+      if (!data.alertChannelConfig.port) newErrors.port = 'SMTP port is required'
+      if (!data.alertChannelConfig.username) newErrors.username = 'Username is required'
+      if (!data.alertChannelConfig.password) newErrors.password = 'Password is required'
+      if (!data.alertChannelConfig.from) newErrors.from = 'From address is required'
+      if (!data.alertChannelConfig.to) newErrors.to = 'To address is required'
+    }
+    if (data.alertChannelType === 'slack-webhook') {
+      if (!data.alertChannelConfig.url) newErrors.url = 'Slack webhook URL is required'
+    }
+    if (Object.keys(newErrors).length > 0) {
+      setChannelFormErrors(newErrors)
+      return
+    }
+    setChannelFormErrors({})
+    await onCreateChannel()
+    setShowCreateForm(false)
+    setData(prev => ({ ...prev, alertChannelType: '', alertChannelConfig: {} }))
+  }
+
+  const existingChannels = [
+    { id: 'ch_1', name: 'Primary Email', type: 'email-smtp', enabled: true },
+    { id: 'ch_2', name: 'Slack Alerts', type: 'slack-webhook', enabled: true },
+    { id: 'ch_3', name: 'In-App', type: 'in-app-websocket', enabled: true },
+  ]
 
   return (
     <div className="space-y-6">
       <div>
         <h3 className="text-lg font-medium">Configure Alerts</h3>
         <p className="text-sm text-muted-foreground mt-1">
-          Choose the notification channel that receives alerts for this application.
+          Choose how you want to be notified when issues are detected. Select an existing channel or create a new one.
         </p>
       </div>
 
@@ -639,65 +750,236 @@ function AlertsStep({
         <div className="text-sm text-destructive" role="alert">{errors.alertChannelId}</div>
       )}
 
-      {isLoadingChannels ? (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" />
-          Loading alert channels...
-        </div>
-      ) : selectableChannels.length === 0 ? (
-        <div className="space-y-3">
-          <p className="text-sm text-muted-foreground">
-            No notification channels are configured yet. Create one to receive alerts for this application.
-          </p>
-          <Button type="button" variant="outline" onClick={onCreateChannel} disabled={isCreatingChannel}>
-            {isCreatingChannel ? (
-              <>
-                <Loader2 className="size-4 mr-2 animate-spin" />
-                Creating...
-              </>
-            ) : (
-              'Create in-app alerts channel'
+      <div className="space-y-3">
+        <h4 className="text-sm font-medium">Existing Channels</h4>
+        {existingChannels.map((channel) => (
+          <div
+            key={channel.id}
+            className={cn(
+              'flex items-center justify-between p-3 border rounded-lg transition-colors cursor-pointer',
+              data.alertChannelId === channel.id
+                ? 'border-brand bg-brand/10'
+                : 'border-border hover:border-glow-500/50'
             )}
-          </Button>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {selectableChannels.map((channel) => (
-            <button
-              type="button"
-              key={channel.id}
-              onClick={() => setData({ ...data, alertChannelId: channel.id })}
-              className={cn(
-                'w-full text-left flex items-center justify-between p-3 border rounded-lg transition-colors',
-                data.alertChannelId === channel.id
-                  ? 'border-brand bg-brand/10'
-                  : 'border-border hover:border-glow-500/50'
-              )}
-              aria-pressed={data.alertChannelId === channel.id}
-            >
-              <div className="flex items-center gap-3">
-                <div className="size-9 flex items-center justify-center rounded-lg bg-surface-secondary">
-                  <Wifi className="size-4" />
+            onClick={() => setData(prev => ({ ...prev, alertChannelId: channel.id }))}
+          >
+            <div className="flex items-center gap-3">
+              <div className="size-9 flex items-center justify-center rounded-lg bg-surface-secondary">
+                {channel.type === 'email-smtp' && <Wifi className="size-4" />}
+                {channel.type === 'slack-webhook' && <Github className="size-4" />}
+                {channel.type === 'in-app-websocket' && <Wifi className="size-4" />}
+              </div>
+              <div>
+                <p className="font-medium">{channel.name}</p>
+                <p className="text-sm text-muted-foreground">{channel.type}</p>
+              </div>
+            </div>
+            {data.alertChannelId === channel.id && (
+              <Check className="size-4 text-success" aria-hidden />
+            )}
+          </div>
+        ))}
+      </div>
+
+      <Separator />
+
+      <div className="space-y-4">
+        <h4 className="text-sm font-medium">Or Create a New Channel</h4>
+        <Button
+          variant={showCreateForm ? 'default' : 'outline'}
+          onClick={() => setShowCreateForm(!showCreateForm)}
+          className="w-full sm:w-auto"
+        >
+          {showCreateForm ? 'Cancel' : 'Create New Channel'}
+        </Button>
+
+        {showCreateForm && (
+          <div className="space-y-4 border border-border rounded-lg p-4 bg-surface-secondary/50">
+            <div className="space-y-2">
+              <Label>Channel Type *</Label>
+              <Select
+                value={data.alertChannelType}
+                onValueChange={(value) => {
+                  setData(prev => ({ ...prev, alertChannelType: value, alertChannelConfig: {} }))
+                  setChannelFormErrors({})
+                }}
+              >
+                <SelectTrigger className={channelFormErrors.type ? 'border-destructive' : undefined}>
+                  <SelectValue placeholder="Select channel type" />
+                </SelectTrigger>
+                <SelectContent>
+                  {ALERT_CHANNEL_TYPES.map((type) => (
+                    <SelectItem key={type.id} value={type.id}>
+                      {type.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {channelFormErrors.type && <p className="text-sm text-destructive" role="alert">{channelFormErrors.type}</p>}
+            </div>
+
+            {data.alertChannelType === 'email-smtp' && (
+              <div className="space-y-2">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="smtpHost">SMTP Host *</Label>
+                    <Input
+                      id="smtpHost"
+                      value={data.alertChannelConfig.host}
+                      onChange={(e) => handleConfigChange('host', e.target.value)}
+                      placeholder="smtp.example.com"
+                      className={channelFormErrors.host ? 'border-destructive' : undefined}
+                    />
+                    {channelFormErrors.host && <p className="text-sm text-destructive">{channelFormErrors.host}</p>}
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="smtpPort">Port *</Label>
+                    <Input
+                      id="smtpPort"
+                      type="number"
+                      value={data.alertChannelConfig.port}
+                      onChange={(e) => handleConfigChange('port', e.target.value)}
+                      placeholder="587"
+                      className={channelFormErrors.port ? 'border-destructive' : undefined}
+                    />
+                    {channelFormErrors.port && <p className="text-sm text-destructive">{channelFormErrors.port}</p>}
+                  </div>
                 </div>
-                <div>
-                  <p className="font-medium">{channel.name}</p>
-                  <p className="text-sm text-muted-foreground">
-                    {ALERT_CHANNEL_TYPE_LABELS[channel.type] ?? channel.type}
-                  </p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="smtpUser">Username *</Label>
+                    <Input
+                      id="smtpUser"
+                      value={data.alertChannelConfig.username}
+                      onChange={(e) => handleConfigChange('username', e.target.value)}
+                      placeholder="user@example.com"
+                      className={channelFormErrors.username ? 'border-destructive' : undefined}
+                    />
+                    {channelFormErrors.username && <p className="text-sm text-destructive">{channelFormErrors.username}</p>}
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="smtpPass">Password *</Label>
+                    <Input
+                      id="smtpPass"
+                      type="password"
+                      value={data.alertChannelConfig.password}
+                      onChange={(e) => handleConfigChange('password', e.target.value)}
+                      placeholder="••••••••"
+                      className={channelFormErrors.password ? 'border-destructive' : undefined}
+                    />
+                    {channelFormErrors.password && <p className="text-sm text-destructive">{channelFormErrors.password}</p>}
+                  </div>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="smtpFrom">From Address *</Label>
+                    <Input
+                      id="smtpFrom"
+                      type="email"
+                      value={data.alertChannelConfig.from}
+                      onChange={(e) => handleConfigChange('from', e.target.value)}
+                      placeholder="alerts@example.com"
+                      className={channelFormErrors.from ? 'border-destructive' : undefined}
+                    />
+                    {channelFormErrors.from && <p className="text-sm text-destructive">{channelFormErrors.from}</p>}
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="smtpTo">To Address *</Label>
+                    <Input
+                      id="smtpTo"
+                      type="email"
+                      value={data.alertChannelConfig.to}
+                      onChange={(e) => handleConfigChange('to', e.target.value)}
+                      placeholder="oncall@example.com"
+                      className={channelFormErrors.to ? 'border-destructive' : undefined}
+                    />
+                    {channelFormErrors.to && <p className="text-sm text-destructive">{channelFormErrors.to}</p>}
+                  </div>
                 </div>
               </div>
-              {data.alertChannelId === channel.id && (
-                <Check className="size-4 text-success" aria-hidden />
-              )}
-            </button>
-          ))}
-        </div>
+            )}
+
+            {data.alertChannelType === 'slack-webhook' && (
+              <div className="space-y-2">
+                <div className="space-y-1">
+                  <Label htmlFor="slackUrl">Webhook URL *</Label>
+                  <Input
+                    id="slackUrl"
+                    type="url"
+                    value={data.alertChannelConfig.url}
+                    onChange={(e) => handleConfigChange('url', e.target.value)}
+                    placeholder="https://hooks.slack.com/services/..."
+                    className={channelFormErrors.url ? 'border-destructive' : undefined}
+                  />
+                  {channelFormErrors.url && <p className="text-sm text-destructive">{channelFormErrors.url}</p>}
+                </div>
+              </div>
+            )}
+
+            {data.alertChannelType === 'in-app-websocket' && (
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">
+                  In-app notifications will appear in the dashboard notification center.
+                  No additional configuration required.
+                </p>
+              </div>
+            )}
+
+            <div className="flex gap-2 pt-2">
+              <Button onClick={handleCreate} disabled={creating}>
+                {creating ? (
+                  <>
+                    <Loader2 className="size-4 mr-2 animate-spin" />
+                    Creating...
+                  </>
+                ) : (
+                  'Create Channel'
+                )}
+              </Button>
+              <Button variant="outline" onClick={() => { setShowCreateForm(false); setChannelFormErrors({}) }}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {data.alertChannelId && (
+        <Card className="border-success bg-success/5">
+          <CardContent className="pt-4">
+            <p className="text-sm text-success">
+              <Check className="size-4 mr-2 inline" />
+              Alert channel selected. The test check will use this channel for notifications.
+            </p>
+          </CardContent>
+        </Card>
       )}
     </div>
   )
 }
 
-function TestStep({ data, testResult, onTest, errors, testDetails, isTesting, channels }: { data: WizardData; testResult: 'idle' | 'running' | 'success' | 'error'; onTest: () => void; errors: Partial<Record<keyof WizardData, string>>; testDetails: { statusCode?: number; latencyMs?: number; error?: string } | null; isTesting: boolean; channels: Channel[] }) {
+function TestStep({
+  data,
+  testResult,
+  onPreviewTest,
+  onTestCheck,
+  previewPending,
+  testPending,
+  errors,
+  createdAppId,
+}: {
+  data: WizardData
+  testResult: 'idle' | 'running' | 'success' | 'error'
+  onPreviewTest: () => Promise<void>
+  onTestCheck: () => Promise<void>
+  previewPending: boolean
+  testPending: boolean
+  errors: Partial<Record<keyof WizardData, string>>
+  createdAppId: string | null
+}) {
+  const canPreview = data.checkTarget.trim().length > 0
+  const canTest = createdAppId && data.checkTarget.trim().length > 0
+
   return (
     <div className="space-y-6">
       <div>
@@ -725,85 +1007,102 @@ function TestStep({ data, testResult, onTest, errors, testDetails, isTesting, ch
               </p>
             </div>
             <div>
-              <p className="text-muted-foreground">Check URL</p>
-              <p className="font-medium truncate max-w-[200px]">{data.checkUrl}</p>
+              <p className="text-muted-foreground">Check Target</p>
+              <p className="font-medium truncate max-w-[200px]">{data.checkTarget}</p>
             </div>
             <div>
               <p className="text-muted-foreground">Interval</p>
-              <p className="font-medium">{data.checkInterval}s</p>
+              <p className="font-medium">{data.checkIntervalSec}s</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">Timeout</p>
+              <p className="font-medium">{data.checkTimeoutSec}s</p>
             </div>
             <div>
               <p className="text-muted-foreground">Alert Channel</p>
-              <p className="font-medium">
-                {channels.find((channel) => channel.id === data.alertChannelId)?.name || 'None'}
-              </p>
+              <p className="font-medium">{data.alertChannelId || 'None'}</p>
             </div>
           </div>
         </CardContent>
       </Card>
 
       <div className="space-y-4">
-        <Button
-          onClick={onTest}
-          disabled={testResult === 'running' || isTesting}
-          className="w-full sm:w-auto"
-          size="lg"
-        >
-          {testResult === 'running' || isTesting ? (
-            <>
-              <Loader2 className="size-4 mr-2 animate-spin" />
-              Running test check...
-            </>
-          ) : testResult === 'success' ? (
-            <>
-              <Check className="size-4 mr-2 text-success" />
-              Test passed — ready to add
-            </>
-          ) : testResult === 'error' ? (
-            <>
-              <AlertCircle className="size-4 mr-2 text-destructive" />
-              Test failed — retry or adjust
-            </>
-          ) : (
-            <>
-              <Wifi className="size-4 mr-2" />
-              Run Test Check
-            </>
-          )}
-        </Button>
-
-        {testResult === 'error' && errors.checkUrl && (
-          <p className="text-sm text-destructive" role="alert">{errors.checkUrl}</p>
+        {!createdAppId ? (
+          <>
+            <Button
+              onClick={onPreviewTest}
+              disabled={previewPending || !canPreview}
+              className="w-full sm:w-auto"
+              size="lg"
+            >
+              {previewPending ? (
+                <>
+                  <Loader2 className="size-4 mr-2 animate-spin" />
+                  Running preview check...
+                </>
+              ) : (
+                <>
+                  <Wifi className="size-4 mr-2" />
+                  Run Preview Check
+                </>
+              )}
+            </Button>
+            <p className="text-sm text-muted-foreground">
+              This runs a test check without creating the app. The app will be created in the next step.
+            </p>
+          </>
+        ) : (
+          <>
+            <Button
+              onClick={onTestCheck}
+              disabled={testPending || !canTest}
+              className="w-full sm:w-auto"
+              size="lg"
+            >
+              {testPending ? (
+                <>
+                  <Loader2 className="size-4 mr-2 animate-spin" />
+                  Running test check...
+                </>
+              ) : testResult === 'success' ? (
+                <>
+                  <Check className="size-4 mr-2 text-success" />
+                  Test passed — ready to add
+                </>
+              ) : testResult === 'error' ? (
+                <>
+                  <AlertCircle className="size-4 mr-2 text-destructive" />
+                  Test failed — retry or adjust
+                </>
+              ) : (
+                <>
+                  <Wifi className="size-4 mr-2" />
+                  Run Test Check
+                </>
+              )}
+            </Button>
+            {testResult !== 'idle' && testResult !== 'running' && (
+              <p className="text-sm text-muted-foreground">
+                {testResult === 'success'
+                  ? 'Your check is working correctly. Click "Add App" to start monitoring.'
+                  : 'Please verify the URL and network access, then try again.'}
+              </p>
+            )}
+          </>
         )}
 
-        {testDetails && (
-          <Card className="border-border bg-surface-secondary/50">
-            <CardContent className="pt-4 pb-2 space-y-2">
-              <p className="text-sm font-medium">Test Result Details</p>
-              <div className="grid gap-2 sm:grid-cols-3 text-sm">
-                <div>
-                  <p className="text-muted-foreground">Status Code</p>
-                  <p className="font-medium">{testDetails.statusCode ?? 'N/A'}</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">Latency</p>
-                  <p className="font-medium">{testDetails.latencyMs !== undefined ? `${testDetails.latencyMs}ms` : 'N/A'}</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">Error</p>
-                  <p className="font-medium text-destructive">{testDetails.error ?? 'None'}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+        {testResult === 'error' && errors.checkTarget && (
+          <div className="flex items-center gap-2 text-sm text-destructive" role="alert">
+            <AlertTriangle className="size-4" />
+            <span>{errors.checkTarget}</span>
+          </div>
         )}
 
-        {testResult !== 'idle' && testResult !== 'running' && (
-          <p className="text-sm text-muted-foreground">
-            {testResult === 'success'
-              ? 'Your check is working correctly. Click "Add App" to start monitoring.'
-              : 'Please verify the URL and network access, then try again.'}
-          </p>
+        {testResult === 'success' && (
+          <div className="flex items-center gap-2 text-sm text-success" role="status">
+            <Check className="size-4" />
+            <span>Test passed. The app is ready to be added with this configuration.</span>
+          </div>
         )}
       </div>
 

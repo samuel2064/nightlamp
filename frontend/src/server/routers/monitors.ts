@@ -34,10 +34,10 @@ export const monitorsRouter = router({
       platform: z.string().min(1),
       checkType: z.enum(['http', 'tcp', 'keyword']).default('http'),
       checkTarget: z.string().min(1),
-      checkIntervalSec: z.number().int().min(10).max(86400).optional(),
-      checkTimeoutSec: z.number().int().min(1).max(30).optional(),
+      checkIntervalSec: z.number().int().min(10).max(86400).default(60),
+      checkTimeoutSec: z.number().int().min(1).max(30).default(10),
       keyword: z.string().min(1).optional(),
-      enabled: z.boolean().optional(),
+      enabled: z.boolean().default(true),
       alertChannelId: z.string().min(1),
     }))
     .mutation(async ({ ctx, input }) => {
@@ -60,21 +60,5 @@ export const monitorsRouter = router({
         keyword: input.keyword,
       })
       return result
-    }),
-
-  channels: protectedProcedure
-    .query(async ({ ctx }) => {
-      const { channels } = await createBackendClient(ctx.token).channels.list()
-      return { channels }
-    }),
-
-  createChannel: protectedProcedure
-    .input(z.object({
-      name: z.string().min(1),
-      type: z.enum(['email-smtp', 'slack-webhook', 'in-app-websocket']),
-      config: z.record(z.any()),
-    }))
-    .mutation(async ({ ctx, input }) => {
-      return createBackendClient(ctx.token).channels.create(input)
     }),
 })

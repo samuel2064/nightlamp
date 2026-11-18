@@ -76,6 +76,11 @@ const ADMIN_ENDPOINTS: EndpointRule[] = [
   { path: '/api/playbook/remediate', method: 'POST' },
 ];
 
+const TEAM_REQUIRED_ENDPOINTS: EndpointRule[] = [
+  { path: '/api/events' },
+  { path: '/api/remediation/runs' },
+];
+
 function normalizePath(path: string): string {
   const normalized = path.replace(/\/+$/, '');
   return normalized || '/';
@@ -265,6 +270,14 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
               return;
             }
             throw err;
+          }
+        }
+
+        if (matchesEndpoint(path, req.method, TEAM_REQUIRED_ENDPOINTS)) {
+          if (!auth.teamId) {
+            res.writeHead(403);
+            res.end(JSON.stringify({ error: 'Team membership required', code: 'FORBIDDEN' }));
+            return;
           }
         }
       }
