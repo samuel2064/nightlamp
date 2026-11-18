@@ -1178,6 +1178,83 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           res.end(body);
           return;
         }
+        if (req.method === 'POST') {
+          let body = ''
+          for await (const chunk of req) {
+            body += chunk
+          }
+          const input = JSON.parse(body)
+          const { name, source, config, enabled = true } = input
+          if (!name || !source || !config) {
+            res.writeHead(400)
+            res.end(JSON.stringify({ error: 'Missing required fields: name, source, config' }))
+            return
+          }
+          const id = uuidv4()
+          const now = new Date().toISOString()
+          const tenantScope = tenantFilter('team_id', teamId)
+          const sql = `INSERT INTO checks (id, source, name, config, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+          const params = [id, source, name, JSON.stringify(config), enabled ? 1 : 0, now, now, ...tenantScope.params]
+          db.exec(sql, params)
+          hotCache.clear()
+          res.writeHead(201)
+          res.end(JSON.stringify({ id, name, source, enabled, createdAt: now }))
+          return
+        }
+        if (parsedUrl.pathname === '/api/monitors/test-check') {
+          let body = ''
+          for await (const chunk of req) {
+            body += chunk
+          }
+          const input = JSON.parse(body)
+          const { url, type } = input
+          if (!url || !type) {
+            res.writeHead(400)
+            res.end(JSON.stringify({ error: 'Missing required fields: url, type' }))
+            return
+          }
+          const start = Date.now()
+          try {
+            const controller = new AbortController()
+            const timeoutId = setTimeout(() => controller.abort(), 15000)
+            const response = await fetch(url, {
+              method: type === 'tcp' ? 'HEAD' : 'GET',
+              signal: controller.signal,
+              mode: 'cors',
+            })
+            clearTimeout(timeoutId)
+            const latencyMs = Date.now() - start
+            res.writeHead(200)
+            res.end(JSON.stringify({
+              status: response.status,
+              statusText: response.statusText,
+              latencyMs,
+              success: response.ok,
+            }))
+          } catch (err: any) {
+            const latencyMs = Date.now() - start
+            if (err.name === 'AbortError') {
+              res.writeHead(200)
+              res.end(JSON.stringify({
+                status: 408,
+                statusText: 'Request Timeout',
+                latencyMs,
+                success: false,
+                error: 'Request timed out after 15s',
+              }))
+            } else {
+              res.writeHead(200)
+              res.end(JSON.stringify({
+                status: 0,
+                statusText: err.message || 'Network error',
+                latencyMs,
+                success: false,
+                error: err.message,
+              }))
+            }
+          }
+          return
+        }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return;

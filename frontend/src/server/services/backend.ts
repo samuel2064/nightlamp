@@ -84,6 +84,42 @@ export interface HealthStats {
   }
 }
 
+export interface MonitorCreateInput {
+  name: string
+  source: string
+  config: {
+    url: string
+    platform: string
+    checkType: string
+    checkUrl: string
+    interval: number
+    alertChannels: string[]
+    alertEmail?: string
+  }
+  enabled?: boolean
+}
+
+export interface MonitorCreateResponse {
+  id: string
+  name: string
+  source: string
+  enabled: boolean
+  createdAt: string
+}
+
+export interface TestCheckInput {
+  url: string
+  type: string
+}
+
+export interface TestCheckResponse {
+  status: number
+  statusText: string
+  latencyMs: number
+  success: boolean
+  error?: string
+}
+
 function normalizeHealthStatus(raw: string | undefined): HealthStatus {
   switch ((raw || '').toLowerCase()) {
     case 'ok':
@@ -123,6 +159,10 @@ export interface BackendClient {
   }
   checkResults: {
     list: (params?: { limit?: number; offset?: number; status?: string }) => Promise<{ results: CheckResult[]; count: number }>
+  }
+  monitors: {
+    create: (input: MonitorCreateInput) => Promise<MonitorCreateResponse>
+    testCheck: (input: TestCheckInput) => Promise<TestCheckResponse>
   }
   playbook: {
     list: () => Promise<{ entries: DiagnosticEntry[]; count: number }>
@@ -185,6 +225,12 @@ export function createBackendClient(token: string | null): BackendClient {
         apiFetch<{ results: CheckResult[]; count: number }>(
           `/api/check-results?${new URLSearchParams(params as Record<string, string>).toString()}`
         ),
+    },
+    monitors: {
+      create: (input: MonitorCreateInput) =>
+        apiFetchPost<MonitorCreateResponse>('/api/monitors', input),
+      testCheck: (input: TestCheckInput) =>
+        apiFetchPost<TestCheckResponse>('/api/monitors/test-check', input),
     },
     playbook: {
       list: () =>

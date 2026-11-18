@@ -14,10 +14,6 @@ import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { trpc } from '@/lib/trpc'
 
-// TODO: Backend API for creating monitors is not yet implemented.
-// When available, add a `create` mutation to monitorsRouter and backend service.
-// Expected backend endpoint: POST /api/monitors with body { name, url, platform, checkType, checkUrl, interval, alertChannels }
-
 type WizardStep = 'details' | 'platform' | 'check' | 'alerts' | 'test' | 'complete'
 
 interface Platform {
@@ -91,17 +87,34 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [testResult, setTestResult] = useState<'idle' | 'running' | 'success' | 'error'>('idle')
 
-  // TODO: Replace with real tRPC mutation when backend supports monitor creation
-  // const createMonitor = trpc.monitors.create.useMutation({
-  //   onSuccess: () => {
-  //     showToast('App added successfully', `${data.appName} is now being monitored`)
-  //     onSuccess?.()
-  //     resetWizard()
-  //   },
-  //   onError: (err) => {
-  //     showToast('Failed to add app', err.message, 'destructive')
-  //   },
-  // })
+  const createMonitor = trpc.monitors.create.useMutation({
+    onSuccess: () => {
+      showToast('App added successfully', `${data.appName} is now being monitored`)
+      onSuccess?.()
+      resetWizard()
+    },
+    onError: (err) => {
+      showToast('Failed to add app', err.message, 'destructive')
+    },
+  })
+
+  const testCheck = trpc.monitors.testCheck.useMutation({
+    onSuccess: (result) => {
+      const success = result.success
+      setTestResult(success ? 'success' : 'error')
+      if (success) {
+        showToast('Test check passed', `Status ${result.status} ${result.statusText} (${result.latencyMs}ms)`)
+      } else {
+        showToast('Test check failed', result.error || `Endpoint returned ${result.status}`, 'destructive')
+        setErrors({ checkUrl: result.error || `Endpoint returned ${result.status}` })
+      }
+    },
+    onError: (err) => {
+      setTestResult('error')
+      showToast('Test check failed', err.message, 'destructive')
+      setErrors({ checkUrl: err.message })
+    },
+  })
 
   const showToast = (title: string, description: string, variant?: 'default' | 'destructive') => {
     if (variant === 'destructive') {
@@ -161,48 +174,10 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
   }
 
   const handleTestCheck = async () => {
+    if (!validateStep('check')) return
     setTestResult('running')
     setErrors({})
-
-    // TODO: Replace with real backend test check endpoint when available
-    // Expected: POST /api/checks/test with body { url: data.checkUrl, type: data.checkType }
-    // const result = await trpc.monitors.testCheck.mutate({ url: data.checkUrl, type: data.checkType })
-
-    // Mock implementation for development - attempt real fetch to check URL
-    try {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 10000)
-      
-      const response = await fetch(data.checkUrl, {
-        method: 'GET',
-        signal: controller.signal,
-        mode: 'cors', // Will fail for non-CORS endpoints, which is expected
-      })
-      
-      clearTimeout(timeoutId)
-      
-      const success = response.ok
-      setTestResult(success ? 'success' : 'error')
-
-      if (success) {
-        showToast('Test check passed', `Your monitoring check returned ${response.status} ${response.statusText}`)
-      } else {
-        showToast('Test check failed', `Endpoint returned ${response.status} ${response.statusText}`, 'destructive')
-        setErrors({ checkUrl: `Endpoint returned ${response.status}. Check the URL and network access.` })
-      }
-    } catch (err) {
-      // Network error or CORS error - fall back to mock
-      await new Promise((resolve) => setTimeout(resolve, 1000))
-      const success = Math.random() > 0.3
-      setTestResult(success ? 'success' : 'error')
-
-      if (success) {
-        showToast('Test check passed (simulated)', 'Your monitoring check is working correctly (demo mode)')
-      } else {
-        showToast('Test check failed', 'Could not reach the endpoint. Please verify the URL and try again.', 'destructive')
-        setErrors({ checkUrl: 'Failed to connect. Check the URL and network access.' })
-      }
-    }
+    await testCheck.mutateAsync({ url: data.checkUrl, type: data.checkType })
   }
 
   const handleSubmit = async () => {
@@ -211,26 +186,22 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
     setIsSubmitting(true)
     setErrors({})
 
-    // TODO: Replace with real tRPC mutation when backend supports monitor creation
-    // await createMonitor.mutateAsync({
-    //   name: data.appName,
-    //   url: data.appUrl,
-    //   platform: data.platform,
-    //   checkType: data.checkType,
-    //   checkUrl: data.checkUrl,
-    //   interval: data.checkInterval,
-    //   alertChannels: data.alertChannels,
-    //   alertEmail: data.alertEmail,
-    // })
+    const config = {
+      url: data.appUrl,
+      platform: data.platform,
+      checkType: data.checkType,
+      checkUrl: data.checkUrl,
+      interval: data.checkInterval,
+      alertChannels: data.alertChannels,
+      alertEmail: data.alertEmail,
+    }
 
-    // Mock implementation for development
-    await new Promise((resolve) => setTimeout(resolve, 1500))
-
-    setIsSubmitting(false)
-    setStep('complete')
-
-    showToast('App added successfully', `${data.appName} is now being monitored (demo mode)`)
-    onSuccess?.()
+    await createMonitor.mutateAsync({
+      name: data.appName,
+      source: 'wizard',
+      config,
+      enabled: true,
+    })
   }
 
   const resetWizard = () => {
@@ -354,10 +325,10 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
             {step === 'test' ? (
               <Button
                 onClick={handleSubmit}
-                disabled={isSubmitting}
+                disabled={isSubmitting || createMonitor.isPending}
                 className="min-w-[120px]"
               >
-                {isSubmitting ? (
+                {isSubmitting || createMonitor.isPending ? (
                   <>
                     <Loader2 className="size-4 mr-2 animate-spin" />
                     Adding...
