@@ -3,11 +3,11 @@
     {
       "label": "a signed-in no-team can list the events",
       "expected": [
-        200
+        403
       ],
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
@@ -16,11 +16,11 @@
     {
       "label": "a signed-in no-team can list the remediation runs",
       "expected": [
-        200
+        403
       ],
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
@@ -38,11 +38,11 @@
     {
       "label": "a signed-in no-team can list the events",
       "expected": [
-        200
+        403
       ],
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
@@ -51,11 +51,11 @@
     {
       "label": "a signed-in no-team can list the remediation runs",
       "expected": [
-        200
+        403
       ],
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
@@ -73,11 +73,11 @@
     {
       "label": "a signed-in no-team can list the events",
       "expected": [
-        200
+        403
       ],
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
@@ -86,11 +86,11 @@
     {
       "label": "a signed-in no-team can list the remediation runs",
       "expected": [
-        200
+        403
       ],
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
@@ -108,11 +108,11 @@
     {
       "label": "a signed-in no-team can list the events",
       "expected": [
-        200
+        403
       ],
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
@@ -121,11 +121,11 @@
     {
       "label": "a signed-in no-team can list the remediation runs",
       "expected": [
-        200
+        403
       ],
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
@@ -143,11 +143,11 @@
     {
       "label": "a signed-in no-team can list the events",
       "expected": [
-        200
+        403
       ],
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
@@ -156,11 +156,11 @@
     {
       "label": "a signed-in no-team can list the remediation runs",
       "expected": [
-        200
+        403
       ],
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
@@ -178,11 +178,11 @@
     {
       "label": "a signed-in no-team can list the events",
       "expected": [
-        200
+        403
       ],
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
@@ -191,11 +191,11 @@
     {
       "label": "a signed-in no-team can list the remediation runs",
       "expected": [
-        200
+        403
       ],
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
@@ -225,7 +225,9 @@
     "ownerId": "[redacted-user]",
     "controlledOwnerUsed": true,
     "testTeamCreated": false,
-    "fullMatrixRun": true,
+    "fullMatrixRun": false,
+    "privilegeProbesRun": 0,
+    "privilegeProbesPassed": 0,
     "controlledOwnerDeleted": true
   },
   "diagnostics": [
@@ -271,23 +273,23 @@
     "  User [redacted-user] has access to 0 team(s)",
     "Controlled owner created, synced, and session minted: [redacted-user]",
     "Failed to create test team: HTTP 403",
-    "PASS a signed-in no-team can list the events expected 200 got 200",
-    "PASS a signed-in no-team can list the remediation runs expected 200 got 200",
+    "FAIL a signed-in no-team can list the events expected 403 got 200",
+    "FAIL a signed-in no-team can list the remediation runs expected 403 got 200",
     "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
-    "PASS a signed-in no-team can list the events expected 200 got 200",
-    "PASS a signed-in no-team can list the remediation runs expected 200 got 200",
+    "FAIL a signed-in no-team can list the events expected 403 got 200",
+    "FAIL a signed-in no-team can list the remediation runs expected 403 got 200",
     "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
-    "PASS a signed-in no-team can list the events expected 200 got 200",
-    "PASS a signed-in no-team can list the remediation runs expected 200 got 200",
+    "FAIL a signed-in no-team can list the events expected 403 got 200",
+    "FAIL a signed-in no-team can list the remediation runs expected 403 got 200",
     "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
-    "PASS a signed-in no-team can list the events expected 200 got 200",
-    "PASS a signed-in no-team can list the remediation runs expected 200 got 200",
+    "FAIL a signed-in no-team can list the events expected 403 got 200",
+    "FAIL a signed-in no-team can list the remediation runs expected 403 got 200",
     "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
-    "PASS a signed-in no-team can list the events expected 200 got 200",
-    "PASS a signed-in no-team can list the remediation runs expected 200 got 200",
+    "FAIL a signed-in no-team can list the events expected 403 got 200",
+    "FAIL a signed-in no-team can list the remediation runs expected 403 got 200",
     "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
-    "PASS a signed-in no-team can list the events expected 200 got 200",
-    "PASS a signed-in no-team can list the remediation runs expected 200 got 200",
+    "FAIL a signed-in no-team can list the events expected 403 got 200",
+    "FAIL a signed-in no-team can list the remediation runs expected 403 got 200",
     "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
     "--- Cleanup: Deleting controlled owner ---",
     "POST revoke session for [redacted-user] -> HTTP 200",
@@ -304,6 +306,6 @@
   ],
   "valuesIncluded": false,
   "bodiesIncluded": false,
-  "probesPassed": 18,
+  "probesPassed": 6,
   "probesTotal": 18
 }
