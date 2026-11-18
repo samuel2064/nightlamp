@@ -13,28 +13,32 @@
     {
       "label": "a signed-in no-team can list the events",
       "expected": [
-        200
+        403
       ],
+      "expectedStatusUsed": 403,
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
-      "isNoTeamUser": true
+      "isNoTeamUser": true,
+      "contractMismatch": true
     },
     {
       "label": "a signed-in no-team can list the remediation runs",
       "expected": [
-        200
+        403
       ],
+      "expectedStatusUsed": 403,
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
-      "isNoTeamUser": true
+      "isNoTeamUser": true,
+      "contractMismatch": true
     },
     {
       "label": "acknowledging an event that does not exist answers 404 for no-team",
@@ -48,28 +52,32 @@
     {
       "label": "a signed-in no-team can list the events",
       "expected": [
-        200
+        403
       ],
+      "expectedStatusUsed": 403,
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
-      "isNoTeamUser": true
+      "isNoTeamUser": true,
+      "contractMismatch": true
     },
     {
       "label": "a signed-in no-team can list the remediation runs",
       "expected": [
-        200
+        403
       ],
+      "expectedStatusUsed": 403,
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
-      "isNoTeamUser": true
+      "isNoTeamUser": true,
+      "contractMismatch": true
     },
     {
       "label": "acknowledging an event that does not exist answers 404 for no-team",
@@ -83,28 +91,32 @@
     {
       "label": "a signed-in no-team can list the events",
       "expected": [
-        200
+        403
       ],
+      "expectedStatusUsed": 403,
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
-      "isNoTeamUser": true
+      "isNoTeamUser": true,
+      "contractMismatch": true
     },
     {
       "label": "a signed-in no-team can list the remediation runs",
       "expected": [
-        200
+        403
       ],
+      "expectedStatusUsed": 403,
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
-      "isNoTeamUser": true
+      "isNoTeamUser": true,
+      "contractMismatch": true
     },
     {
       "label": "acknowledging an event that does not exist answers 404 for no-team",
@@ -118,28 +130,32 @@
     {
       "label": "a signed-in no-team can list the events",
       "expected": [
-        200
+        403
       ],
+      "expectedStatusUsed": 403,
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
-      "isNoTeamUser": true
+      "isNoTeamUser": true,
+      "contractMismatch": true
     },
     {
       "label": "a signed-in no-team can list the remediation runs",
       "expected": [
-        200
+        403
       ],
+      "expectedStatusUsed": 403,
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
-      "isNoTeamUser": true
+      "isNoTeamUser": true,
+      "contractMismatch": true
     },
     {
       "label": "acknowledging an event that does not exist answers 404 for no-team",
@@ -153,28 +169,32 @@
     {
       "label": "a signed-in no-team can list the events",
       "expected": [
-        200
+        403
       ],
+      "expectedStatusUsed": 403,
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
-      "isNoTeamUser": true
+      "isNoTeamUser": true,
+      "contractMismatch": true
     },
     {
       "label": "a signed-in no-team can list the remediation runs",
       "expected": [
-        200
+        403
       ],
+      "expectedStatusUsed": 403,
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
-      "isNoTeamUser": true
+      "isNoTeamUser": true,
+      "contractMismatch": true
     },
     {
       "label": "acknowledging an event that does not exist answers 404 for no-team",
@@ -188,28 +208,32 @@
     {
       "label": "a signed-in no-team can list the events",
       "expected": [
-        200
+        403
       ],
+      "expectedStatusUsed": 403,
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
-      "isNoTeamUser": true
+      "isNoTeamUser": true,
+      "contractMismatch": true
     },
     {
       "label": "a signed-in no-team can list the remediation runs",
       "expected": [
-        200
+        403
       ],
+      "expectedStatusUsed": 403,
       "status": 200,
       "code": null,
-      "ok": true,
+      "ok": false,
       "foreignRows": 0,
       "ownRows": 0,
       "personalRows": 0,
-      "isNoTeamUser": true
+      "isNoTeamUser": true,
+      "contractMismatch": true
     },
     {
       "label": "acknowledging an event that does not exist answers 404 for no-team",
@@ -239,7 +263,9 @@
     "fullMatrixRun": false,
     "privilegeProbesRun": 0,
     "privilegeProbesPassed": 0,
-    "controlledOwnerDeleted": true
+    "controlledOwnerDeleted": true,
+    "noTeamExpectedStatus": 403,
+    "contractMismatches": 12
   },
   "diagnostics": [
     "GET the frontend environment variables -> HTTP 200",
@@ -285,23 +311,23 @@
     "Controlled owner created, synced, and session minted: [redacted-user]",
     "Failed to create test team: HTTP 403",
     "Team creation failed with 403 - this is expected per NOC-294 decision (fail closed for users with no membership). Full privilege matrix cannot run until NOC-294 membership binding is fixed.",
-    "PASS a signed-in no-team can list the events expected 200 got 200",
-    "PASS a signed-in no-team can list the remediation runs expected 200 got 200",
+    "FAIL a signed-in no-team can list the events expected 403 got 200 CONTRACT MISMATCH: build returned 200 but decided contract requires 403",
+    "FAIL a signed-in no-team can list the remediation runs expected 403 got 200 CONTRACT MISMATCH: build returned 200 but decided contract requires 403",
     "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
-    "PASS a signed-in no-team can list the events expected 200 got 200",
-    "PASS a signed-in no-team can list the remediation runs expected 200 got 200",
+    "FAIL a signed-in no-team can list the events expected 403 got 200 CONTRACT MISMATCH: build returned 200 but decided contract requires 403",
+    "FAIL a signed-in no-team can list the remediation runs expected 403 got 200 CONTRACT MISMATCH: build returned 200 but decided contract requires 403",
     "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
-    "PASS a signed-in no-team can list the events expected 200 got 200",
-    "PASS a signed-in no-team can list the remediation runs expected 200 got 200",
+    "FAIL a signed-in no-team can list the events expected 403 got 200 CONTRACT MISMATCH: build returned 200 but decided contract requires 403",
+    "FAIL a signed-in no-team can list the remediation runs expected 403 got 200 CONTRACT MISMATCH: build returned 200 but decided contract requires 403",
     "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
-    "PASS a signed-in no-team can list the events expected 200 got 200",
-    "PASS a signed-in no-team can list the remediation runs expected 200 got 200",
+    "FAIL a signed-in no-team can list the events expected 403 got 200 CONTRACT MISMATCH: build returned 200 but decided contract requires 403",
+    "FAIL a signed-in no-team can list the remediation runs expected 403 got 200 CONTRACT MISMATCH: build returned 200 but decided contract requires 403",
     "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
-    "PASS a signed-in no-team can list the events expected 200 got 200",
-    "PASS a signed-in no-team can list the remediation runs expected 200 got 200",
+    "FAIL a signed-in no-team can list the events expected 403 got 200 CONTRACT MISMATCH: build returned 200 but decided contract requires 403",
+    "FAIL a signed-in no-team can list the remediation runs expected 403 got 200 CONTRACT MISMATCH: build returned 200 but decided contract requires 403",
     "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
-    "PASS a signed-in no-team can list the events expected 200 got 200",
-    "PASS a signed-in no-team can list the remediation runs expected 200 got 200",
+    "FAIL a signed-in no-team can list the events expected 403 got 200 CONTRACT MISMATCH: build returned 200 but decided contract requires 403",
+    "FAIL a signed-in no-team can list the remediation runs expected 403 got 200 CONTRACT MISMATCH: build returned 200 but decided contract requires 403",
     "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
     "--- Cleanup: Deleting controlled owner ---",
     "POST revoke session for [redacted-user] -> HTTP 200",
@@ -318,6 +344,6 @@
   ],
   "valuesIncluded": false,
   "bodiesIncluded": false,
-  "probesPassed": 18,
+  "probesPassed": 6,
   "probesTotal": 19
 }
