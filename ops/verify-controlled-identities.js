@@ -358,6 +358,11 @@ async function deleteTeam(ownerToken, teamId) {
   return response.status >= 200 && response.status < 300;
 }
 
+function getUserTeamIds(userRole) {
+  if (!userRole || !Array.isArray(userRole.teams)) return [];
+  return userRole.teams.map(t => t.id).filter(Boolean);
+}
+
 async function probeWithForeignRowCheck(label, url, options, expected, userId, userRole) {
   const response = await fetch(url, options);
   const text = await response.text();
@@ -372,26 +377,27 @@ async function probeWithForeignRowCheck(label, url, options, expected, userId, u
   
   let foreignRows = 0;
   let ownRows = 0;
-  if (response.status === 200 && parsed && Array.isArray(parsed.events)) {
-    for (const event of parsed.events) {
-      if (event.teamId && userRole && !userRole.isOwner && !userRole.isMember) {
-        foreignRows++;
-      } else if (!event.teamId) {
-        ownRows++;
-      }
-    }
-  } else if (response.status === 200 && parsed && Array.isArray(parsed.runs)) {
-    for (const run of parsed.runs) {
-      if (run.teamId && userRole && !userRole.isOwner && !userRole.isMember) {
-        foreignRows++;
-      } else if (!run.teamId) {
-        ownRows++;
+  let personalRows = 0;
+  const userTeamIds = getUserTeamIds(userRole);
+  const isNoTeamUser = userTeamIds.length === 0;
+  
+  if (response.status === 200 && parsed) {
+    const items = Array.isArray(parsed.events) ? parsed.events : (Array.isArray(parsed.runs) ? parsed.runs : []);
+    for (const item of items) {
+      if (item.teamId) {
+        if (userTeamIds.includes(item.teamId)) {
+          ownRows++;
+        } else {
+          foreignRows++;
+        }
+      } else {
+        personalRows++;
       }
     }
   }
   
-  if (foreignRows > 0 || ownRows > 0) {
-    log(`  Foreign rows: ${foreignRows}, Own rows: ${ownRows}`);
+  if (foreignRows > 0 || ownRows > 0 || personalRows > 0) {
+    log(`  Foreign rows: ${foreignRows}, Own team rows: ${ownRows}, Personal rows: ${personalRows}, isNoTeamUser: ${isNoTeamUser}`);
   }
   
   const entry = {
@@ -402,9 +408,11 @@ async function probeWithForeignRowCheck(label, url, options, expected, userId, u
     ok: expected.includes(response.status),
     foreignRows,
     ownRows,
+    personalRows,
+    isNoTeamUser,
   };
   report.probes.push(entry);
-  log(`${entry.ok ? 'PASS' : 'FAIL'} ${label} expected ${expected.join('/')} got ${response.status}${code ? ` ${code}` : ''}${foreignRows > 0 || ownRows > 0 ? ` (foreignRows: ${foreignRows}, ownRows: ${ownRows})` : ''}`);
+  log(`${entry.ok ? 'PASS' : 'FAIL'} ${label} expected ${expected.join('/')} got ${response.status}${code ? ` ${code}` : ''}${foreignRows > 0 || ownRows > 0 || personalRows > 0 ? ` (foreignRows: ${foreignRows}, ownRows: ${ownRows}, personalRows: ${personalRows})` : ''}`);
   return entry;
 }
 
