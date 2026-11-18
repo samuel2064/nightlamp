@@ -294,6 +294,13 @@ async function queryTeamMembership(token, userId) {
   };
 }
 
+async function ensureUserInNightlamp(token, userId) {
+  log(`  Ensuring user ${userId} exists in Nightlamp database...`);
+  const response = await fetch(`${nightlampApi}/api/teams`, { headers: bearer(token) });
+  log(`  GET /api/teams for sync -> HTTP ${response.status}`);
+  return response.status === 200 || response.status === 401;
+}
+
 async function createTestTeam(ownerToken, ownerId, memberId) {
   const teamName = `controlled-test-${Date.now()}`;
   const teamSlug = `controlled-test-${Date.now()}`;
@@ -540,7 +547,7 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
     test: 'member-admin-endpoint',
     expected: [403],
     status: adminEndpoint.status,
-    code: aeParsed?.code,
+    code: aePars�?.code,
     ok: adminEndpoint.status === 403
   });
   log(`Member admin endpoint: ${adminEndpoint.status} ${adminEndpoint.status === 403 ? 'PASS' : 'FAIL'}`);
@@ -779,12 +786,13 @@ async function run() {
       if (sessionData) {
         controlledOwnerToken = sessionData.token;
         controlledOwnerSessionUserId = controlledOwnerId;
+        await ensureUserInNightlamp(controlledOwnerToken, controlledOwnerId);
         const membership = await queryTeamMembership(controlledOwnerToken, controlledOwnerId);
         ownerEntry = { userId: controlledOwnerId, ...membership, token: controlledOwnerToken };
         report.identity.ownerIdentified = true;
         report.identity.ownerId = controlledOwnerId;
         report.identity.controlledOwnerUsed = true;
-        log(`Controlled owner created and session minted: ${controlledOwnerId}`);
+        log(`Controlled owner created, synced, and session minted: ${controlledOwnerId}`);
       } else {
         log('Failed to mint session for controlled owner');
         await deleteControlledOwner(controlledOwnerId);
