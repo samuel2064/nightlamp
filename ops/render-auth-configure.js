@@ -10,7 +10,6 @@ const issuer = process.env.CLERK_ISSUER;
 const instance = process.env.CLERK_INSTANCE;
 const publicKey = process.env.CLERK_JWT_PUBLIC_KEY;
 const githubPublishable = process.env.GITHUB_CLERK_PUBLISHABLE_KEY;
-const audienceSource = process.env.CLERK_AUDIENCE_SOURCE || 'auto';
 const clerkApi = process.env.CLERK_API || 'https://api.clerk.com/v1';
 
 const result = { actions: [], diagnostics: [] };
@@ -75,7 +74,9 @@ function clerkInstance(keyValue) {
   const body = parts.slice(2).join('_').replace(/[^A-Za-z0-9_-]/g, '');
   if (!body) return '';
   try {
-    return Buffer.from(body + '='.repeat((4 - (body.length % 4)) % 4), 'base64url').toString('utf8');
+    const padded = body + '='.repeat((4 - (body.length % 4)) % 4);
+    const decoded = Buffer.from(padded, 'base64url').toString('utf8');
+    return decoded.replace(/\$$/, '');
   } catch (error) {
     return '';
   }
@@ -96,66 +97,6 @@ async function clerkRequest(method, path, body, secretKey) {
     parsed = null;
   }
   return { status: response.status, body: parsed };
-}
-
-async function extractAudienceFromSession(frontendSecretKey) {
-  if (!frontendSecretKey) {
-    log('CLERK_SECRET_KEY not available on frontend service, cannot extract audience from session');
-    return null;
-  }
-
-  const users = await clerkRequest('GET', '/users?limit=1', {}, frontendSecretKey);
-  if (users.status !== 200 || !Array.isArray(users.body) || users.body.length === 0) {
-    log('Failed to get a user to mint session for audience extraction');
-    return null;
-  }
-
-  const userId = users.body[0].id;
-  let sessionId = null;
-  let token = null;
-
-  try {
-    const session = await clerkRequest('POST', '/sessions', { user_id: userId }, frontendSecretKey);
-    if (session.status < 200 || session.status >= 300 || !session.body || !session.body.id) {
-      log(`Failed to create session for audience extraction: ${session.status}`);
-      return null;
-    }
-    sessionId = session.body.id;
-
-    const tokenResponse = await clerkRequest('POST', `/sessions/${sessionId}/tokens`, {}, frontendSecretKey);
-    const tokenValue = tokenResponse.body && tokenResponse.body.jwt;
-    if (tokenResponse.status < 200 || tokenResponse.status >= 300 || !tokenValue) {
-      log('Failed to mint token for audience extraction');
-      return null;
-    }
-    token = tokenValue;
-
-    let claims = {};
-    try {
-      claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
-    } catch (error) {
-      log('Failed to parse JWT claims for audience');
-      return null;
-    }
-
-    const aud = claims.aud;
-    if (!aud) {
-      log('No aud claim found in session token');
-      return null;
-    }
-
-    log(`Extracted audience from session token: ${Array.isArray(aud) ? aud.join(',') : aud}`);
-    return Array.isArray(aud) ? aud[0] : aud;
-  } finally {
-    if (sessionId) {
-      try {
-        const revoked = await clerkRequest('POST', `/sessions/${sessionId}/revoke`, {}, frontendSecretKey);
-        log(`Revoked session for audience extraction: HTTP ${revoked.status}`);
-      } catch (error) {
-        log(`Failed to revoke session: ${error.message}`);
-      }
-    }
-  }
 }
 
 async function getFrontendSecretKey() {
@@ -251,27 +192,9 @@ async function run() {
       { key: 'CLERK_JWT_PUBLIC_KEY', value: publicKey },
     ];
 
-    if (!backend.some((entry) => entry.key === 'CLERK_JWT_AUDIENCE')) {
-      const audience = await extractAudienceFromSession(frontendSecretKey);
-      if (audience) {
-        additions.push({ key: 'CLERK_JWT_AUDIENCE', value: audience });
-        log(`Adding CLERK_JWT_AUDIENCE to backend service`);
-      } else {
-        log('Could not extract audience, failing closed - CLERK_JWT_AUDIENCE not set');
-        result.actions.push('failed to extract audience, backend unchanged');
-        fs.writeFileSync(resultFile, JSON.stringify(result));
-        process.exit(1);
-      }
-    } else {
-      log('CLERK_JWT_AUDIENCE already present on backend service');
-    }
-
     const outcome = replaceEnvVars(backendId, backend, additions);
     if (outcome.ok) {
       result.actions.push('added CLERK_JWT_ISSUER and CLERK_JWT_PUBLIC_KEY to the backend service');
-      if (additions.some(a => a.key === 'CLERK_JWT_AUDIENCE')) {
-        result.actions.push('added CLERK_JWT_AUDIENCE to the backend service');
-      }
     }
     if (outcome.refused) {
       result.actions.push('refused the backend bulk replace because the API did not return every value');
