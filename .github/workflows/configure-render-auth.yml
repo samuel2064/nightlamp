@@ -1,0 +1,238 @@
+name: Configure Render auth env vars
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ops/render-auth-config
+
+permissions:
+  contents: write
+
+env:
+  RENDER_API: https://api.render.com/v1
+  CLERK_ISSUER: https://capable-goldfish-98.clerk.accounts.dev
+  CLERK_INSTANCE: capable-goldfish-98.clerk.accounts.dev
+  REPORT_BRANCH: ops/render-auth-report
+  EXPECTED_BACKEND_SLUG: nightlamp-api
+  EXPECTED_FRONTEND_SLUG: nightlamp-frontend
+
+jobs:
+  configure:
+    name: Configure the Clerk auth variables on Render
+    runs-on: ubuntu-latest
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      BACKEND_SERVICE_ID: ${{ secrets.RENDER_BACKEND_SERVICE_ID }}
+      FRONTEND_SERVICE_ID: ${{ secrets.RENDER_FRONTEND_SERVICE_ID }}
+      GITHUB_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+      GITHUB_CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
+      CLERK_JWT_PUBLIC_KEY: |
+        -----BEGIN PUBLIC KEY-----
+        MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6+uwb+X/QKQQp/8A0Sy3
+        bYmwSAPHnynUH4TEbt3RP3tH8/h4868CiJVDDXeORwwSKz8kcfFfZPt5OtLuzPUn
+        yzTeDv0Lud9loahWP+aY/pnRgyGWHuk575jnJA8bRJtg+EIyZakQNNOH0Brs09DQ
+        QMHHiH9YTSDkGyT7yZmH32cGFs2qoAAwxyM6nLy7MdQpWcat+RrGwKB1W4wIjLAI
+        5EUNqNEuZniGogPlMyV1Bz1oiJWXlYr91hJDDiCPPzHtuow4g4DGybHguGlQUStk
+        hESQfyn316/DTggeR4rZfKxNAbwba7/W0JPmqmsfyd2cwQkUUljhv2vjLx96GgHl
+        5QIDAQAB
+        -----END PUBLIC KEY-----
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 1
+
+      - name: Preflight
+        run: |
+          set -euo pipefail
+          test -n "$RENDER_API_KEY" || { echo "::error::RENDER_API_KEY secret is missing or empty"; exit 1; }
+          test -n "$BACKEND_SERVICE_ID" || { echo "::error::RENDER_BACKEND_SERVICE_ID secret is missing or empty"; exit 1; }
+          echo "preflight ok"
+
+      - name: List the Render services
+        run: |
+          set -uo pipefail
+          : > /tmp/diag.log
+          : > /tmp/services-list.txt
+          STATUS=$(curl -sS -o /tmp/services.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services")
+          echo "GET /services -> HTTP $STATUS" >> /tmp/diag.log
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::the Render API answered HTTP $STATUS for the service list"
+            exit 1
+          fi
+          echo "workspace services (name | slug | type | id):" >> /tmp/services-list.txt
+          jq -r '.. | objects | select(has("slug")) | [(.name//"?"), .slug, (.type//"?"), (.id//"?")] | join(" | ")' /tmp/services.json | sort -u >> /tmp/services-list.txt
+          cat /tmp/services-list.txt
+
+      - name: Resolve the service identities
+        run: |
+          set -uo pipefail
+          service_id_by_slug() {
+            jq -r --arg slug "$1" '.. | objects | select(.slug==$slug) | .id // empty' /tmp/services.json | head -n 1
+          }
+          service_field_by_id() {
+            jq -r --arg id "$1" --arg field "$2" '.. | objects | select(.id==$id) | .[$field] // empty' /tmp/services.json | head -n 1
+          }
+          TARGET_BACKEND_ID=$(service_id_by_slug "$EXPECTED_BACKEND_SLUG")
+          TARGET_FRONTEND_ID=$(service_id_by_slug "$EXPECTED_FRONTEND_SLUG")
+          SECRET_BACKEND_NAME=$(service_field_by_id "$BACKEND_SERVICE_ID" name)
+          SECRET_BACKEND_SLUG=$(service_field_by_id "$BACKEND_SERVICE_ID" slug)
+          SECRET_FRONTEND_NAME=$(service_field_by_id "$FRONTEND_SERVICE_ID" name)
+          SECRET_FRONTEND_SLUG=$(service_field_by_id "$FRONTEND_SERVICE_ID" slug)
+          echo "repository secret backend service id: name=$SECRET_BACKEND_NAME slug=$SECRET_BACKEND_SLUG" >> /tmp/diag.log
+          echo "repository secret frontend service id: name=$SECRET_FRONTEND_NAME slug=$SECRET_FRONTEND_SLUG" >> /tmp/diag.log
+          echo "selected backend service id: ${TARGET_BACKEND_ID:-none}" >> /tmp/diag.log
+          echo "selected frontend service id: ${TARGET_FRONTEND_ID:-none}" >> /tmp/diag.log
+          if [ -z "$TARGET_BACKEND_ID" ]; then
+            echo "::error::no service with the slug '$EXPECTED_BACKEND_SLUG' was found; the workspace service list is in the report"
+            exit 1
+          fi
+          if [ "$TARGET_BACKEND_ID" != "$BACKEND_SERVICE_ID" ]; then
+            echo "::error::the repository deploy secret points at service $BACKEND_SERVICE_ID (slug '$SECRET_BACKEND_SLUG') while the product hostname needs the service with the slug '$EXPECTED_BACKEND_SLUG' ($TARGET_BACKEND_ID); refusing to configure anything"
+            echo "the repository deploy secret and the product hostname point at different services, refusing to configure" >> /tmp/diag.log
+            exit 1
+          fi
+          if [ -n "$FRONTEND_SERVICE_ID" ] && [ -n "$TARGET_FRONTEND_ID" ] && [ "$TARGET_FRONTEND_ID" != "$FRONTEND_SERVICE_ID" ]; then
+            echo "::error::the repository frontend deploy secret points at service $FRONTEND_SERVICE_ID (slug '$SECRET_FRONTEND_SLUG') while the product hostname needs the service with the slug '$EXPECTED_FRONTEND_SLUG' ($TARGET_FRONTEND_ID); refusing to configure anything"
+            echo "the repository frontend deploy secret and the product hostname point at different services, refusing to configure" >> /tmp/diag.log
+            exit 1
+          fi
+          echo "TARGET_BACKEND_ID=$TARGET_BACKEND_ID" >> "$GITHUB_ENV"
+          echo "TARGET_FRONTEND_ID=$TARGET_FRONTEND_ID" >> "$GITHUB_ENV"
+          echo "$EXPECTED_BACKEND_SLUG ($TARGET_BACKEND_ID)" > /tmp/backend-name.txt
+          echo "${EXPECTED_FRONTEND_SLUG} (${TARGET_FRONTEND_ID:-not found})" > /tmp/frontend-name.txt
+
+      - name: Verify the signing key against the live Clerk JWKS
+        run: |
+          set -euo pipefail
+          curl -sS --fail-with-body "$CLERK_ISSUER/.well-known/jwks.json" -o /tmp/jwks.json
+          KID=$(jq -r '[.keys[] | select(.use=="sig" or .use==null)][0].kid' /tmp/jwks.json)
+          N=$(jq -r '[.keys[] | select(.use=="sig" or .use==null)][0].n' /tmp/jwks.json)
+          printf '%s\n' "$CLERK_JWT_PUBLIC_KEY" > /tmp/key.pem
+          MOD=$(openssl rsa -pubin -in /tmp/key.pem -noout -modulus | sed 's/^Modulus=//')
+          NHEX=$(printf '%s' "$N" | python3 -c "import sys,base64;s=sys.stdin.read().strip();s+= '='*(-len(s)%4);print(base64.urlsafe_b64decode(s).hex().lstrip('0'))")
+          MODHEX=$(printf '%s' "$MOD" | tr 'A-F' 'a-f' | sed 's/^0*//')
+          echo "jwks kid=$KID" >> /tmp/diag.log
+          if [ "$NHEX" != "$MODHEX" ]; then
+            echo "::error::the configured public key does not match the live JWKS signing key"
+            exit 1
+          fi
+          echo "the configured public key matches the live JWKS signing key" >> /tmp/diag.log
+          echo "$KID" > /tmp/kid.txt
+
+      - name: Read the current environment variable keys
+        run: |
+          set -uo pipefail
+          : > /tmp/backend-keys.txt
+          : > /tmp/frontend-keys.txt
+          BACKEND_STATUS=$(curl -sS -o /tmp/backend-envvars.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$TARGET_BACKEND_ID/env-vars")
+          echo "GET /services/<backend>/env-vars -> HTTP $BACKEND_STATUS" >> /tmp/diag.log
+          if [ "$BACKEND_STATUS" != "200" ]; then
+            echo "::error::the Render API answered HTTP $BACKEND_STATUS for the backend env vars"
+            exit 1
+          fi
+          jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/backend-envvars.json | sort | tee -a /tmp/backend-keys.txt
+          if [ -n "$TARGET_FRONTEND_ID" ]; then
+            FRONTEND_STATUS=$(curl -sS -o /tmp/frontend-envvars.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$TARGET_FRONTEND_ID/env-vars")
+            echo "GET /services/<frontend>/env-vars -> HTTP $FRONTEND_STATUS" >> /tmp/diag.log
+            if [ "$FRONTEND_STATUS" = "200" ]; then
+              jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/frontend-envvars.json | sort | tee -a /tmp/frontend-keys.txt
+            fi
+          fi
+
+      - name: Configure the Clerk auth variables
+        run: |
+          set -uo pipefail
+          : > /tmp/actions.log
+          node ops/render-auth-configure.js > /tmp/configure-output.txt 2>&1
+          CONFIGURE_STATUS=$?
+          echo "configure exit -> $CONFIGURE_STATUS" >> /tmp/diag.log
+          cat /tmp/configure-output.txt >> /tmp/diag.log
+          if [ -f /tmp/configure-result.json ]; then
+            node -e "const r=require('/tmp/configure-result.json');for (const a of r.actions) console.log(a);" >> /tmp/actions.log
+          fi
+          if [ "$CONFIGURE_STATUS" != "0" ]; then
+            echo "::error::the configuration script failed with exit code $CONFIGURE_STATUS"
+            exit "$CONFIGURE_STATUS"
+          fi
+
+      - name: Re-read the environment variable keys
+        run: |
+          set -uo pipefail
+          : > /tmp/backend-keys-after.txt
+          : > /tmp/frontend-keys-after.txt
+          BACKEND_STATUS=$(curl -sS -o /tmp/backend-envvars-after.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$TARGET_BACKEND_ID/env-vars")
+          echo "GET /services/<backend>/env-vars (after) -> HTTP $BACKEND_STATUS" >> /tmp/diag.log
+          if [ "$BACKEND_STATUS" = "200" ]; then
+            jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/backend-envvars-after.json | sort | tee -a /tmp/backend-keys-after.txt
+          fi
+          if [ -n "$TARGET_FRONTEND_ID" ]; then
+            FRONTEND_STATUS=$(curl -sS -o /tmp/frontend-envvars-after.json -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "$RENDER_API/services/$TARGET_FRONTEND_ID/env-vars")
+            echo "GET /services/<frontend>/env-vars (after) -> HTTP $FRONTEND_STATUS" >> /tmp/diag.log
+            if [ "$FRONTEND_STATUS" = "200" ]; then
+              jq -r '(if type=="array" then . else [] end) | map(if .envVar then .envVar else . end) | .[] | .key' /tmp/frontend-envvars-after.json | sort | tee -a /tmp/frontend-keys-after.txt
+            fi
+          fi
+
+      - name: Publish the key-only report
+        if: always()
+        run: |
+          set -uo pipefail
+          BACKEND_NAME=$(cat /tmp/backend-name.txt 2>/dev/null || echo 'unknown')
+          FRONTEND_NAME=$(cat /tmp/frontend-name.txt 2>/dev/null || echo 'unknown')
+          KID=$(cat /tmp/kid.txt 2>/dev/null || echo 'unknown')
+          DIAG=$(tr '\n' ';' < /tmp/diag.log 2>/dev/null || echo '')
+          SCRIPT_DIAG=""
+          SCRIPT_ACTIONS=""
+          if [ -f /tmp/configure-result.json ]; then
+            SCRIPT_DIAG=$(node -e "const r=require('/tmp/configure-result.json');console.log((r.diagnostics||[]).map(d=>d.replace(/sk_[A-Za-z0-9_-]{32,}/g,'[REDACTED]').replace(/user_[A-Za-z0-9_-]{20,}/g,'[REDACTED]').replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,'[REDACTED]').replace(/[A-Fa-f0-9]{64,}/g,'[REDACTED]')).join(';'))" 2>/dev/null || echo '')
+            SCRIPT_ACTIONS=$(node -e "const r=require('/tmp/configure-result.json');console.log((r.actions||[]).join(';'))" 2>/dev/null || echo '')
+          fi
+          jq -n \
+            --arg run "$GITHUB_RUN_ID" \
+            --arg sha "$GITHUB_SHA" \
+            --arg branch "$GITHUB_REF_NAME" \
+            --arg kid "$KID" \
+            --arg backendName "$BACKEND_NAME" \
+            --arg frontendName "$FRONTEND_NAME" \
+            --arg diag "$DIAG" \
+            --arg scriptDiag "$SCRIPT_DIAG" \
+            --arg scriptActions "$SCRIPT_ACTIONS" \
+            --arg services "$(tr '\n' ';' < /tmp/services-list.txt 2>/dev/null || echo '')" \
+            --arg actions "$(tr '\n' ';' < /tmp/actions.log 2>/dev/null || echo '')" \
+            --arg backendBefore "$(tr '\n' ',' < /tmp/backend-keys.txt 2>/dev/null || echo '')" \
+            --arg backendAfter "$(tr '\n' ',' < /tmp/backend-keys-after.txt 2>/dev/null || echo '')" \
+            --arg frontendBefore "$(tr '\n' ',' < /tmp/frontend-keys.txt 2>/dev/null || echo '')" \
+            --arg frontendAfter "$(tr '\n' ',' < /tmp/frontend-keys-after.txt 2>/dev/null || echo '')" \
+            '{run:$run,sha:$sha,branch:$branch,backendService:$backendName,frontendService:$frontendName,jwksKid:$kid,diagnostics:$diag,scriptDiagnostics:$scriptDiag,scriptActions:$scriptActions,workspaceServices:$services,actions:$actions,backendEnvVarKeysBefore:$backendBefore,backendEnvVarKeysAfter:$backendAfter,frontendEnvVarKeysBefore:$frontendBefore,frontendEnvVarKeysAfter:$frontendAfter,valuesIncluded:false}' > /tmp/report.json
+          cat /tmp/report.json
+          {
+            echo "## Render auth configuration report"
+            echo
+            echo "- run: $GITHUB_RUN_ID"
+            echo "- sha: $GITHUB_SHA"
+            echo "- backend service: $BACKEND_NAME"
+            echo "- frontend service: $(cat /tmp/frontend-name.txt 2>/dev/null || echo unknown)"
+            echo "- jwks signing key id: $(cat /tmp/kid.txt 2>/dev/null || echo unknown)"
+            echo "- diagnostics: $(tr '\n' ';' < /tmp/diag.log 2>/dev/null || echo '')"
+            echo "- script diagnostics: $SCRIPT_DIAG"
+            echo "- script actions: $SCRIPT_ACTIONS"
+            echo "- actions: $(tr '\n' ';' < /tmp/actions.log 2>/dev/null || echo '')"
+            echo "- backend env var keys before: $(tr '\n' ',' < /tmp/backend-keys.txt 2>/dev/null || echo '')"
+            echo "- backend env var keys after: $(tr '\n' ',' < /tmp/backend-keys-after.txt 2>/dev/null || echo '')"
+            echo "- frontend env var keys before: $(tr '\n' ',' < /tmp/frontend-keys.txt 2>/dev/null || echo '')"
+            echo "- frontend env var keys after: $(tr '\n' ',' < /tmp/frontend-keys-after.txt 2>/dev/null || echo '')"
+          } >> "$GITHUB_STEP_SUMMARY"
+          git config user.name "nightlamp-ci"
+          git config user.email "ci@nightlamp.local"
+          git fetch --depth=1 origin "$REPORT_BRANCH" || true
+          if git rev-parse --verify FETCH_HEAD >/dev/null 2>&1; then
+            git checkout -B "$REPORT_BRANCH" FETCH_HEAD
+          fi
+          mkdir -p reports
+          cp /tmp/report.json reports/render-auth-config.json
+          git add reports/render-auth-config.json
+          git commit -m "render auth configuration report $GITHUB_RUN_ID" || true
+          git push origin "HEAD:$REPORT_BRANCH"
