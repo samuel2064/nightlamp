@@ -7,8 +7,6 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
-import { Switch } from '@/components/ui/switch'
-import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { trpc } from '@/lib/trpc'
@@ -28,10 +26,11 @@ interface CheckType {
   description: string
 }
 
-interface AlertChannel {
+interface Channel {
   id: string
   name: string
-  description: string
+  type: string
+  enabled: boolean
 }
 
 const PLATFORMS: Platform[] = [
@@ -50,12 +49,11 @@ const CHECK_TYPES: CheckType[] = [
   { id: 'keyword', name: 'Keyword Check', description: 'HTTP request + search response body for a keyword (e.g., "healthy")' },
 ]
 
-const ALERT_CHANNELS: AlertChannel[] = [
-  { id: 'email', name: 'Email', description: 'Send alerts to email addresses' },
-  { id: 'slack', name: 'Slack', description: 'Post alerts to a Slack channel via webhook' },
-  { id: 'webhook', name: 'Webhook', description: 'Send JSON payload to a custom webhook URL' },
-  { id: 'pagerduty', name: 'PagerDuty', description: 'Create incidents in PagerDuty' },
-]
+const ALERT_CHANNEL_TYPE_LABELS: Record<string, string> = {
+  'email-smtp': 'Email',
+  'slack-webhook': 'Slack',
+  'in-app-websocket': 'In-app',
+}
 
 interface WizardData {
   appName: string
@@ -63,9 +61,9 @@ interface WizardData {
   platform: string
   checkType: string
   checkUrl: string
+  keyword: string
   checkInterval: number
-  alertChannels: string[]
-  alertEmail: string
+  alertChannelId: string
 }
 
 const INITIAL_DATA: WizardData = {
@@ -74,9 +72,9 @@ const INITIAL_DATA: WizardData = {
   platform: '',
   checkType: 'http',
   checkUrl: '',
+  keyword: '',
   checkInterval: 60,
-  alertChannels: [],
-  alertEmail: '',
+  alertChannelId: '',
 }
 
 export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSuccess?: () => void }) {
@@ -100,17 +98,19 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
 
   const testCheckMutation = trpc.monitors.testCheck.useMutation({
     onSuccess: (result) => {
-      setTestResult(result.success ? 'success' : 'error')
+      const passed = result.status === 'pass'
+      setTestResult(passed ? 'success' : 'error')
       setTestDetails({
-        statusCode: result.statusCode,
+        statusCode: result.statusCode ?? undefined,
         latencyMs: result.latencyMs,
-        error: result.error,
+        error: result.errorDetail ?? undefined,
       })
-      if (result.success) {
-        showToast('Test check passed', `Status: ${result.statusCode}, Latency: ${result.latencyMs}ms`)
+      if (passed) {
+        showToast('Test check passed', `Status: ${result.statusCode ?? 'n/a'}, Latency: ${result.latencyMs}ms`)
       } else {
-        showToast('Test check failed', result.error || 'Unknown error', 'destructive')
-        setErrors({ checkUrl: result.error || 'Check failed. Verify the URL and try again.' })
+        const message = result.errorDetail || result.errorType || 'Check failed. Verify the target and try again.'
+        showToast('Test check failed', message, 'destructive')
+        setErrors({ checkUrl: message })
       }
     },
     onError: (err) => {
@@ -118,6 +118,19 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
       setTestDetails({ error: err.message })
       showToast('Test check failed', err.message, 'destructive')
       setErrors({ checkUrl: err.message })
+    },
+  })
+
+  const channelsQuery = trpc.monitors.channels.useQuery()
+
+  const createChannelMutation = trpc.monitors.createChannel.useMutation({
+    onSuccess: (channel) => {
+      showToast('Alert channel created', channel.name)
+      setData((current) => ({ ...current, alertChannelId: channel.id }))
+      channelsQuery.refetch()
+    },
+    onError: (err) => {
+      showToast('Failed to create alert channel', err.message, 'destructive')
     },
   })
 
@@ -143,16 +156,13 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
         break
       case 'check':
         if (!data.checkUrl.trim()) newErrors.checkUrl = 'Check URL is required'
-        else if (!/^https?:\/\//.test(data.checkUrl)) newErrors.checkUrl = 'URL must start with http:// or https://'
+        else if (data.checkType === 'tcp' && !/^[^/\s]+:\d+$/.test(data.checkUrl)) newErrors.checkUrl = 'TCP targets must use host:port format'
+        else if (data.checkType !== 'tcp' && !/^https?:\/\//.test(data.checkUrl)) newErrors.checkUrl = 'URL must start with http:// or https://'
+        if (data.checkType === 'keyword' && !data.keyword.trim()) newErrors.keyword = 'Expected keyword is required for keyword checks'
         if (data.checkInterval < 10) newErrors.checkInterval = 'Interval must be at least 10 seconds'
         break
       case 'alerts':
-        if (data.alertChannels.length === 0) newErrors.alertChannels = 'Select at least one alert channel'
-        if (data.alertChannels.includes('email') && !data.alertEmail.trim()) {
-          newErrors.alertEmail = 'Email address is required for email alerts'
-        } else if (data.alertChannels.includes('email') && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.alertEmail)) {
-          newErrors.alertEmail = 'Invalid email address'
-        }
+        if (!data.alertChannelId) newErrors.alertChannelId = 'Select an alert channel'
         break
     }
 
@@ -184,9 +194,10 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
     setTestDetails(null)
 
     await testCheckMutation.mutateAsync({
-      url: data.checkUrl,
-      type: data.checkType,
-      checkType: data.checkType,
+      checkTarget: data.checkUrl,
+      checkType: data.checkType as 'http' | 'tcp' | 'keyword',
+      checkTimeoutSec: 10,
+      keyword: data.checkType === 'keyword' ? data.keyword : undefined,
     })
   }
 
@@ -196,19 +207,15 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
     setIsSubmitting(true)
     setErrors({})
 
-    const checkConfig = {
-      type: data.checkType,
-      url: data.checkUrl,
-      interval: data.checkInterval,
-      platform: data.platform,
-      alertChannels: data.alertChannels,
-      alertEmail: data.alertEmail,
-    }
-
     await createMonitor.mutateAsync({
-      source: 'wizard',
       name: data.appName,
-      config: checkConfig,
+      url: data.appUrl,
+      platform: data.platform,
+      checkType: data.checkType as 'http' | 'tcp' | 'keyword',
+      checkTarget: data.checkUrl,
+      checkIntervalSec: data.checkInterval,
+      keyword: data.checkType === 'keyword' ? data.keyword : undefined,
+      alertChannelId: data.alertChannelId,
       enabled: true,
     })
   }
@@ -310,10 +317,30 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
             <CheckStep data={data} setData={setData} errors={errors} />
           )}
           {step === 'alerts' && (
-            <AlertsStep data={data} setData={setData} errors={errors} />
+            <AlertsStep
+              data={data}
+              setData={setData}
+              errors={errors}
+              channels={channelsQuery.data?.channels ?? []}
+              isLoadingChannels={channelsQuery.isLoading}
+              onCreateChannel={() => createChannelMutation.mutate({
+                name: 'Nightlamp in-app alerts',
+                type: 'in-app-websocket',
+                config: {},
+              })}
+              isCreatingChannel={createChannelMutation.isPending}
+            />
           )}
           {step === 'test' && (
-            <TestStep data={data} testResult={testResult} onTest={handleTestCheck} errors={errors} testDetails={testDetails} isTesting={testCheckMutation.isPending} />
+            <TestStep
+              data={data}
+              testResult={testResult}
+              onTest={handleTestCheck}
+              errors={errors}
+              testDetails={testDetails}
+              isTesting={testCheckMutation.isPending}
+              channels={channelsQuery.data?.channels ?? []}
+            />
           )}
           {step === 'complete' && (
             <CompleteStep onClose={() => { resetWizard(); onClose(); }} />
@@ -526,6 +553,29 @@ function CheckStep({ data, setData, errors }: { data: WizardData; setData: React
           </p>
         </div>
 
+        {data.checkType === 'keyword' && (
+          <div className="space-y-2">
+            <Label htmlFor="checkKeyword">Expected Keyword *</Label>
+            <Input
+              id="checkKeyword"
+              value={data.keyword}
+              onChange={(e) => setData({ ...data, keyword: e.target.value })}
+              placeholder="healthy"
+              className={cn(errors.keyword ? 'border-destructive focus-visible:ring-destructive' : '', 'text-base h-11')}
+              aria-invalid={!!errors.keyword}
+              aria-describedby={errors.keyword ? 'checkKeyword-error' : undefined}
+            />
+            {errors.keyword && (
+              <p id="checkKeyword-error" className="text-sm text-destructive" role="alert">
+                {errors.keyword}
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              The check passes when the response body contains this text.
+            </p>
+          </div>
+        )}
+
         <div className="space-y-2">
           <Label htmlFor="checkInterval">Check Interval (seconds) *</Label>
           <Input
@@ -557,86 +607,97 @@ function CheckStep({ data, setData, errors }: { data: WizardData; setData: React
   )
 }
 
-function AlertsStep({ data, setData, errors }: { data: WizardData; setData: React.Dispatch<React.SetStateAction<WizardData>>; errors: Partial<Record<keyof WizardData, string>> }) {
-  const toggleAlertChannel = (channelId: string) => {
-    setData({
-      ...data,
-      alertChannels: data.alertChannels.includes(channelId)
-        ? data.alertChannels.filter((c) => c !== channelId)
-        : [...data.alertChannels, channelId],
-    })
-  }
+function AlertsStep({
+  data,
+  setData,
+  errors,
+  channels,
+  isLoadingChannels,
+  onCreateChannel,
+  isCreatingChannel,
+}: {
+  data: WizardData
+  setData: React.Dispatch<React.SetStateAction<WizardData>>
+  errors: Partial<Record<keyof WizardData, string>>
+  channels: Channel[]
+  isLoadingChannels: boolean
+  onCreateChannel: () => void
+  isCreatingChannel: boolean
+}) {
+  const selectableChannels = channels.filter((channel) => channel.enabled)
 
   return (
     <div className="space-y-6">
       <div>
         <h3 className="text-lg font-medium">Configure Alerts</h3>
         <p className="text-sm text-muted-foreground mt-1">
-          Choose how you want to be notified when issues are detected.
+          Choose the notification channel that receives alerts for this application.
         </p>
       </div>
 
-      {errors.alertChannels && (
-        <div className="text-sm text-destructive" role="alert">{errors.alertChannels}</div>
+      {errors.alertChannelId && (
+        <div className="text-sm text-destructive" role="alert">{errors.alertChannelId}</div>
       )}
 
-      <div className="space-y-3">
-        {ALERT_CHANNELS.map((channel) => (
-          <div
-            key={channel.id}
-            className={cn(
-              'flex items-center justify-between p-3 border rounded-lg transition-colors',
-              data.alertChannels.includes(channel.id)
-                ? 'border-brand bg-brand/10'
-                : 'border-border hover:border-glow-500/50'
+      {isLoadingChannels ? (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
+          Loading alert channels...
+        </div>
+      ) : selectableChannels.length === 0 ? (
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            No notification channels are configured yet. Create one to receive alerts for this application.
+          </p>
+          <Button type="button" variant="outline" onClick={onCreateChannel} disabled={isCreatingChannel}>
+            {isCreatingChannel ? (
+              <>
+                <Loader2 className="size-4 mr-2 animate-spin" />
+                Creating...
+              </>
+            ) : (
+              'Create in-app alerts channel'
             )}
-          >
-            <div className="flex items-center gap-3">
-              <div className="size-9 flex items-center justify-center rounded-lg bg-surface-secondary">
-                <Wifi className="size-4" />
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {selectableChannels.map((channel) => (
+            <button
+              type="button"
+              key={channel.id}
+              onClick={() => setData({ ...data, alertChannelId: channel.id })}
+              className={cn(
+                'w-full text-left flex items-center justify-between p-3 border rounded-lg transition-colors',
+                data.alertChannelId === channel.id
+                  ? 'border-brand bg-brand/10'
+                  : 'border-border hover:border-glow-500/50'
+              )}
+              aria-pressed={data.alertChannelId === channel.id}
+            >
+              <div className="flex items-center gap-3">
+                <div className="size-9 flex items-center justify-center rounded-lg bg-surface-secondary">
+                  <Wifi className="size-4" />
+                </div>
+                <div>
+                  <p className="font-medium">{channel.name}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {ALERT_CHANNEL_TYPE_LABELS[channel.type] ?? channel.type}
+                  </p>
+                </div>
               </div>
-              <div>
-                <p className="font-medium">{channel.name}</p>
-                <p className="text-sm text-muted-foreground">{channel.description}</p>
-              </div>
-            </div>
-            <Switch
-              checked={data.alertChannels.includes(channel.id)}
-              onCheckedChange={() => toggleAlertChannel(channel.id)}
-              aria-label={channel.name}
-            />
-          </div>
-        ))}
-      </div>
-
-      {data.alertChannels.includes('email') && (
-        <div className="space-y-2">
-          <Separator />
-          <div className="space-y-2">
-            <Label htmlFor="alertEmail">Alert Email Address *</Label>
-            <Input
-              id="alertEmail"
-              type="email"
-              value={data.alertEmail}
-              onChange={(e) => setData({ ...data, alertEmail: e.target.value })}
-              placeholder="alerts@example.com"
-              className={cn(errors.alertEmail ? 'border-destructive focus-visible:ring-destructive' : '', 'text-base h-11')}
-              aria-invalid={!!errors.alertEmail}
-              aria-describedby={errors.alertEmail ? 'alertEmail-error' : undefined}
-            />
-            {errors.alertEmail && (
-              <p id="alertEmail-error" className="text-sm text-destructive" role="alert">
-                {errors.alertEmail}
-              </p>
-            )}
-          </div>
+              {data.alertChannelId === channel.id && (
+                <Check className="size-4 text-success" aria-hidden />
+              )}
+            </button>
+          ))}
         </div>
       )}
     </div>
   )
 }
 
-function TestStep({ data, testResult, onTest, errors, testDetails, isTesting }: { data: WizardData; testResult: 'idle' | 'running' | 'success' | 'error'; onTest: () => void; errors: Partial<Record<keyof WizardData, string>>; testDetails: { statusCode?: number; latencyMs?: number; error?: string } | null; isTesting: boolean }) {
+function TestStep({ data, testResult, onTest, errors, testDetails, isTesting, channels }: { data: WizardData; testResult: 'idle' | 'running' | 'success' | 'error'; onTest: () => void; errors: Partial<Record<keyof WizardData, string>>; testDetails: { statusCode?: number; latencyMs?: number; error?: string } | null; isTesting: boolean; channels: Channel[] }) {
   return (
     <div className="space-y-6">
       <div>
@@ -672,8 +733,10 @@ function TestStep({ data, testResult, onTest, errors, testDetails, isTesting }: 
               <p className="font-medium">{data.checkInterval}s</p>
             </div>
             <div>
-              <p className="text-muted-foreground">Alert Channels</p>
-              <p className="font-medium">{data.alertChannels.join(', ') || 'None'}</p>
+              <p className="text-muted-foreground">Alert Channel</p>
+              <p className="font-medium">
+                {channels.find((channel) => channel.id === data.alertChannelId)?.name || 'None'}
+              </p>
             </div>
           </div>
         </CardContent>

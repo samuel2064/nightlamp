@@ -240,12 +240,23 @@ export class AppsApi {
   private readonly inFlightApps = new Set<string>();
   private readonly inFlightScopes = new Map<string, string>();
   private readonly lastRunAt = new Map<string, number>();
+  private readonly inFlightPreviews = new Set<string>();
+  private readonly lastPreviewAt = new Map<string, number>();
 
   constructor(private db: Database, private deps: AppsApiDeps = {}) {}
 
   handle(req: IncomingMessage, res: ServerResponse, auth: AuthContext): boolean {
     const path = (new URL(req.url || '/', `http://${req.headers.host}`).pathname).replace(/\/+$/, '');
     const appMatch = path.match(/^\/api\/apps\/([^\/]+)(?:\/(test-check))?$/);
+
+    if (path === '/api/apps/test-check') {
+      if (req.method !== 'POST') {
+        this.send(res, 405, { error: 'Method not allowed' });
+        return true;
+      }
+      void this.handlePreviewCheck(req, res, auth);
+      return true;
+    }
 
     if (path === '/api/apps') {
       if (req.method === 'GET') {
@@ -709,13 +720,116 @@ export class AppsApi {
     return false;
   }
 
+  /**
+   * Run an ad-hoc check against a target without creating a monitored app.
+   *
+   * The Add App flow validates the target before the app exists, so this
+   * endpoint exists to give that flow a real backend call. It applies the same
+   * outbound safety policy and the same tenant level in-flight and cooldown
+   * limits as the per-app test check, and it never writes to the database.
+   */
+  private async handlePreviewCheck(req: IncomingMessage, res: ServerResponse, auth: AuthContext): Promise<void> {
+    try {
+      if (!auth.teamId) {
+        this.send(res, 403, { error: 'Applications require an organization' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const checkType = validateCheckType(body.checkType === undefined ? 'http' : body.checkType);
+      const requestedTarget = body.checkTarget === undefined
+        ? body.checkUrl === undefined
+          ? body.url
+          : body.checkUrl
+        : body.checkTarget;
+      if (requestedTarget === undefined) {
+        throw validationError({ checkTarget: 'checkTarget must be a non-empty string' });
+      }
+      const checkTarget = validateCheckTarget(requestedTarget, checkType);
+      const checkTimeoutSec = validateInteger(
+        body.checkTimeoutSec === undefined
+          ? body.timeout === undefined ? 10 : body.timeout
+          : body.checkTimeoutSec,
+        'checkTimeoutSec',
+        MIN_TIMEOUT_SEC,
+        MAX_TIMEOUT_SEC,
+      );
+      const keyword = body.keyword === undefined ? null : validateKeyword(body.keyword);
+      if (checkType === 'keyword' && !keyword) {
+        throw validationError({ keyword: 'keyword is required for keyword checks' });
+      }
+
+      const scopeKey = auth.teamId || `personal:${auth.userId}`;
+      const cooldownMs = this.deps.cooldownMs ?? DEFAULT_COOLDOWN_MS;
+      const now = this.currentTime();
+      const previewKey = `${scopeKey}:${checkType}:${checkTarget}`;
+
+      if (this.inFlightPreviews.has(previewKey)) {
+        this.sendTooManyRequests(res, 'A check is already running for this target', cooldownMs);
+        return;
+      }
+      if (this.previewScopeCount(scopeKey) >= MAX_TENANT_IN_FLIGHT) {
+        this.sendTooManyRequests(res, 'Too many checks are already running for this organization', cooldownMs);
+        return;
+      }
+      const lastRun = this.lastPreviewAt.get(previewKey);
+      if (lastRun !== undefined && cooldownMs > 0) {
+        const elapsed = now - lastRun;
+        if (elapsed < cooldownMs) {
+          this.sendTooManyRequests(res, 'Please wait before running another check for this target', cooldownMs - elapsed);
+          return;
+        }
+      }
+
+      this.inFlightPreviews.add(previewKey);
+      try {
+        await this.assertTargetAllowed(checkTarget, checkType);
+        const result = await this.runCheckConfig({
+          type: checkType,
+          target: checkTarget,
+          timeoutMs: checkTimeoutSec * 1000,
+          keyword: keyword || undefined,
+        });
+        this.send(res, 200, {
+          result: {
+            status: result.status,
+            statusCode: result.statusCode,
+            latencyMs: result.latencyMs,
+            errorType: result.errorType,
+            errorDetail: result.errorDetail,
+            checkedAt: new Date().toISOString(),
+          },
+        });
+      } finally {
+        this.inFlightPreviews.delete(previewKey);
+        this.lastPreviewAt.set(previewKey, this.currentTime());
+      }
+    } catch (error) {
+      if (error instanceof AppValidationError) {
+        this.send(res, 400, { error: error.message, fields: error.fields });
+        return;
+      }
+      this.send(res, 500, { error: error instanceof Error ? error.message : 'Failed to run check' });
+    }
+  }
+
+  private previewScopeCount(scopeKey: string): number {
+    let count = 0;
+    for (const key of this.inFlightPreviews.keys()) {
+      if (key.startsWith(`${scopeKey}:`)) count += 1;
+    }
+    return count;
+  }
+
   private async runCheck(record: AppRecord): Promise<EndpointCheckResult> {
-    const config: EndpointCheckConfig = {
+    return this.runCheckConfig({
       type: record.checkType,
       target: record.checkTarget,
       timeoutMs: record.checkTimeoutSec * 1000,
       keyword: record.keyword || undefined,
-    };
+    });
+  }
+
+  private async runCheckConfig(config: EndpointCheckConfig): Promise<EndpointCheckResult> {
     if (this.deps.runCheck) {
       return this.deps.runCheck(config);
     }

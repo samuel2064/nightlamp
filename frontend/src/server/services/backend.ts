@@ -117,6 +117,43 @@ export interface RemediationRun {
   severity?: string | null
 }
 
+export interface MonitoredApp {
+  id: string
+  teamId: string | null
+  name: string
+  url: string
+  platform: string
+  checkType: string
+  checkTarget: string
+  checkUrl: string
+  checkIntervalSec: number
+  checkTimeoutSec: number
+  keyword: string | null
+  enabled: boolean
+  alertChannelId: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CheckTestResult {
+  status: 'pass' | 'fail'
+  statusCode: number | null
+  latencyMs: number
+  errorType: string | null
+  errorDetail: string | null
+  checkedAt: string
+}
+
+export interface NotificationChannel {
+  id: string
+  name: string
+  type: string
+  enabled: boolean
+  teamId: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 export interface BackendClient {
   events: {
     list: (params?: { limit?: number; offset?: number; type?: string; severity?: string }) => Promise<{ events: FailureEvent[]; count: number }>
@@ -124,9 +161,32 @@ export interface BackendClient {
   checkResults: {
     list: (params?: { limit?: number; offset?: number; status?: string }) => Promise<{ results: CheckResult[]; count: number }>
   }
-  checks: {
-    create: (data: { source: string; name: string; config: any; enabled?: boolean }) => Promise<{ id: string; source: string; name: string; config: any; enabled: boolean; createdAt: string; updatedAt: string }>
-    testCheck: (data: { url: string; type: string; checkType?: string }) => Promise<{ success: boolean; statusCode?: number; latencyMs?: number; error?: string }>
+  apps: {
+    list: () => Promise<{ apps: MonitoredApp[]; count: number }>
+    create: (data: {
+      name: string
+      url: string
+      platform: string
+      checkType?: string
+      checkTarget?: string
+      checkIntervalSec?: number
+      checkTimeoutSec?: number
+      keyword?: string
+      enabled?: boolean
+      alertChannelId: string
+    }) => Promise<{ app: MonitoredApp }>
+    previewCheck: (data: {
+      checkTarget: string
+      checkType?: string
+      checkTimeoutSec?: number
+      keyword?: string
+    }) => Promise<{ result: CheckTestResult }>
+    testCheck: (id: string) => Promise<{ result: CheckTestResult }>
+  }
+  channels: {
+    list: () => Promise<{ channels: NotificationChannel[]; count: number }>
+    create: (data: { name: string; type: string; config: Record<string, unknown> }) =>
+      Promise<{ success: boolean; id: string; name: string; type: string }>
   }
   playbook: {
     list: () => Promise<{ entries: DiagnosticEntry[]; count: number }>
@@ -190,15 +250,25 @@ export function createBackendClient(token: string | null): BackendClient {
           `/api/check-results?${new URLSearchParams(params as Record<string, string>).toString()}`
         ),
     },
-    checks: {
-      create: (data: { source: string; name: string; config: any; enabled?: boolean }) =>
-        apiFetchPost<{ id: string; source: string; name: string; config: any; enabled: boolean; createdAt: string; updatedAt: string }>(
-          '/api/checks',
-          data
+    apps: {
+      list: () =>
+        apiFetch<{ apps: MonitoredApp[]; count: number }>('/api/apps'),
+      create: (data) =>
+        apiFetchPost<{ app: MonitoredApp }>('/api/apps', data),
+      previewCheck: (data) =>
+        apiFetchPost<{ result: CheckTestResult }>('/api/apps/test-check', data),
+      testCheck: (id) =>
+        apiFetchPost<{ result: CheckTestResult }>(
+          `/api/apps/${encodeURIComponent(id)}/test-check`,
+          {}
         ),
-      testCheck: (data: { url: string; type: string; checkType?: string }) =>
-        apiFetchPost<{ success: boolean; statusCode?: number; latencyMs?: number; error?: string }>(
-          '/api/checks/test',
+    },
+    channels: {
+      list: () =>
+        apiFetch<{ channels: NotificationChannel[]; count: number }>('/api/notifications/channels'),
+      create: (data) =>
+        apiFetchPost<{ success: boolean; id: string; name: string; type: string }>(
+          '/api/notifications/channels',
           data
         ),
     },
