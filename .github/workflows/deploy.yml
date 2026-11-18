@@ -234,3 +234,39 @@ jobs:
           curl -fsS -X POST "$WEBHOOK" \
             -H "Content-Type: application/json" \
             -d '{"text":"Nightlamp deploy finished on main. Job status: '"${{ job.status }}"'. Commit: '"${{ github.sha }}"'."}'
+
+  alert-on-failure:
+    name: Alert on deployment failure
+    needs: [verify, verify-frontend, deploy-backend, deploy-frontend, smoke]
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    env:
+      WEBHOOK: ${{ secrets.DEPLOY_WEBHOOK_URL }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+    steps:
+      - name: Determine failed job
+        id: failed-job
+        run: |
+          FAILED=""
+          for job in verify verify-frontend deploy-backend deploy-frontend smoke; do
+            if [ "${{ needs.$job.result }}" = "failure" ]; then
+              FAILED="$job"
+              break
+            fi
+          done
+          echo "failed_job=$FAILED" >> $GITHUB_OUTPUT
+      - name: Post failure alert to webhook
+        if: ${{ env.WEBHOOK != '' }}
+        run: |
+          FAILED_JOB="${{ steps.failed-job.outputs.failed-job }}"
+          curl -fsS -X POST "$WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d '{"text":"🚨 Nightlamp DEPLOYMENT FAILURE on main","attachments":[{"color":"danger","fields":[{"title":"Failed Job","value":"'"$FAILED_JOB"'"},{"title":"Commit","value":"'"${{ github.sha }}"'"},{"title":"Workflow","value":"'"${{ github.workflow }}"'"},{"title":"Run URL","value":"'"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"'"}]}]}'
+      - name: Create Sentry release (if DSN configured)
+        if: ${{ env.SENTRY_DSN != '' }}
+        run: |
+          # Sentry release tracking for deployment correlation
+          # This helps correlate errors with specific deployments
+          echo "Sentry DSN configured - release tracking available"
+          # Note: Full Sentry release API integration would require sentry-cli or API calls
+          # For now, the failure webhook provides immediate alerting
