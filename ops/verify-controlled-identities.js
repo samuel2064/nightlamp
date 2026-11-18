@@ -12,6 +12,8 @@ const resultFile = process.env.RESULT_FILE || '/tmp/controlled-identity-result.j
 const marker = process.env.VERIFICATION_MARKER || 'nightlamp-controlled-verification';
 const emailDomain = process.env.VERIFICATION_EMAIL_DOMAIN || 'example.com';
 
+const noTeamExpectedStatus = process.env.NO_TEAM_EXPECTED_STATUS ? parseInt(process.env.NO_TEAM_EXPECTED_STATUS, 10) : 403;
+
 const report = {
   probes: [],
   identity: {},
@@ -809,6 +811,9 @@ async function run() {
     }
   }
   
+  let privilegeProbesRun = 0;
+let privilegeProbesPassed = 0;
+
   if (ownerEntry && memberEntry) {
     const testTeamId = await createTestTeam(ownerEntry.token, ownerEntry.userId, memberEntry.userId);
     if (testTeamId) {
@@ -820,9 +825,13 @@ async function run() {
         report.identity.memberAddedToTestTeam = true;
         
         const noc280Results = await runNoc280Matrix(memberEntry.token, testTeamId, memberEntry.userId, ownerEntry.token);
+        privilegeProbesRun += noc280Results.length;
+        privilegeProbesPassed += noc280Results.filter(r => r.ok).length;
         report.probes.push(...noc280Results);
         
         const noc274Results = await runNoc274Matrix(ownerEntry.token, testTeamId);
+        privilegeProbesRun += noc274Results.length;
+        privilegeProbesPassed += noc274Results.filter(r => r.ok).length;
         report.probes.push(...noc274Results);
         
         await cleanupTestTeam(ownerEntry.token, testTeamId);
@@ -834,18 +843,20 @@ async function run() {
     } else {
       report.identity.testTeamCreated = false;
     }
-    report.identity.fullMatrixRun = true;
+    report.identity.fullMatrixRun = report.identity.testTeamCreated && report.identity.memberAddedToTestTeam && privilegeProbesRun > 0;
   } else {
     log('Cannot run full matrix: missing owner or second identity');
     report.identity.fullMatrixRun = false;
   }
+  report.identity.privilegeProbesRun = privilegeProbesRun;
+  report.identity.privilegeProbesPassed = privilegeProbesPassed;
   
   for (const [userId, sessionData] of userSessions.entries()) {
     const userRole = userRoles.get(userId) || (userId === controlledOwnerSessionUserId ? { isOwner: false, isMember: false } : null);
     if (!userRole) continue;
     
     const label = userRole.isOwner ? 'owner' : (userRole.isMember ? 'member' : 'no-team');
-    const expectedStatus = userRole.isOwner || userRole.isMember ? [200] : [200];
+    const expectedStatus = userRole.isOwner || userRole.isMember ? [200] : [noTeamExpectedStatus];
     
     await probeWithForeignRowCheck(
       `a signed-in ${label} can list the events`,
