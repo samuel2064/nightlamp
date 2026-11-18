@@ -20,6 +20,8 @@ const report = {
   token: null,
   memberAccess: null,
   noMembershipAccess: null,
+  teamCreation: null,
+  cleanup: null,
   probes: [],
   steps: [],
   findings: [],
@@ -345,16 +347,27 @@ async function run() {
     finding(`the deployed backend answers 500 on an authenticated read (events=${events.status} remediationRuns=${runs.status} checkResults=${checks.status}); the server-side key or the request path is broken`);
   }
 
-  const createTeam = await probe('signed-in-create-team', '/api/teams', {
+  const teamName = `Nightlamp verification ${RUN_ID}`;
+  const teamSlug = `noc263-verify-${String(RUN_ID).replace(/[^0-9A-Za-z]/g, '').slice(0, 12).toLowerCase()}`;
+  const createAttempts = [];
+  let createTeam = await probe('signed-in-create-team-without-owner-id', '/api/teams', {
     token,
     method: 'POST',
-    body: {
-      name: `Nightlamp verification ${RUN_ID}`,
-      slug: `noc263-verify-${String(RUN_ID).replace(/[^0-9A-Za-z]/g, '').slice(0, 12).toLowerCase()}`,
-      ownerId: user.id,
-    },
+    body: { name: teamName, slug: teamSlug },
     expect: 200,
   });
+  createAttempts.push({ shape: 'no-owner-id', status: createTeam.status });
+  if (createTeam.status === 400) {
+    createTeam = await probe('signed-in-create-team-with-clerk-owner-id', '/api/teams', {
+      token,
+      method: 'POST',
+      body: { name: teamName, slug: teamSlug, ownerId: user.id },
+      expect: 200,
+    });
+    createAttempts.push({ shape: 'clerk-owner-id', status: createTeam.status });
+  }
+  report.teamCreation = { attempts: createAttempts, contract: 200 };
+
   const createdTeamId = createTeam.json && createTeam.json.id;
   if (createdTeamId) {
     report.createdArtifacts.push({ kind: 'team', id: createdTeamId, slug: createTeam.json.slug });
@@ -366,9 +379,20 @@ async function run() {
     await probe('signed-in-events-with-created-team', '/api/events', {
       token,
       extraHeaders: { 'x-nightlamp-team-id': createdTeamId },
-      expect: 403,
+      expect: 200,
     });
-    await probe('signed-in-team-path-after-create', `/api/teams/${createdTeamId}`, { token, expect: 403 });
+    await probe('signed-in-team-path-after-create', `/api/teams/${createdTeamId}`, { token, expect: 200 });
+    const cleanup = await probe('signed-in-delete-created-team', `/api/teams/${createdTeamId}`, {
+      token,
+      method: 'DELETE',
+      expect: 200,
+    });
+    report.cleanup = { teamId: createdTeamId, status: cleanup.status, done: cleanup.status === 200 };
+    if (cleanup.status !== 200) {
+      finding(`the verification team ${createdTeamId} could not be deleted by its own creator (status ${cleanup.status}); it stays inert in production`);
+    }
+  } else {
+    finding(`the build refuses to create a team for the authenticated identity (${createAttempts.map((a) => `${a.shape}=${a.status}`).join(', ')}); the member case is unreachable`);
   }
 
   await clerk('DELETE', `/sessions/${sessionId}`);
