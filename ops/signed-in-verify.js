@@ -341,6 +341,9 @@ async function run() {
   if (events.status === 401) {
     finding('the deployed backend rejected a genuine Clerk session token with 401');
   }
+  if (events.status === 500 || runs.status === 500 || checks.status === 500) {
+    finding(`the deployed backend answers 500 on an authenticated read (events=${events.status} remediationRuns=${runs.status} checkResults=${checks.status}); the server-side key or the request path is broken`);
+  }
 
   const createTeam = await probe('signed-in-create-team', '/api/teams', {
     token,
