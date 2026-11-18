@@ -322,7 +322,7 @@ export class AppsApi {
   }
 
   private handleList(res: ServerResponse, auth: AuthContext): void {
-    const scope = scopedTenantFilter('monitored_apps', auth.teamId, auth.userId, true);
+    const scope = scopedTenantFilter('monitored_apps', auth.teamId, auth.userId);
     const result = this.db.exec(
       `SELECT id, team_id, name, url, platform, check_type, check_target, check_interval_sec, check_timeout_sec, keyword, enabled, alert_channel_id, created_at, updated_at
        FROM monitored_apps WHERE ${scope.clause} ORDER BY created_at DESC`,
@@ -334,7 +334,7 @@ export class AppsApi {
   }
 
   private handleGet(appId: string, res: ServerResponse, auth: AuthContext): void {
-    if (!this.appInScope(auth, appId, true)) {
+    if (!this.appInScope(auth, appId)) {
       this.send(res, 404, { error: 'App not found' });
       return;
     }
@@ -397,7 +397,7 @@ export class AppsApi {
 
       await this.assertTargetAllowed(checkTarget, checkType);
 
-      if (!rowBelongsToScope(this.db, 'alert_channels', alertChannelId, auth.teamId, auth.userId, true)) {
+      if (!rowBelongsToScope(this.db, 'alert_channels', alertChannelId, auth.teamId, auth.userId)) {
         this.send(res, 404, { error: 'Alert channel not found' });
         return;
       }
@@ -549,13 +549,13 @@ export class AppsApi {
       }
       checkTarget = validateCheckTarget(checkTarget, checkType);
       await this.assertTargetAllowed(checkTarget, checkType);
-      if (!rowBelongsToScope(this.db, 'alert_channels', alertChannelId, auth.teamId, auth.userId, true)) {
+      if (!rowBelongsToScope(this.db, 'alert_channels', alertChannelId, auth.teamId, auth.userId)) {
         this.send(res, 404, { error: 'Alert channel not found' });
         return;
       }
 
       updates.push("updated_at = datetime('now')");
-      const scope = scopedTenantFilter('monitored_apps', auth.teamId, auth.userId, false, false);
+      const scope = scopedTenantFilter('monitored_apps', auth.teamId, auth.userId, false);
       this.db.run(
         `UPDATE monitored_apps SET ${updates.join(', ')} WHERE id = ? AND ${scope.clause}`,
         [...params, appId, ...scope.params],
@@ -575,7 +575,7 @@ export class AppsApi {
     if (!this.assertMutable(auth, appId, res)) {
       return;
     }
-    const scope = scopedTenantFilter('monitored_apps', auth.teamId, auth.userId, false, false);
+    const scope = scopedTenantFilter('monitored_apps', auth.teamId, auth.userId, false);
     const snapshotScope = tenantFilter('team_id', auth.teamId);
     this.withForeignKeys(() => {
       this.db.run(
@@ -693,17 +693,13 @@ export class AppsApi {
     }
   }
 
-  private appInScope(auth: AuthContext, appId: string, includeLegacy: boolean): boolean {
-    return rowBelongsToScope(this.db, 'monitored_apps', appId, auth.teamId, auth.userId, includeLegacy);
+  private appInScope(auth: AuthContext, appId: string): boolean {
+    return rowBelongsToScope(this.db, 'monitored_apps', appId, auth.teamId, auth.userId);
   }
 
   private assertMutable(auth: AuthContext, appId: string, res: ServerResponse): boolean {
-    if (this.appInScope(auth, appId, false)) {
+    if (this.appInScope(auth, appId)) {
       return true;
-    }
-    if (auth.teamId === null && this.appInScope(auth, appId, true)) {
-      this.send(res, 403, { error: 'Legacy personal applications are read-only' });
-      return false;
     }
     this.send(res, 404, { error: 'App not found' });
     return false;

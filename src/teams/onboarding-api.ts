@@ -37,21 +37,21 @@ export class OnboardingApi {
       }
 
       if (subPath === '/status') {
-        if (req.method === 'GET') { this.handleStatus(sessionId, res, teamId); return true; }
+        if (req.method === 'GET') { this.handleStatus(sessionId, res, teamId, auth); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
       }
 
       if (subPath === '/step') {
-        if (req.method === 'POST') { this.handleStep(req, sessionId, res, teamId); return true; }
+        if (req.method === 'POST') { this.handleStep(req, sessionId, res, teamId, auth); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
       }
 
       if (subPath === '/complete') {
-        if (req.method === 'POST') { this.handleComplete(sessionId, res, teamId); return true; }
+        if (req.method === 'POST') { this.handleComplete(sessionId, res, teamId, auth); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
@@ -66,16 +66,16 @@ export class OnboardingApi {
   }
 
   private handleStart(req: IncomingMessage, res: ServerResponse, auth: AuthContext | null, teamId: string | null): void {
+    if (!auth) {
+      res.writeHead(401);
+      res.end(JSON.stringify({ error: 'Authentication required' }));
+      return;
+    }
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {
-        const { userId } = JSON.parse(body);
-        if (!userId) {
-          res.writeHead(400);
-          res.end(JSON.stringify({ error: 'userId is required' }));
-          return;
-        }
+        const userId = auth.userId;
 
         const scope = tenantFilter('team_id', teamId);
         const existing = this.db.exec(
@@ -113,11 +113,16 @@ export class OnboardingApi {
     });
   }
 
-  private handleStatus(sessionId: string, res: ServerResponse, teamId: string | null): void {
+  private handleStatus(sessionId: string, res: ServerResponse, teamId: string | null, auth: AuthContext | null): void {
+    if (!auth) {
+      res.writeHead(401);
+      res.end(JSON.stringify({ error: 'Authentication required' }));
+      return;
+    }
     const scope = tenantFilter('team_id', teamId);
     const result = this.db.exec(
-      `SELECT id, user_id, current_step, step_data, completed_at, created_team_id, created_at, updated_at FROM onboarding_sessions WHERE id = ? AND ${scope.clause}`,
-      [sessionId, ...scope.params]
+      `SELECT id, user_id, current_step, step_data, completed_at, created_team_id, created_at, updated_at FROM onboarding_sessions WHERE id = ? AND user_id = ? AND ${scope.clause}`,
+      [sessionId, auth.userId, ...scope.params]
     );
 
     if (result.length === 0 || result[0].values.length === 0) {
@@ -144,15 +149,20 @@ export class OnboardingApi {
     }));
   }
 
-  private handleStep(req: IncomingMessage, sessionId: string, res: ServerResponse, teamId: string | null): void {
+  private handleStep(req: IncomingMessage, sessionId: string, res: ServerResponse, teamId: string | null, auth: AuthContext | null): void {
+    if (!auth) {
+      res.writeHead(401);
+      res.end(JSON.stringify({ error: 'Authentication required' }));
+      return;
+    }
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {
         const scope = tenantFilter('team_id', teamId);
         const sessionResult = this.db.exec(
-          `SELECT id, current_step, completed_at FROM onboarding_sessions WHERE id = ? AND ${scope.clause}`,
-          [sessionId, ...scope.params]
+          `SELECT id, current_step, completed_at FROM onboarding_sessions WHERE id = ? AND user_id = ? AND ${scope.clause}`,
+          [sessionId, auth.userId, ...scope.params]
         );
 
         if (sessionResult.length === 0 || sessionResult[0].values.length === 0) {
@@ -198,8 +208,8 @@ export class OnboardingApi {
         }
 
         const existingData = this.db.exec(
-          `SELECT step_data FROM onboarding_sessions WHERE id = ? AND ${scope.clause}`,
-          [sessionId, ...scope.params]
+          `SELECT step_data FROM onboarding_sessions WHERE id = ? AND user_id = ? AND ${scope.clause}`,
+          [sessionId, auth.userId, ...scope.params]
         );
         const currentData = existingData.length > 0 && existingData[0].values.length > 0
           ? JSON.parse(existingData[0].values[0][0] as string)
@@ -208,8 +218,8 @@ export class OnboardingApi {
         currentData[step] = data || {};
 
         this.db.run(
-          `UPDATE onboarding_sessions SET current_step = ?, step_data = ?, updated_at = datetime('now') WHERE id = ? AND ${scope.clause}`,
-          [step, JSON.stringify(currentData), sessionId, ...scope.params]
+          `UPDATE onboarding_sessions SET current_step = ?, step_data = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ? AND ${scope.clause}`,
+          [step, JSON.stringify(currentData), sessionId, auth.userId, ...scope.params]
         );
 
         res.end(JSON.stringify({
@@ -226,12 +236,17 @@ export class OnboardingApi {
     });
   }
 
-  private handleComplete(sessionId: string, res: ServerResponse, teamId: string | null): void {
+  private handleComplete(sessionId: string, res: ServerResponse, teamId: string | null, auth: AuthContext | null): void {
+    if (!auth) {
+      res.writeHead(401);
+      res.end(JSON.stringify({ error: 'Authentication required' }));
+      return;
+    }
     try {
       const scope = tenantFilter('team_id', teamId);
       const sessionResult = this.db.exec(
-        `SELECT id, current_step, completed_at FROM onboarding_sessions WHERE id = ? AND ${scope.clause}`,
-        [sessionId, ...scope.params]
+        `SELECT id, current_step, completed_at FROM onboarding_sessions WHERE id = ? AND user_id = ? AND ${scope.clause}`,
+        [sessionId, auth.userId, ...scope.params]
       );
 
       if (sessionResult.length === 0 || sessionResult[0].values.length === 0) {
@@ -264,7 +279,7 @@ export class OnboardingApi {
 
       this.db.run(
         `INSERT INTO teams (id, name, slug, owner_id, plan) VALUES (?, ?, ?, ?, 'free')`,
-        [newTeamId, `Team-${sessionId.slice(0, 8)}`, `team-${sessionId.slice(0, 8)}`, sessionId]
+        [newTeamId, `Team-${sessionId.slice(0, 8)}`, `team-${sessionId.slice(0, 8)}`, auth.userId]
       );
 
       this.db.run(
@@ -273,8 +288,13 @@ export class OnboardingApi {
       );
 
       this.db.run(
-        `UPDATE onboarding_sessions SET completed_at = datetime('now'), created_team_id = ?, updated_at = datetime('now') WHERE id = ? AND ${scope.clause}`,
-        [newTeamId, sessionId, ...scope.params]
+        'INSERT INTO memberships (id, team_id, user_id, role) VALUES (?, ?, ?, ?)',
+        [uuidv4(), newTeamId, auth.userId, 'owner']
+      );
+
+      this.db.run(
+        `UPDATE onboarding_sessions SET completed_at = datetime('now'), created_team_id = ?, team_id = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ? AND ${scope.clause}`,
+        [newTeamId, newTeamId, sessionId, auth.userId, ...scope.params]
       );
 
       res.end(JSON.stringify({

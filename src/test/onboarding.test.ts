@@ -4,12 +4,42 @@ import { Database } from 'sql.js';
 import { Server } from 'http';
 import assert from 'assert';
 import { v4 as uuidv4 } from 'uuid';
-import { TEST_CLERK_USER_ID, TEST_LOCAL_USER_ID } from './setup';
+import { createTestToken, fetchWithoutAuth, TEST_CLERK_USER_ID, TEST_LOCAL_USER_ID } from './setup';
 
 describe('Onboarding API', () => {
   let db: Database;
   let server: Server;
   let port: number;
+
+  function asUser(clerkUserId: string, path: string, init: any = {}): Promise<Response> {
+    const headers = new Headers(init.headers || {});
+    headers.set('authorization', 'Bearer ' + createTestToken({ sub: clerkUserId }));
+    return fetchWithoutAuth('http://127.0.0.1:' + port + path, Object.assign({}, init, { headers }));
+  }
+
+  function internalUserId(clerkUserId: string): string {
+    const result = db.exec('SELECT id FROM users WHERE clerk_user_id = ?', [clerkUserId]);
+    assert.ok(result.length > 0 && result[0].values.length > 0, 'the identity must exist');
+    return result[0].values[0][0] as string;
+  }
+
+  async function start(clerkUserId: string): Promise<any> {
+    const res = await asUser(clerkUserId, '/api/onboarding/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    return res.json() as Promise<any>;
+  }
+
+  async function advance(clerkUserId: string, sessionId: string, step: string, data: any = {}): Promise<any> {
+    const res = await asUser(clerkUserId, '/api/onboarding/' + sessionId + '/step', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ step, data }),
+    });
+    return res.json() as Promise<any>;
+  }
 
   before(async () => {
     db = await createDatabase();
@@ -25,125 +55,92 @@ describe('Onboarding API', () => {
     if (db) db.close();
   });
 
-  it('POST /api/onboarding/start creates a session', async () => {
-    const res = await fetch(`http://127.0.0.1:${port}/api/onboarding/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: 'user-1' }),
-    });
-    const data = await res.json() as any;
+  it('POST /api/onboarding/start creates a session for the authenticated user', async () => {
+    const data = await start('onb-create-clerk');
     assert.strictEqual(data.success, true);
     assert.ok(data.sessionId);
     assert.strictEqual(data.currentStep, 'app-detection');
     assert.strictEqual(data.resumed, false);
+    assert.strictEqual(data.userId, internalUserId('onb-create-clerk'));
   });
 
   it('POST /api/onboarding/start resumes existing incomplete session', async () => {
-    const res1 = await fetch(`http://127.0.0.1:${port}/api/onboarding/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: 'user-resume' }),
-    });
-    const data1 = await res1.json() as any;
+    const data1 = await start('onb-resume-clerk');
     assert.ok(data1.sessionId);
 
-    const res2 = await fetch(`http://127.0.0.1:${port}/api/onboarding/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: 'user-resume' }),
-    });
-    const data2 = await res2.json() as any;
+    const data2 = await start('onb-resume-clerk');
     assert.strictEqual(data2.resumed, true);
     assert.strictEqual(data2.sessionId, data1.sessionId);
   });
 
-  it('POST /api/onboarding/start requires userId', async () => {
-    const res = await fetch(`http://127.0.0.1:${port}/api/onboarding/start`, {
+  it('POST /api/onboarding/start ignores a client supplied userId', async () => {
+    const res = await asUser('onb-ignore-clerk', '/api/onboarding/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ userId: 'someone-else' }),
     });
-    assert.strictEqual(res.status, 400);
+    const data = await res.json() as any;
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(data.userId, internalUserId('onb-ignore-clerk'));
+
+    const row = db.exec('SELECT user_id FROM onboarding_sessions WHERE id = ?', [data.sessionId]);
+    assert.strictEqual(row[0].values[0][0], internalUserId('onb-ignore-clerk'));
   });
 
   it('GET /api/onboarding/:id/status returns session progress', async () => {
-    const startRes = await fetch(`http://127.0.0.1:${port}/api/onboarding/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: 'user-status' }),
-    });
-    const { sessionId } = await startRes.json() as any;
+    const { sessionId } = await start('onb-status-clerk');
 
-    const res = await (await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/status`)).json() as any;
-    assert.strictEqual(res.session.id, sessionId);
-    assert.strictEqual(res.session.currentStep, 'app-detection');
-    assert.strictEqual(res.session.completed, false);
-    assert.strictEqual(res.session.createdTeamId, null);
+    const res = await asUser('onb-status-clerk', '/api/onboarding/' + sessionId + '/status');
+    const body = await res.json() as any;
+    assert.strictEqual(body.session.id, sessionId);
+    assert.strictEqual(body.session.currentStep, 'app-detection');
+    assert.strictEqual(body.session.completed, false);
+    assert.strictEqual(body.session.createdTeamId, null);
   });
 
   it('GET /api/onboarding/:id/status returns 404 for unknown session', async () => {
-    const res = await fetch(`http://127.0.0.1:${port}/api/onboarding/nonexistent-id/status`);
+    const res = await asUser('onb-status-clerk', '/api/onboarding/nonexistent-id/status');
+    assert.strictEqual(res.status, 404);
+  });
+
+  it('GET /api/onboarding/:id/status hides another identity session', async () => {
+    const { sessionId } = await start('onb-private-clerk');
+
+    const res = await asUser('onb-other-clerk', '/api/onboarding/' + sessionId + '/status');
     assert.strictEqual(res.status, 404);
   });
 
   it('POST /api/onboarding/:id/step advances to next step', async () => {
-    const startRes = await fetch(`http://127.0.0.1:${port}/api/onboarding/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: 'user-step' }),
-    });
-    const { sessionId } = await startRes.json() as any;
+    const { sessionId } = await start('onb-step-clerk');
 
-    const stepRes = await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/step`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ step: 'monitor-selection', data: { monitors: ['sentry', 'uptimerobot'] } }),
-    });
-    const stepData = await stepRes.json() as any;
+    const stepData = await advance('onb-step-clerk', sessionId, 'monitor-selection', { monitors: ['sentry', 'uptimerobot'] });
     assert.strictEqual(stepData.success, true);
     assert.strictEqual(stepData.previousStep, 'app-detection');
     assert.strictEqual(stepData.currentStep, 'monitor-selection');
 
-    const statusRes = await (await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/status`)).json() as any;
-    assert.strictEqual(statusRes.session.currentStep, 'monitor-selection');
-    assert.deepStrictEqual(statusRes.session.stepData['monitor-selection'], { monitors: ['sentry', 'uptimerobot'] });
+    const statusRes = await asUser('onb-step-clerk', '/api/onboarding/' + sessionId + '/status');
+    const statusBody = await statusRes.json() as any;
+    assert.strictEqual(statusBody.session.currentStep, 'monitor-selection');
+    assert.deepStrictEqual(statusBody.session.stepData['monitor-selection'], { monitors: ['sentry', 'uptimerobot'] });
   });
 
   it('POST /api/onboarding/:id/step stores step-specific data', async () => {
-    const startRes = await fetch(`http://127.0.0.1:${port}/api/onboarding/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: 'user-data' }),
-    });
-    const { sessionId } = await startRes.json() as any;
+    const { sessionId } = await start('onb-data-clerk');
 
-    await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/step`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ step: 'monitor-selection', data: { selected: ['monitor-a'] } }),
-    });
+    await advance('onb-data-clerk', sessionId, 'monitor-selection', { selected: ['monitor-a'] });
+    await advance('onb-data-clerk', sessionId, 'alert-config', { email: 'test@example.com', slack: '#alerts' });
 
-    await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/step`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ step: 'alert-config', data: { email: 'test@example.com', slack: '#alerts' } }),
-    });
-
-    const statusRes = await (await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/status`)).json() as any;
-    assert.strictEqual(statusRes.session.currentStep, 'alert-config');
-    assert.deepStrictEqual(statusRes.session.stepData['monitor-selection'], { selected: ['monitor-a'] });
-    assert.deepStrictEqual(statusRes.session.stepData['alert-config'], { email: 'test@example.com', slack: '#alerts' });
+    const statusRes = await asUser('onb-data-clerk', '/api/onboarding/' + sessionId + '/status');
+    const statusBody = await statusRes.json() as any;
+    assert.strictEqual(statusBody.session.currentStep, 'alert-config');
+    assert.deepStrictEqual(statusBody.session.stepData['monitor-selection'], { selected: ['monitor-a'] });
+    assert.deepStrictEqual(statusBody.session.stepData['alert-config'], { email: 'test@example.com', slack: '#alerts' });
   });
 
   it('POST /api/onboarding/:id/step rejects out-of-order steps', async () => {
-    const startRes = await fetch(`http://127.0.0.1:${port}/api/onboarding/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: 'user-order' }),
-    });
-    const { sessionId } = await startRes.json() as any;
+    const { sessionId } = await start('onb-order-clerk');
 
-    const res = await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/step`, {
+    const res = await asUser('onb-order-clerk', '/api/onboarding/' + sessionId + '/step', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ step: 'team-invite' }),
@@ -154,14 +151,9 @@ describe('Onboarding API', () => {
   });
 
   it('POST /api/onboarding/:id/step rejects invalid step names', async () => {
-    const startRes = await fetch(`http://127.0.0.1:${port}/api/onboarding/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: 'user-invalid' }),
-    });
-    const { sessionId } = await startRes.json() as any;
+    const { sessionId } = await start('onb-invalid-clerk');
 
-    const res = await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/step`, {
+    const res = await asUser('onb-invalid-clerk', '/api/onboarding/' + sessionId + '/step', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ step: 'bogus-step' }),
@@ -170,14 +162,9 @@ describe('Onboarding API', () => {
   });
 
   it('POST /api/onboarding/:id/step requires step field', async () => {
-    const startRes = await fetch(`http://127.0.0.1:${port}/api/onboarding/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: 'user-required' }),
-    });
-    const { sessionId } = await startRes.json() as any;
+    const { sessionId } = await start('onb-required-clerk');
 
-    const res = await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/step`, {
+    const res = await asUser('onb-required-clerk', '/api/onboarding/' + sessionId + '/step', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ data: {} }),
@@ -186,7 +173,7 @@ describe('Onboarding API', () => {
   });
 
   it('POST /api/onboarding/:id/step returns 404 for unknown session', async () => {
-    const res = await fetch(`http://127.0.0.1:${port}/api/onboarding/nonexistent-id/step`, {
+    const res = await asUser('onb-required-clerk', '/api/onboarding/nonexistent-id/step', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ step: 'monitor-selection' }),
@@ -194,104 +181,74 @@ describe('Onboarding API', () => {
     assert.strictEqual(res.status, 404);
   });
 
-  it('POST /api/onboarding/:id/complete finalizes session and creates team', async () => {
-    const startRes = await fetch(`http://127.0.0.1:${port}/api/onboarding/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: 'user-complete' }),
-    });
-    const { sessionId } = await startRes.json() as any;
+  it('POST /api/onboarding/:id/complete finalizes session and creates a team owned by the caller', async () => {
+    const clerkUserId = 'onb-complete-clerk';
+    const { sessionId } = await start(clerkUserId);
 
-    await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/step`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ step: 'monitor-selection', data: { monitors: ['sentry'] } }),
-    });
+    await advance(clerkUserId, sessionId, 'monitor-selection', { monitors: ['sentry'] });
+    await advance(clerkUserId, sessionId, 'alert-config', { email: 'user@test.com' });
+    await advance(clerkUserId, sessionId, 'team-invite', { members: [] });
 
-    await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/step`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ step: 'alert-config', data: { email: 'user@test.com' } }),
-    });
-
-    await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/step`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ step: 'team-invite', data: { members: [] } }),
-    });
-
-    const completeRes = await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/complete`, {
-      method: 'POST',
-    });
+    const completeRes = await asUser(clerkUserId, '/api/onboarding/' + sessionId + '/complete', { method: 'POST' });
     const completeData = await completeRes.json() as any;
     assert.strictEqual(completeData.success, true);
     assert.ok(completeData.teamId);
     assert.ok(completeData.workspaceId);
     assert.ok(completeData.completedAt);
 
-    const statusRes = await (await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/status`)).json() as any;
-    assert.strictEqual(statusRes.session.completed, true);
-    assert.strictEqual(statusRes.session.createdTeamId, completeData.teamId);
+    const statusRes = await asUser(clerkUserId, '/api/onboarding/' + sessionId + '/status');
+    const statusBody = await statusRes.json() as any;
+    assert.strictEqual(statusBody.session.completed, true);
+    assert.strictEqual(statusBody.session.createdTeamId, completeData.teamId);
 
-    db.run('INSERT INTO memberships (id, team_id, user_id, role) VALUES (?, ?, ?, ?)',
-      [uuidv4(), completeData.teamId, TEST_LOCAL_USER_ID, 'owner']);
+    const teamRow = db.exec('SELECT owner_id FROM teams WHERE id = ?', [completeData.teamId]);
+    assert.strictEqual(teamRow[0].values[0][0], internalUserId(clerkUserId));
 
-    const teamRes = await (await fetch(`http://127.0.0.1:${port}/api/teams/${completeData.teamId}`)).json() as any;
-    assert.ok(teamRes.team);
-    assert.strictEqual(teamRes.team.id, completeData.teamId);
+    const membership = db.exec('SELECT user_id, role FROM memberships WHERE team_id = ?', [completeData.teamId]);
+    assert.strictEqual(membership[0].values.length, 1);
+    assert.strictEqual(membership[0].values[0][0], internalUserId(clerkUserId));
+    assert.strictEqual(membership[0].values[0][1], 'owner');
+
+    const teamRes = await asUser(clerkUserId, '/api/teams/' + completeData.teamId);
+    const teamBody = await teamRes.json() as any;
+    assert.ok(teamBody.team);
+    assert.strictEqual(teamBody.team.id, completeData.teamId);
   });
 
   it('POST /api/onboarding/:id/complete rejects completion before team-invite step', async () => {
-    const startRes = await fetch(`http://127.0.0.1:${port}/api/onboarding/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: 'user-premature' }),
-    });
-    const { sessionId } = await startRes.json() as any;
+    const clerkUserId = 'onb-premature-clerk';
+    const { sessionId } = await start(clerkUserId);
 
-    const res = await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/complete`, {
-      method: 'POST',
-    });
+    const res = await asUser(clerkUserId, '/api/onboarding/' + sessionId + '/complete', { method: 'POST' });
     assert.strictEqual(res.status, 400);
   });
 
   it('POST /api/onboarding/:id/complete rejects duplicate completion', async () => {
-    const startRes = await fetch(`http://127.0.0.1:${port}/api/onboarding/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: 'user-dupe' }),
-    });
-    const { sessionId } = await startRes.json() as any;
+    const clerkUserId = 'onb-dupe-clerk';
+    const { sessionId } = await start(clerkUserId);
 
-    await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/step`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ step: 'monitor-selection' }),
-    });
+    await advance(clerkUserId, sessionId, 'monitor-selection');
+    await advance(clerkUserId, sessionId, 'alert-config');
+    await advance(clerkUserId, sessionId, 'team-invite');
 
-    await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/step`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ step: 'alert-config' }),
-    });
-
-    await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/step`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ step: 'team-invite' }),
-    });
-
-    const res1 = await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/complete`, { method: 'POST' });
+    const res1 = await asUser(clerkUserId, '/api/onboarding/' + sessionId + '/complete', { method: 'POST' });
     assert.strictEqual(res1.status, 200);
 
-    const res2 = await fetch(`http://127.0.0.1:${port}/api/onboarding/${sessionId}/complete`, { method: 'POST' });
+    const res2 = await asUser(clerkUserId, '/api/onboarding/' + sessionId + '/complete', { method: 'POST' });
     assert.strictEqual(res2.status, 400);
   });
 
   it('POST /api/onboarding/:id/complete returns 404 for unknown session', async () => {
-    const res = await fetch(`http://127.0.0.1:${port}/api/onboarding/nonexistent-id/complete`, {
+    const res = await asUser('onb-dupe-clerk', '/api/onboarding/nonexistent-id/complete', {
       method: 'POST',
     });
+    assert.strictEqual(res.status, 404);
+  });
+
+  it('POST /api/onboarding/:id/complete refuses another identity session', async () => {
+    const { sessionId } = await start('onb-steal-clerk');
+
+    const res = await asUser('onb-thief-clerk', '/api/onboarding/' + sessionId + '/complete', { method: 'POST' });
     assert.strictEqual(res.status, 404);
   });
 });

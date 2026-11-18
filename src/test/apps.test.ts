@@ -497,7 +497,7 @@ describe('tenant-scoped app registry', () => {
     assert.strictEqual(body.result.errorType, null);
   });
 
-  it('keeps legacy null-team applications visible only in personal scope', async () => {
+  it('keeps legacy null-team applications out of every scope', async () => {
     const legacyId = uuidv4();
     db.run(
       `INSERT INTO monitored_apps (
@@ -509,10 +509,10 @@ describe('tenant-scoped app registry', () => {
 
     const personalList = await apiRequest('/api/apps', personalToken);
     const personalBody = await personalList.json() as any;
-    assert.ok(personalBody.apps.some((app: any) => app.id === legacyId));
+    assert.ok(!personalBody.apps.some((app: any) => app.id === legacyId));
 
     const personalRead = await apiRequest(`/api/apps/${legacyId}`, personalToken);
-    assert.strictEqual(personalRead.status, 200);
+    assert.strictEqual(personalRead.status, 404);
 
     const teamList = await apiRequest('/api/apps', ownerToken);
     const teamBody = await teamList.json() as any;

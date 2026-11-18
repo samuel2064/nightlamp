@@ -243,7 +243,9 @@ describe('Clerk JWKS verification (NOC-237)', () => {
         headers: { authorization: `Bearer ${token}` },
       });
 
-      assert.strictEqual(res.status, 200);
+      const body = await res.json() as any;
+      assert.strictEqual(res.status, 403);
+      assert.strictEqual(body.code, 'FORBIDDEN');
     });
 
     it('refuses a protected route without a token', async () => {

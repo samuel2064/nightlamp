@@ -304,8 +304,12 @@ describe('cross-tenant mutation sweep', () => {
       assert.strictEqual((channels.payload.channels || []).length, 0);
 
       const runs = await call('GET', '/api/remediation/runs', { clerkId: LONELY_CLERK });
-      assert.strictEqual(runs.status, 200);
-      assert.strictEqual((runs.payload.runs || []).length, 0);
+      assert.strictEqual(runs.status, 403);
+      assert.strictEqual(runs.payload.runs, undefined);
+
+      const events = await call('GET', '/api/events', { clerkId: LONELY_CLERK });
+      assert.strictEqual(events.status, 403);
+      assert.strictEqual(events.payload.events, undefined);
 
       const playbooks = await call('GET', '/api/playbooks/custom', { clerkId: LONELY_CLERK });
       assert.strictEqual(playbooks.status, 200);

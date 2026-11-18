@@ -51,7 +51,7 @@ export class NotificationApi {
   }
 
   private handleListChannels(req: IncomingMessage, res: ServerResponse, teamId: string | null, userId: string): void {
-    const scope = scopedTenantFilter('alert_channels', teamId, userId, true);
+    const scope = scopedTenantFilter('alert_channels', teamId, userId);
     const sql = `SELECT id, name, type, enabled, team_id, created_at, updated_at FROM alert_channels WHERE ${scope.clause} ORDER BY created_at DESC`;
     const result = this.db.exec(sql, scope.params);
     const channels = result.length > 0 ? result[0].values.map((row: any) => ({
@@ -121,14 +121,9 @@ export class NotificationApi {
         }
 
         updates.push("updated_at = datetime('now')");
-        const scope = scopedTenantFilter('alert_channels', teamId, userId, false);
+        const scope = scopedTenantFilter('alert_channels', teamId, userId);
         this.db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${scope.clause}`, [...params, channelId, ...scope.params]);
         if (this.db.getRowsModified() === 0) {
-          if (teamId === null && rowBelongsToScope(this.db, 'alert_channels', channelId, teamId, userId, true)) {
-            res.writeHead(403);
-            res.end(JSON.stringify({ error: 'Legacy personal channels are read-only' }));
-            return;
-          }
           res.writeHead(404);
           res.end(JSON.stringify({ error: 'Channel not found' }));
           return;
@@ -142,12 +137,7 @@ export class NotificationApi {
   }
 
   private handleDeleteChannel(channelId: string, res: ServerResponse, teamId: string | null, userId: string): void {
-    if (!rowBelongsToScope(this.db, 'alert_channels', channelId, teamId, userId, false)) {
-      if (teamId === null && rowBelongsToScope(this.db, 'alert_channels', channelId, teamId, userId, true)) {
-        res.writeHead(403);
-        res.end(JSON.stringify({ error: 'Legacy personal channels are read-only' }));
-        return;
-      }
+    if (!rowBelongsToScope(this.db, 'alert_channels', channelId, teamId, userId)) {
       res.writeHead(404);
       res.end(JSON.stringify({ error: 'Channel not found' }));
       return;

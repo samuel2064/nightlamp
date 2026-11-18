@@ -7,6 +7,7 @@ import { classifyFailure } from '../classifier';
 
 describe('End-to-End Pipeline Integration', () => {
   let db: Database;
+  const TEAM_ID = 'team-e2e-pipeline';
 
   beforeEach(async () => {
     db = await createDatabase();
@@ -30,17 +31,17 @@ describe('End-to-End Pipeline Integration', () => {
       );
     }
 
-    const entry = getOrCreatePlaybookEntry(db, events[0].failureType);
+    const entry = getOrCreatePlaybookEntry(db, events[0].failureType, TEAM_ID);
     expect(entry.occurrenceCount).to.equal(1);
 
-    const preRemediation = getRemediationLogs(db);
+    const preRemediation = getRemediationLogs(db, 50, 0, undefined, TEAM_ID);
     expect(preRemediation.count).to.equal(0);
   });
 
   it('poll -> classify -> playbook -> auto-remediate (second occurrence triggers remediation)', async () => {
     const checkId = 'e2e-check-2';
 
-    getOrCreatePlaybookEntry(db, 'expired_token');
+    getOrCreatePlaybookEntry(db, 'expired_token', TEAM_ID);
 
     const events = classifyFailure(checkId, {
       statusCode: 403,
@@ -57,14 +58,14 @@ describe('End-to-End Pipeline Integration', () => {
       );
     }
 
-    const entry = getOrCreatePlaybookEntry(db, tokenEvent!.failureType);
+    const entry = getOrCreatePlaybookEntry(db, tokenEvent!.failureType, TEAM_ID);
     expect(entry.occurrenceCount).to.be.at.least(2);
 
     const result = await runRemediation(db, entry);
     expect(result.logId).to.be.a('string');
     expect(result.status).to.equal('success');
 
-    const { logs } = getRemediationLogs(db);
+    const { logs } = getRemediationLogs(db, 50, 0, undefined, TEAM_ID);
     expect(logs).to.have.lengthOf(1);
     expect(logs[0].failureType).to.equal('expired_token');
   });
@@ -81,21 +82,21 @@ describe('End-to-End Pipeline Integration', () => {
     expect(events1[0].failureType).to.equal('expired_token');
     expect(events2[0].failureType).to.equal('broken_webhook');
 
-    const entry1 = getOrCreatePlaybookEntry(db, events1[0].failureType);
-    const entry2 = getOrCreatePlaybookEntry(db, events2[0].failureType);
+    const entry1 = getOrCreatePlaybookEntry(db, events1[0].failureType, TEAM_ID);
+    const entry2 = getOrCreatePlaybookEntry(db, events2[0].failureType, TEAM_ID);
     expect(entry1.occurrenceCount).to.equal(1);
     expect(entry2.occurrenceCount).to.equal(1);
 
-    getOrCreatePlaybookEntry(db, 'expired_token');
-    getOrCreatePlaybookEntry(db, 'broken_webhook');
+    getOrCreatePlaybookEntry(db, 'expired_token', TEAM_ID);
+    getOrCreatePlaybookEntry(db, 'broken_webhook', TEAM_ID);
 
-    const r1 = await runRemediation(db, getOrCreatePlaybookEntry(db, 'expired_token'));
-    const r2 = await runRemediation(db, getOrCreatePlaybookEntry(db, 'broken_webhook'));
+    const r1 = await runRemediation(db, getOrCreatePlaybookEntry(db, 'expired_token', TEAM_ID));
+    const r2 = await runRemediation(db, getOrCreatePlaybookEntry(db, 'broken_webhook', TEAM_ID));
 
     expect(r1.status).to.equal('success');
     expect(r2.status).to.equal('success');
 
-    const { logs, count } = getRemediationLogs(db);
+    const { logs, count } = getRemediationLogs(db, 50, 0, undefined, TEAM_ID);
     expect(count).to.equal(2);
 
     const tokenLog = logs.find(l => l.failureType === 'expired_token');
@@ -107,7 +108,7 @@ describe('End-to-End Pipeline Integration', () => {
   it('end-to-end: classify -> playbook -> remediate for rate_limit_shift', async () => {
     const checkId = 'e2e-rate';
 
-    getOrCreatePlaybookEntry(db, 'rate_limit_shift');
+    getOrCreatePlaybookEntry(db, 'rate_limit_shift', TEAM_ID);
 
     const events = classifyFailure(checkId, {
       statusCode: 429,
@@ -117,7 +118,7 @@ describe('End-to-End Pipeline Integration', () => {
     expect(events).to.have.lengthOf(1);
     expect(events[0].failureType).to.equal('rate_limit_shift');
 
-    const entry = getOrCreatePlaybookEntry(db, 'rate_limit_shift');
+    const entry = getOrCreatePlaybookEntry(db, 'rate_limit_shift', TEAM_ID);
     expect(entry.occurrenceCount).to.be.at.least(2);
 
     const result = await runRemediation(db, entry, { currentIntervalSec: 60 });
@@ -128,7 +129,7 @@ describe('End-to-End Pipeline Integration', () => {
   it('end-to-end: classify -> playbook -> remediate for schema_drift', async () => {
     const checkId = 'e2e-schema';
 
-    getOrCreatePlaybookEntry(db, 'schema_drift');
+    getOrCreatePlaybookEntry(db, 'schema_drift', TEAM_ID);
 
     const events = classifyFailure(checkId, {
       body: { _unexpected: true },
@@ -137,7 +138,7 @@ describe('End-to-End Pipeline Integration', () => {
     expect(events).to.have.lengthOf(1);
     expect(events[0].failureType).to.equal('schema_drift');
 
-    const entry = getOrCreatePlaybookEntry(db, 'schema_drift');
+    const entry = getOrCreatePlaybookEntry(db, 'schema_drift', TEAM_ID);
     expect(entry.occurrenceCount).to.be.at.least(2);
 
     const result = await runRemediation(db, entry, { apiEndpoint: 'https://api.example.com/v2', newSchemaVersion: 'v2' });

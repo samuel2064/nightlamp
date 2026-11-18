@@ -3,7 +3,7 @@ import { startApiServer } from '../api/server';
 import { Database } from 'sql.js';
 import { Server } from 'http';
 import assert from 'assert';
-import { TEST_CLERK_USER_ID, TEST_LOCAL_USER_ID } from './setup';
+import { createTestToken, fetchWithoutAuth, TEST_CLERK_USER_ID, TEST_LOCAL_USER_ID } from './setup';
 
 describe('Teams API', () => {
   let db: Database;
@@ -14,6 +14,10 @@ describe('Teams API', () => {
     db = await createDatabase();
     db.run('INSERT INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)',
       [TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID, 'owner@example.com', 'Owner']);
+    db.run('INSERT INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)',
+      ['member-1', 'member-1-clerk', 'member-1@example.com', 'Member One']);
+    db.run('INSERT INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)',
+      ['member-2', 'member-2-clerk', 'member-2@example.com', 'Member Two']);
     server = startApiServer(db, { port: 0 });
     const addr = server.address() as any;
     port = addr.port;
@@ -178,6 +182,17 @@ describe('Teams API', () => {
       assert.strictEqual(res.status, 400);
     });
 
+    it('POST /api/teams/:id/members rejects a user without an account', async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/teams/${teamId}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: 'planted-user' }),
+      });
+      assert.strictEqual(res.status, 404);
+      const membersRes = await (await fetch(`http://127.0.0.1:${port}/api/teams/${teamId}/members`)).json() as any;
+      assert.ok(!membersRes.members.some((m: any) => m.userId === 'planted-user'));
+    });
+
     it('GET /api/teams/:id/members lists members', async () => {
       const res = await (await fetch(`http://127.0.0.1:${port}/api/teams/${teamId}/members`)).json() as any;
       assert.strictEqual(res.count, 3);
@@ -287,23 +302,46 @@ describe('Teams API', () => {
       assert.strictEqual(res.status, 404);
     });
 
-    it('POST /api/invitations/:token/accept creates membership', async () => {
+    it('POST /api/invitations/:token/accept binds the membership to the authenticated user', async () => {
       const createRes = await fetch(`http://127.0.0.1:${port}/api/teams/${teamId}/invitations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'accept-user', role: 'admin' }),
+        body: JSON.stringify({ email: 'invitee@example.com', role: 'admin' }),
       });
       const { token } = await createRes.json() as any;
 
-      const res = await fetch(`http://127.0.0.1:${port}/api/invitations/${token}/accept`, {
+      const inviteeToken = createTestToken({ sub: 'invitee-clerk', email: 'invitee@example.com' });
+      const res = await fetchWithoutAuth(`http://127.0.0.1:${port}/api/invitations/${token}/accept`, {
         method: 'POST',
+        headers: { Authorization: `Bearer ${inviteeToken}` },
       });
       const data = await res.json() as any;
+      assert.strictEqual(res.status, 200, JSON.stringify(data));
       assert.strictEqual(data.success, true);
       assert.strictEqual(data.role, 'admin');
 
+      const invitee = db.exec('SELECT id FROM users WHERE clerk_user_id = ?', ['invitee-clerk']);
+      assert.ok(invitee.length > 0 && invitee[0].values.length > 0);
+      const inviteeId = invitee[0].values[0][0];
+      assert.strictEqual(data.userId, inviteeId);
+
       const membersRes = await (await fetch(`http://127.0.0.1:${port}/api/teams/${teamId}/members`)).json() as any;
-      assert.ok(membersRes.members.some((m: any) => m.userId === 'accept-user'));
+      assert.ok(membersRes.members.some((m: any) => m.userId === inviteeId));
+      assert.ok(!membersRes.members.some((m: any) => m.userId === 'accept-user'));
+    });
+
+    it('POST /api/invitations/:token/accept requires authentication', async () => {
+      const createRes = await fetch(`http://127.0.0.1:${port}/api/teams/${teamId}/invitations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'anonymous@example.com', role: 'member' }),
+      });
+      const { token } = await createRes.json() as any;
+
+      const res = await fetchWithoutAuth(`http://127.0.0.1:${port}/api/invitations/${token}/accept`, {
+        method: 'POST',
+      });
+      assert.strictEqual(res.status, 401);
     });
   });
 });

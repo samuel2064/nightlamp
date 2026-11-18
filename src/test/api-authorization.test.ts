@@ -483,11 +483,14 @@ describe('P0 API authorization', () => {
       assert.deepStrictEqual(await queue('?limit=1&offset=2'), { runs: [], count: 2 });
     });
 
-    it('keeps null-team legacy runs exclusively in personal scope', async () => {
-      const body = await queue('', createTestToken({ sub: 'personal-clerk-user' }));
-      assert.strictEqual(body.count, 1);
-      assert.deepStrictEqual(body.runs.map((run: any) => run.id), ['queue-personal']);
-      assert.strictEqual(body.runs[0].description, null);
+    it('fails closed for a teamless user instead of exposing null-team legacy runs', async () => {
+      const res = await fetchWithoutAuth(`http://127.0.0.1:${port}/api/remediation/runs`, {
+        headers: { Authorization: `Bearer ${createTestToken({ sub: 'personal-clerk-user' })}` },
+      });
+      assert.strictEqual(res.status, 403);
+      const body = await res.json() as any;
+      assert.strictEqual(body.code, 'FORBIDDEN');
+      assert.strictEqual(body.runs, undefined);
     });
 
     it('does not leak linked playbook contents across tenant boundaries', async () => {
@@ -986,13 +989,15 @@ describe('P0 API authorization', () => {
       assert.strictEqual(row[0].values[0][0], 'pending');
     });
 
-    it('keeps personal legacy rows available only to personal scope', async () => {
+    it('keeps personal legacy rows out of every scope', async () => {
       const teamEvents = await getJson('/api/events');
       assert.ok(!teamEvents.events.some((event: any) => event.id === legacyEventId));
-      const personalToken = createTestToken({ sub: 'personal-clerk-user' });
-      const personalEvents = await getJson('/api/events', personalToken);
-      assert.ok(personalEvents.events.some((event: any) => event.id === legacyEventId));
-      assert.ok(!personalEvents.events.some((event: any) => event.id === ownEventId || event.id === foreignEventId));
+      const personalRes = await fetchWithoutAuth(`http://127.0.0.1:${port}/api/events`, {
+        headers: { Authorization: `Bearer ${createTestToken({ sub: 'personal-clerk-user' })}` },
+      });
+      assert.strictEqual(personalRes.status, 403);
+      const personalBody = await personalRes.json() as any;
+      assert.strictEqual(personalBody.events, undefined);
     });
 
     it('stores new tenant-owned rows with the authenticated team id', async () => {

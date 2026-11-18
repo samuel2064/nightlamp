@@ -536,11 +536,12 @@ describe('personal ownership isolation', () => {
     const otherList = await apiRequest('/api/notifications/channels', personalB);
     const otherBody = await otherList.json() as any;
     assert.ok(!otherBody.channels.some((channel: any) => channel.id === body.id));
-    assert.ok(otherBody.channels.some((channel: any) => channel.id === legacyChannelId));
+    assert.ok(!otherBody.channels.some((channel: any) => channel.id === legacyChannelId));
 
     const ownerList = await apiRequest('/api/notifications/channels', personalA);
     const ownerBody = await ownerList.json() as any;
     assert.ok(ownerBody.channels.some((channel: any) => channel.id === body.id));
+    assert.ok(!ownerBody.channels.some((channel: any) => channel.id === legacyChannelId));
   });
 
   it('refuses to mutate a personal channel owned by another user', async () => {
@@ -563,15 +564,19 @@ describe('personal ownership isolation', () => {
     assert.strictEqual(name[0].values[0][0], 'Owned channel');
   });
 
-  it('keeps legacy personal rows visible but read-only', async () => {
+  it('hides legacy personal rows from every scope', async () => {
+    const list = await apiRequest('/api/notifications/channels', personalA);
+    const listBody = await list.json() as any;
+    assert.ok(!listBody.channels.some((channel: any) => channel.id === legacyChannelId));
+
     const update = await apiRequest(`/api/notifications/channels/${legacyChannelId}`, personalA, {
       method: 'PATCH',
       body: JSON.stringify({ name: 'Legacy rename' }),
     });
-    assert.strictEqual(update.status, 403);
+    assert.strictEqual(update.status, 404);
 
     const remove = await apiRequest(`/api/notifications/channels/${legacyChannelId}`, personalA, { method: 'DELETE' });
-    assert.strictEqual(remove.status, 403);
+    assert.strictEqual(remove.status, 404);
 
     const legacyAppId = uuidv4();
     db.run(
@@ -584,16 +589,16 @@ describe('personal ownership isolation', () => {
     );
 
     const read = await apiRequest(`/api/apps/${legacyAppId}`, personalA);
-    assert.strictEqual(read.status, 200);
+    assert.strictEqual(read.status, 404);
 
     const updateApp = await apiRequest(`/api/apps/${legacyAppId}`, personalA, {
       method: 'PATCH',
       body: JSON.stringify({ name: 'Legacy app rename' }),
     });
-    assert.strictEqual(updateApp.status, 403);
+    assert.strictEqual(updateApp.status, 404);
 
     const removeApp = await apiRequest(`/api/apps/${legacyAppId}`, personalA, { method: 'DELETE' });
-    assert.strictEqual(removeApp.status, 403);
+    assert.strictEqual(removeApp.status, 404);
   });
 });
 

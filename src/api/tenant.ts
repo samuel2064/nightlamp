@@ -33,13 +33,35 @@ export function tenantFilter(column: string, teamId: string | null): TenantFilte
   return { clause: `${column} = ?`, params: [teamId] };
 }
 
+/**
+ * Scope for rows that always belong to a tenant.
+ *
+ * The monitoring tables (failure_events, check_results, checks, remediation_runs,
+ * dependencies) have no owner column, so the unscoped bucket (`team_id IS NULL`)
+ * is shared by every personal identity. A caller without a team membership has
+ * no rows of its own there, so the filter matches nothing and the routes that
+ * use it answer 403 through `requireTenantScope`.
+ */
+export function tenantOwnedFilter(column: string, teamId: string | null): TenantFilter {
+  if (teamId === null) {
+    return { clause: '1 = 0', params: [] };
+  }
+  return { clause: `${column} = ?`, params: [teamId] };
+}
+
 export type OwnedTenantTable = 'alert_channels' | 'monitored_apps';
 
+/**
+ * Scope for rows that carry an owner.
+ *
+ * A caller without a team membership only sees the rows it owns. Rows written
+ * before the ownership column existed have no owner, so they stay invisible to
+ * every caller instead of leaking into the personal scope.
+ */
 export function scopedTenantFilter(
   table: OwnedTenantTable,
   teamId: string | null,
   userId: string,
-  includeLegacy = true,
   qualifyColumn = true,
 ): TenantFilter {
   const teamColumn = qualifyColumn ? `${table}.team_id` : 'team_id';
@@ -47,9 +69,8 @@ export function scopedTenantFilter(
   if (teamId !== null) {
     return tenantFilter(teamColumn, teamId);
   }
-  const legacyClause = includeLegacy ? ` OR ${ownerColumn} IS NULL` : '';
   return {
-    clause: `${teamColumn} IS NULL AND (${ownerColumn} = ?${legacyClause})`,
+    clause: `${teamColumn} IS NULL AND ${ownerColumn} = ?`,
     params: [userId],
   };
 }
@@ -60,9 +81,8 @@ export function rowBelongsToScope(
   id: string,
   teamId: string | null,
   userId: string,
-  includeLegacy = true,
 ): boolean {
-  const filter = scopedTenantFilter(table, teamId, userId, includeLegacy);
+  const filter = scopedTenantFilter(table, teamId, userId);
   const result = db.exec(
     `SELECT id FROM ${table} WHERE id = ? AND ${filter.clause}`,
     [id, ...filter.params],

@@ -179,7 +179,10 @@ describe('Unloadable CLERK_JWT_PUBLIC_KEY (NOC-263 regression)', () => {
         headers: { authorization: `Bearer ${token}` },
       });
 
-      assert.strictEqual(res.status, 200);
+      const body = await res.json() as any;
+      assert.strictEqual(res.status, 403);
+      assert.strictEqual(body.code, 'FORBIDDEN');
+      assert.strictEqual(body.events, undefined);
     });
 
     it('resolves the auth context through the JWKS when the configured key is unloadable', async () => {
