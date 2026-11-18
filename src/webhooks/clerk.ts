@@ -15,6 +15,7 @@ function verifyClerkWebhook(
   secret: string
 ): boolean {
   if (!secret) return true;
+  if (!svixId || !svixTimestamp || !svixSignature) return false;
   const signedContent = `${svixId}.${svixTimestamp}.${body}`;
   const expectedSignature = crypto
     .createHmac('sha256', secret)

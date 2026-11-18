@@ -8,6 +8,7 @@ import { Server } from 'http';
 import assert from 'assert';
 import { v4 as uuidv4 } from 'uuid';
 import { IncomingMessage } from 'http';
+import * as crypto from 'crypto';
 import { createTestToken, fetchWithoutAuth, TEST_CLERK_USER_ID, TEST_JWT_SECRET, TEST_LOCAL_USER_ID } from './setup';
 import { up as applyTenantIsolationMigration } from '../db/migrations/008-tenant-isolation';
 import { evaluateAndNotify } from '../alerting/evaluator';
@@ -1133,6 +1134,107 @@ describe('P0 API authorization', () => {
       const row = legacyDb.exec('SELECT team_id FROM checks WHERE id = ?', ['legacy-id']);
       assert.strictEqual(row[0].values[0][0], null);
       legacyDb.close();
+    });
+  });
+
+  describe('streaming endpoint gate', () => {
+    it('rejects an unauthenticated realtime stream request', async () => {
+      const res = await fetchWithoutAuth(`http://127.0.0.1:${port}/api/realtime`);
+      assert.strictEqual(res.status, 401);
+      const body = await res.json() as any;
+      assert.strictEqual(body.code, 'UNAUTHORIZED');
+    });
+
+    it('opens the realtime stream for an authenticated caller', async () => {
+      const controller = new AbortController();
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/api/realtime`, {
+          signal: controller.signal,
+        });
+        assert.strictEqual(res.status, 200);
+        assert.match(res.headers.get('content-type') || '', /text\/event-stream/);
+        const reader = (res.body as any).getReader();
+        const { value } = await reader.read();
+        const chunk = new TextDecoder().decode(value);
+        assert.match(chunk, /event: connected/);
+        await reader.cancel();
+      } finally {
+        controller.abort();
+      }
+    });
+  });
+
+  describe('webhook signature gate', () => {
+    const WEBHOOK_SECRET = 'whsec_test_secret';
+
+    function sign(svixId: string, svixTimestamp: string, body: string): string {
+      const signature = crypto
+        .createHmac('sha256', WEBHOOK_SECRET)
+        .update(`${svixId}.${svixTimestamp}.${body}`)
+        .digest('base64');
+      return `v1,${signature}`;
+    }
+
+    function postWebhook(headers: Record<string, string>, body: string) {
+      return fetchWithoutAuth(`http://127.0.0.1:${port}/api/webhooks/clerk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body,
+      });
+    }
+
+    before(() => {
+      process.env.CLERK_WEBHOOK_SECRET = WEBHOOK_SECRET;
+    });
+
+    after(() => {
+      delete process.env.CLERK_WEBHOOK_SECRET;
+    });
+
+    it('accepts an event with a valid svix signature (control)', async () => {
+      const body = JSON.stringify({ type: 'user.created', data: { id: 'user_webhook_control' }, object: 'event' });
+      const res = await postWebhook({
+        'svix-id': 'wh_valid',
+        'svix-timestamp': String(Math.floor(Date.now() / 1000)),
+        'svix-signature': sign('wh_valid', String(Math.floor(Date.now() / 1000)), body),
+      }, body);
+      assert.strictEqual(res.status, 200);
+      const payload = await res.json() as any;
+      assert.strictEqual(payload.received, true);
+    });
+
+    it('rejects an event with an invalid signature', async () => {
+      const body = JSON.stringify({ type: 'user.created', data: { id: 'user_webhook_forged' }, object: 'event' });
+      const res = await postWebhook({
+        'svix-id': 'wh_forged',
+        'svix-timestamp': String(Math.floor(Date.now() / 1000)),
+        'svix-signature': 'v1,not-a-real-signature',
+      }, body);
+      assert.strictEqual(res.status, 401);
+      const payload = await res.json() as any;
+      assert.match(payload.error, /Invalid webhook signature/);
+    });
+
+    it('rejects an event with a missing signature', async () => {
+      const body = JSON.stringify({ type: 'user.created', data: { id: 'user_webhook_missing' }, object: 'event' });
+      const res = await postWebhook({}, body);
+      assert.strictEqual(res.status, 401);
+    });
+
+    it('rejects an event signed with a different secret', async () => {
+      const body = JSON.stringify({ type: 'user.created', data: { id: 'user_webhook_wrong_secret' }, object: 'event' });
+      const svixId = 'wh_wrong_secret';
+      const svixTimestamp = String(Math.floor(Date.now() / 1000));
+      const wrongSignature = crypto
+        .createHmac('sha256', 'not-the-webhook-secret')
+        .update(`${svixId}.${svixTimestamp}.${body}`)
+        .digest('base64');
+      const res = await postWebhook({
+        'svix-id': svixId,
+        'svix-timestamp': svixTimestamp,
+        'svix-signature': `v1,${wrongSignature}`,
+      }, body);
+      assert.strictEqual(res.status, 401);
     });
   });
 });
