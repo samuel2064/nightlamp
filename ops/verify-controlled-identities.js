@@ -12,7 +12,7 @@ const resultFile = process.env.RESULT_FILE || '/tmp/controlled-identity-result.j
 const marker = process.env.VERIFICATION_MARKER || 'nightlamp-controlled-verification';
 const emailDomain = process.env.VERIFICATION_EMAIL_DOMAIN || 'example.com';
 
-const noTeamExpectedStatus = process.env.NO_TEAM_EXPECTED_STATUS ? parseInt(process.env.NO_TEAM_EXPECTED_STATUS, 10) : 200;
+const noTeamExpectedStatus = process.env.NO_TEAM_EXPECTED_STATUS ? parseInt(process.env.NO_TEAM_EXPECTED_STATUS, 10) : 403;
 
 const report = {
   probes: [],
@@ -404,11 +404,17 @@ async function probeWithForeignRowCheck(label, url, options, expected, userId, u
   
   const statusOk = expected.includes(response.status);
   const foreignRowsOk = !isNoTeamUser || foreignRows === 0;
-  const ok = statusOk && foreignRowsOk;
+  
+  // Contract mismatch detection: for no-team users, the decided contract (NOC-294) requires 403.
+  // If the build returns 200 when 403 is expected, flag it and don't count as pass.
+  const contractExpectedStatus = isNoTeamUser ? 403 : expected[0];
+  const contractMismatch = isNoTeamUser && response.status === 200 && contractExpectedStatus === 403;
+  const ok = (contractMismatch ? false : statusOk) && foreignRowsOk;
   
   const entry = {
     label,
     expected,
+    expectedStatusUsed: contractExpectedStatus,
     status: response.status,
     code,
     ok,
@@ -416,11 +422,13 @@ async function probeWithForeignRowCheck(label, url, options, expected, userId, u
     ownRows,
     personalRows,
     isNoTeamUser,
+    contractMismatch,
   };
   report.probes.push(entry);
   const details = foreignRows > 0 || ownRows > 0 || personalRows > 0 ? ` (foreignRows: ${foreignRows}, ownRows: ${ownRows}, personalRows: ${personalRows})` : '';
   const foreignRowsDetail = isNoTeamUser && foreignRows > 0 ? ` FOREIGN ROWS DETECTED: ${foreignRows}` : '';
-  log(`${ok ? 'PASS' : 'FAIL'} ${label} expected ${expected.join('/')} got ${response.status}${code ? ` ${code}` : ''}${details}${foreignRowsDetail}`);
+  const mismatchDetail = contractMismatch ? ` CONTRACT MISMATCH: build returned 200 but decided contract requires 403` : '';
+  log(`${ok ? 'PASS' : 'FAIL'} ${label} expected ${expected.join('/')} got ${response.status}${code ? ` ${code}` : ''}${details}${foreignRowsDetail}${mismatchDetail}`);
   return entry;
 }
 
@@ -911,10 +919,16 @@ async function cleanup() {
   await revokeAllSessions();
   
   const passed = report.probes.filter((entry) => entry.ok).length;
+  const contractMismatches = report.probes.filter((entry) => entry.contractMismatch).length;
   report.probesPassed = passed;
   report.probesTotal = report.probes.length;
+  report.identity.noTeamExpectedStatus = noTeamExpectedStatus;
+  report.identity.contractMismatches = contractMismatches;
   fs.writeFileSync(resultFile, JSON.stringify(report, null, 2));
   log(`probes as expected: ${passed}/${report.probes.length}`);
+  if (contractMismatches > 0) {
+    log(`CONTRACT MISMATCHES: ${contractMismatches} probes returned 200 when decided contract (NOC-294) requires 403`);
+  }
 }
 
 async function main() {
