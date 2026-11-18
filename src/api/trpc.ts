@@ -34,22 +34,6 @@ const protectedProcedure = publicProcedure.use(async ({ ctx, next }) => {
   return next({ ctx: { ...ctx, user: ctx.user } });
 });
 
-function getUserFromToken(token: string | undefined, db: Database): UserInfo | null {
-  if (!token) return null;
-
-  let claims;
-  try {
-    claims = verifyAccessToken(token);
-  } catch (err: any) {
-    if (err instanceof ApiAuthError && err.code === 'AUTH_NOT_CONFIGURED') {
-      throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Authentication is not configured' });
-    }
-    return null;
-  }
-
-  return buildUserInfo(db, claims);
-}
-
 async function getUserFromTokenAsync(token: string | undefined, db: Database): Promise<UserInfo | null> {
   if (!token) return null;
 

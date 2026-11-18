@@ -44,7 +44,7 @@ interface JwtHeader {
 
 interface JwtVerificationConfig {
   secret?: string;
-  publicKey?: string;
+  publicKey?: crypto.KeyObject;
   issuer?: string;
   audience?: string;
 }
@@ -75,16 +75,25 @@ function decodeJsonPart(value: string): Record<string, any> {
   }
 }
 
+function loadPublicKey(pem: string): crypto.KeyObject | undefined {
+  try {
+    return crypto.createPublicKey({ key: pem, format: 'pem' });
+  } catch {
+    return undefined;
+  }
+}
+
 function getVerificationConfig(): JwtVerificationConfig {
   const secret = process.env.CLERK_JWT_SECRET?.trim();
-  const publicKey = process.env.CLERK_JWT_PUBLIC_KEY?.trim().replace(/\\n/g, '\n');
+  const publicKeyPem = process.env.CLERK_JWT_PUBLIC_KEY?.trim().replace(/\\n/g, '\n');
+  const publicKey = publicKeyPem ? loadPublicKey(publicKeyPem) : undefined;
   const issuer = process.env.CLERK_JWT_ISSUER?.trim() || undefined;
   if (!secret && !publicKey && !issuer) {
     throw new ApiAuthError('Authentication is not configured', 503, 'AUTH_NOT_CONFIGURED');
   }
   return {
     secret: secret || undefined,
-    publicKey: publicKey || undefined,
+    publicKey,
     issuer,
     audience: process.env.CLERK_JWT_AUDIENCE?.trim() || undefined,
   };
@@ -229,6 +238,9 @@ function validateClaims(claims: Record<string, any>, config: JwtVerificationConf
   };
 }
 
+/**
+ * @deprecated Use verifyAccessTokenAsync instead. This synchronous version does not support JWKS fallback.
+ */
 export function verifyAccessToken(token: string): VerifiedTokenClaims {
   const parsed = parseToken(token);
   const config = getVerificationConfig();
@@ -329,6 +341,9 @@ function buildAuthContext(db: Database, claims: VerifiedTokenClaims, token: stri
   };
 }
 
+/**
+ * @deprecated Use authenticateRequestAsync instead. This synchronous version does not support JWKS fallback.
+ */
 export function authenticateRequest(db: Database, req: IncomingMessage): AuthContext {
   const token = extractBearerToken(req.headers);
   if (!token) {
