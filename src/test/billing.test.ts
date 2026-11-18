@@ -182,12 +182,13 @@ describe('Billing - Usage Tracker', () => {
 });
 
 describe('Billing - Stripe Client', () => {
-  it('creates a stripe client with default price IDs', () => {
+  it('leaves price ids unset when no price env vars are provided (fails closed, no placeholder)', () => {
     const client = createStripeClient({ secretKey: 'sk_test_fake' });
     expect(client.stripe).to.exist;
-    expect(client.priceIds.basic).to.equal('price_basic');
-    expect(client.priceIds.advanced).to.equal('price_advanced');
-    expect(client.priceIds.white_glove).to.equal('price_white_glove');
+    expect(Object.keys(client.priceIds)).to.have.lengthOf(0);
+    expect(client.priceIds.basic).to.be.undefined;
+    expect(client.priceIds.advanced).to.be.undefined;
+    expect(client.priceIds.white_glove).to.be.undefined;
   });
 
   it('creates a stripe client with custom price IDs', () => {

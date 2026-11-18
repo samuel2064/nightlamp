@@ -1,7 +1,7 @@
 import { Database } from 'sql.js';
 import { IncomingMessage, ServerResponse } from 'http';
 import { v4 as uuid } from 'uuid';
-import { StripeClient, createCheckoutSession, createCustomerPortalSession, constructWebhookEvent } from './stripe-client';
+import { StripeClient, createCheckoutSession, createCustomerPortalSession, constructWebhookEvent, resolvePriceId } from './stripe-client';
 import { SubscriptionModel, PlanTier, Subscription, PLAN_TIERS } from './subscription';
 import { TierEnforcer } from './tier-enforcer';
 import { UsageTracker } from './usage';
@@ -188,10 +188,22 @@ export class BillingApi {
         return;
       }
       if (this.rejectIdentity(input, res)) return;
+      let priceId: string | null = null;
       if (!cancel && (typeof input.planTier !== 'string' || !Object.hasOwn(PLAN_TIERS, input.planTier))) {
         res.writeHead(400);
         res.end(JSON.stringify({ error: 'Invalid plan tier' }));
         return;
+      }
+      if (!cancel) {
+        // Fail closed before any Stripe call: a missing price id refuses with
+        // the missing variable named instead of reaching Stripe (NOC-318).
+        try {
+          priceId = resolvePriceId(this.deps.stripeClient, input.planTier as string);
+        } catch (err: any) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: err.message }));
+          return;
+        }
       }
       try {
         const customer = this.resolveCustomer(auth);
@@ -211,8 +223,8 @@ export class BillingApi {
           this.deps.db.run(`UPDATE subscriptions SET cancel_at_period_end = 1, updated_at = datetime('now') WHERE id = ? AND ${scope.clause}`, [sub.id, ...scope.params]);
         } else {
           const planTier = input.planTier as PlanTier;
-          const price = this.deps.stripeClient.priceIds[planTier];
-          if (!price || remote.items?.data?.length !== 1) throw new Error('Unsupported subscription configuration');
+          const price = priceId ?? resolvePriceId(this.deps.stripeClient, planTier);
+          if (remote.items?.data?.length !== 1) throw new Error('Unsupported subscription configuration');
           // Leave proration_behavior unspecified: retain Stripe's configured/default
           // policy rather than accepting a client-controlled billing policy.
           await stripe.subscriptions.update(sub.stripeSubscriptionId, {
@@ -278,6 +290,16 @@ export class BillingApi {
         if (!Object.hasOwn(PLAN_TIERS, planTier)) {
           res.writeHead(400);
           res.end(JSON.stringify({ error: `Invalid plan tier: ${planTier}` }));
+          return;
+        }
+
+        // Fail closed before any Stripe call: an unconfigured price id refuses
+        // with the missing variable named instead of reaching Stripe (NOC-318).
+        try {
+          resolvePriceId(this.deps.stripeClient, planTier);
+        } catch (err: any) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: err.message }));
           return;
         }
 
