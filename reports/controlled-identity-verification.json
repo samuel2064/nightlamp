@@ -5,7 +5,7 @@
       "expected": [
         403
       ],
-      "status": 500,
+      "status": 200,
       "code": null,
       "ok": false
     },
@@ -14,7 +14,7 @@
       "expected": [
         403
       ],
-      "status": 500,
+      "status": 200,
       "code": null,
       "ok": false
     },
@@ -23,16 +23,16 @@
       "expected": [
         404
       ],
-      "status": 500,
+      "status": 404,
       "code": null,
-      "ok": false
+      "ok": true
     },
     {
       "label": "a signed-in no-team can list the events",
       "expected": [
         403
       ],
-      "status": 500,
+      "status": 200,
       "code": null,
       "ok": false
     },
@@ -41,7 +41,7 @@
       "expected": [
         403
       ],
-      "status": 500,
+      "status": 200,
       "code": null,
       "ok": false
     },
@@ -50,16 +50,16 @@
       "expected": [
         404
       ],
-      "status": 500,
+      "status": 404,
       "code": null,
-      "ok": false
+      "ok": true
     },
     {
       "label": "a signed-in no-team can list the events",
       "expected": [
         403
       ],
-      "status": 500,
+      "status": 200,
       "code": null,
       "ok": false
     },
@@ -68,7 +68,7 @@
       "expected": [
         403
       ],
-      "status": 500,
+      "status": 200,
       "code": null,
       "ok": false
     },
@@ -77,16 +77,16 @@
       "expected": [
         404
       ],
-      "status": 500,
+      "status": 404,
       "code": null,
-      "ok": false
+      "ok": true
     },
     {
       "label": "a signed-in no-team can list the events",
       "expected": [
         403
       ],
-      "status": 500,
+      "status": 200,
       "code": null,
       "ok": false
     },
@@ -95,7 +95,7 @@
       "expected": [
         403
       ],
-      "status": 500,
+      "status": 200,
       "code": null,
       "ok": false
     },
@@ -104,16 +104,16 @@
       "expected": [
         404
       ],
-      "status": 500,
+      "status": 404,
       "code": null,
-      "ok": false
+      "ok": true
     },
     {
       "label": "a signed-in no-team can list the events",
       "expected": [
         403
       ],
-      "status": 500,
+      "status": 200,
       "code": null,
       "ok": false
     },
@@ -122,7 +122,7 @@
       "expected": [
         403
       ],
-      "status": 500,
+      "status": 200,
       "code": null,
       "ok": false
     },
@@ -131,9 +131,9 @@
       "expected": [
         404
       ],
-      "status": 500,
+      "status": 404,
       "code": null,
-      "ok": false
+      "ok": true
     }
   ],
   "identity": {
@@ -143,6 +143,8 @@
     "ownerIdentified": false,
     "memberIdentified": true,
     "memberId": "[redacted-user]",
+    "memberIsMember": false,
+    "memberIsOwner": false,
     "fullMatrixRun": false
   },
   "diagnostics": [
@@ -158,41 +160,41 @@
     "POST a session for [redacted-user] -> HTTP 200",
     "POST a session token for [redacted-user] -> HTTP 200",
     "  Token minted successfully for [redacted-user]",
-    "  Failed to list teams for [redacted-user]: HTTP 500",
+    "  User [redacted-user] has access to 0 team(s)",
     "POST a session for [redacted-user] -> HTTP 200",
     "POST a session token for [redacted-user] -> HTTP 200",
     "  Token minted successfully for [redacted-user]",
-    "  Failed to list teams for [redacted-user]: HTTP 500",
+    "  User [redacted-user] has access to 0 team(s)",
     "POST a session for [redacted-user] -> HTTP 200",
     "POST a session token for [redacted-user] -> HTTP 200",
     "  Token minted successfully for [redacted-user]",
-    "  Failed to list teams for [redacted-user]: HTTP 500",
+    "  User [redacted-user] has access to 0 team(s)",
     "POST a session for [redacted-user] -> HTTP 200",
     "POST a session token for [redacted-user] -> HTTP 200",
     "  Token minted successfully for [redacted-user]",
-    "  Failed to list teams for [redacted-user]: HTTP 500",
+    "  User [redacted-user] has access to 0 team(s)",
     "POST a session for [redacted-user] -> HTTP 200",
     "POST a session token for [redacted-user] -> HTTP 200",
     "  Token minted successfully for [redacted-user]",
-    "  Failed to list teams for [redacted-user]: HTTP 500",
+    "  User [redacted-user] has access to 0 team(s)",
     "No owner identified among existing users",
-    "Second identity identified: [redacted-user] (isMember: undefined, isOwner: undefined)",
+    "Second identity identified: [redacted-user] (isMember: false, isOwner: false)",
     "Cannot run full matrix: missing owner or second identity",
-    "FAIL a signed-in no-team can list the events expected 403 got 500",
-    "FAIL a signed-in no-team can list the remediation runs expected 403 got 500",
-    "FAIL acknowledging an event that does not exist answers 404 for no-team expected 404 got 500",
-    "FAIL a signed-in no-team can list the events expected 403 got 500",
-    "FAIL a signed-in no-team can list the remediation runs expected 403 got 500",
-    "FAIL acknowledging an event that does not exist answers 404 for no-team expected 404 got 500",
-    "FAIL a signed-in no-team can list the events expected 403 got 500",
-    "FAIL a signed-in no-team can list the remediation runs expected 403 got 500",
-    "FAIL acknowledging an event that does not exist answers 404 for no-team expected 404 got 500",
-    "FAIL a signed-in no-team can list the events expected 403 got 500",
-    "FAIL a signed-in no-team can list the remediation runs expected 403 got 500",
-    "FAIL acknowledging an event that does not exist answers 404 for no-team expected 404 got 500",
-    "FAIL a signed-in no-team can list the events expected 403 got 500",
-    "FAIL a signed-in no-team can list the remediation runs expected 403 got 500",
-    "FAIL acknowledging an event that does not exist answers 404 for no-team expected 404 got 500",
+    "FAIL a signed-in no-team can list the events expected 403 got 200",
+    "FAIL a signed-in no-team can list the remediation runs expected 403 got 200",
+    "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
+    "FAIL a signed-in no-team can list the events expected 403 got 200",
+    "FAIL a signed-in no-team can list the remediation runs expected 403 got 200",
+    "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
+    "FAIL a signed-in no-team can list the events expected 403 got 200",
+    "FAIL a signed-in no-team can list the remediation runs expected 403 got 200",
+    "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
+    "FAIL a signed-in no-team can list the events expected 403 got 200",
+    "FAIL a signed-in no-team can list the remediation runs expected 403 got 200",
+    "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
+    "FAIL a signed-in no-team can list the events expected 403 got 200",
+    "FAIL a signed-in no-team can list the remediation runs expected 403 got 200",
+    "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
     "--- Cleanup: Revoking all sessions ---",
     "POST revoke session for [redacted-user] -> HTTP 200",
     "POST revoke session for [redacted-user] -> HTTP 200",
@@ -202,6 +204,6 @@
   ],
   "valuesIncluded": false,
   "bodiesIncluded": false,
-  "probesPassed": 0,
+  "probesPassed": 5,
   "probesTotal": 15
 }
