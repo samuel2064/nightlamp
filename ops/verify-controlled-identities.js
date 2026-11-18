@@ -915,6 +915,60 @@ let privilegeProbesPassed = 0;
   }
 }
 
+function filterReportForPublish(report) {
+  const allowedIdentityKeys = new Set([
+    'frontendHasClerkSecret',
+    'frontendHasPublishableKey',
+    'existingUserCount',
+    'ownerIdentified',
+    'memberIdentified',
+    'memberIsMember',
+    'memberIsOwner',
+    'controlledOwnerCreated',
+    'controlledOwnerUsed',
+    'controlledOwnerDeleted',
+    'testTeamCreated',
+    'testTeamRemoved',
+    'fullMatrixRun',
+    'privilegeProbesRun',
+    'privilegeProbesPassed',
+    'noTeamExpectedStatus',
+    'contractMismatches',
+    'memberAddedToTestTeam',
+    'matrixBlockedBy',
+  ]);
+  
+  const filteredIdentity = {};
+  for (const [key, value] of Object.entries(report.identity || {})) {
+    if (allowedIdentityKeys.has(key)) {
+      filteredIdentity[key] = value;
+    }
+  }
+  
+  return {
+    probes: report.probes.map(p => ({
+      label: p.label,
+      expected: p.expected,
+      expectedStatusUsed: p.expectedStatusUsed,
+      status: p.status,
+      code: p.code,
+      ok: p.ok,
+      foreignRows: p.foreignRows,
+      ownRows: p.ownRows,
+      personalRows: p.personalRows,
+      isNoTeamUser: p.isNoTeamUser,
+      contractMismatch: p.contractMismatch,
+    })),
+    identity: filteredIdentity,
+    diagnostics: report.diagnostics,
+    valuesIncluded: false,
+    bodiesIncluded: false,
+    error: report.error,
+    probesPassed: report.probesPassed,
+    probesTotal: report.probesTotal,
+  };
+}
+
 async function cleanup() {
   await revokeAllSessions();
   
@@ -924,7 +978,9 @@ async function cleanup() {
   report.probesTotal = report.probes.length;
   report.identity.noTeamExpectedStatus = noTeamExpectedStatus;
   report.identity.contractMismatches = contractMismatches;
-  fs.writeFileSync(resultFile, JSON.stringify(report, null, 2));
+  
+  const publishReport = filterReportForPublish(report);
+  fs.writeFileSync(resultFile, JSON.stringify(publishReport, null, 2));
   log(`probes as expected: ${passed}/${report.probes.length}`);
   if (contractMismatches > 0) {
     log(`CONTRACT MISMATCHES: ${contractMismatches} probes returned 200 when decided contract (NOC-294) requires 403`);

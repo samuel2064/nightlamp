@@ -184,6 +184,12 @@ jobs:
           FRONTEND_NAME=$(cat /tmp/frontend-name.txt 2>/dev/null || echo 'unknown')
           KID=$(cat /tmp/kid.txt 2>/dev/null || echo 'unknown')
           DIAG=$(tr '\n' ';' < /tmp/diag.log 2>/dev/null || echo '')
+          SCRIPT_DIAG=""
+          SCRIPT_ACTIONS=""
+          if [ -f /tmp/configure-result.json ]; then
+            SCRIPT_DIAG=$(node -e "const r=require('/tmp/configure-result.json');console.log((r.diagnostics||[]).map(d=>d.replace(/sk_[A-Za-z0-9_-]{32,}/g,'[REDACTED]').replace(/user_[A-Za-z0-9_-]{20,}/g,'[REDACTED]').replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,'[REDACTED]').replace(/[A-Fa-f0-9]{64,}/g,'[REDACTED]')).join(';'))" 2>/dev/null || echo '')
+            SCRIPT_ACTIONS=$(node -e "const r=require('/tmp/configure-result.json');console.log((r.actions||[]).join(';'))" 2>/dev/null || echo '')
+          fi
           jq -n \
             --arg run "$GITHUB_RUN_ID" \
             --arg sha "$GITHUB_SHA" \
@@ -192,13 +198,15 @@ jobs:
             --arg backendName "$BACKEND_NAME" \
             --arg frontendName "$FRONTEND_NAME" \
             --arg diag "$DIAG" \
+            --arg scriptDiag "$SCRIPT_DIAG" \
+            --arg scriptActions "$SCRIPT_ACTIONS" \
             --arg services "$(tr '\n' ';' < /tmp/services-list.txt 2>/dev/null || echo '')" \
             --arg actions "$(tr '\n' ';' < /tmp/actions.log 2>/dev/null || echo '')" \
             --arg backendBefore "$(tr '\n' ',' < /tmp/backend-keys.txt 2>/dev/null || echo '')" \
             --arg backendAfter "$(tr '\n' ',' < /tmp/backend-keys-after.txt 2>/dev/null || echo '')" \
             --arg frontendBefore "$(tr '\n' ',' < /tmp/frontend-keys.txt 2>/dev/null || echo '')" \
             --arg frontendAfter "$(tr '\n' ',' < /tmp/frontend-keys-after.txt 2>/dev/null || echo '')" \
-            '{run:$run,sha:$sha,branch:$branch,backendService:$backendName,frontendService:$frontendName,jwksKid:$kid,diagnostics:$diag,workspaceServices:$services,actions:$actions,backendEnvVarKeysBefore:$backendBefore,backendEnvVarKeysAfter:$backendAfter,frontendEnvVarKeysBefore:$frontendBefore,frontendEnvVarKeysAfter:$frontendAfter,valuesIncluded:false}' > /tmp/report.json
+            '{run:$run,sha:$sha,branch:$branch,backendService:$backendName,frontendService:$frontendName,jwksKid:$kid,diagnostics:$diag,scriptDiagnostics:$scriptDiag,scriptActions:$scriptActions,workspaceServices:$services,actions:$actions,backendEnvVarKeysBefore:$backendBefore,backendEnvVarKeysAfter:$backendAfter,frontendEnvVarKeysBefore:$frontendBefore,frontendEnvVarKeysAfter:$frontendAfter,valuesIncluded:false}' > /tmp/report.json
           cat /tmp/report.json
           {
             echo "## Render auth configuration report"
@@ -209,6 +217,8 @@ jobs:
             echo "- frontend service: $(cat /tmp/frontend-name.txt 2>/dev/null || echo unknown)"
             echo "- jwks signing key id: $(cat /tmp/kid.txt 2>/dev/null || echo unknown)"
             echo "- diagnostics: $(tr '\n' ';' < /tmp/diag.log 2>/dev/null || echo '')"
+            echo "- script diagnostics: $SCRIPT_DIAG"
+            echo "- script actions: $SCRIPT_ACTIONS"
             echo "- actions: $(tr '\n' ';' < /tmp/actions.log 2>/dev/null || echo '')"
             echo "- backend env var keys before: $(tr '\n' ',' < /tmp/backend-keys.txt 2>/dev/null || echo '')"
             echo "- backend env var keys after: $(tr '\n' ',' < /tmp/backend-keys-after.txt 2>/dev/null || echo '')"
