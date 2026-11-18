@@ -1,6 +1,6 @@
 {
-  "run": "44031469452",
-  "startedAt": "2026-11-17T06:28:41.467Z",
+  "run": "44241821166",
+  "startedAt": "2026-11-18T05:05:55.633Z",
   "backendUrl": "https://nightlamp-api.onrender.com",
   "identity": {
     "id": "user_3LtREI9rJxiLlyzoPcuwvWd7ayd",
@@ -11,7 +11,7 @@
     "alg": "RS256",
     "kid": "ins_3EzDIgqXss1pzQBDsG8owOCTBIp",
     "iss": "https://capable-goldfish-98.clerk.accounts.dev",
-    "exp": 1794896982,
+    "exp": 1794978416,
     "version": 2,
     "claimKeys": [
       "exp",
@@ -125,38 +125,10 @@
       "probe": "signed-in-create-team",
       "method": "POST",
       "path": "/api/teams",
-      "status": 200,
-      "contract": 200,
-      "meetsContract": true
-    },
-    {
-      "probe": "signed-in-teams-after-create",
-      "method": "GET",
-      "path": "/api/teams",
-      "status": 200,
-      "contract": 200,
-      "meetsContract": true,
-      "count": 0,
-      "teamCount": 0
-    },
-    {
-      "probe": "signed-in-events-with-created-team",
-      "method": "GET",
-      "path": "/api/events",
       "status": 403,
-      "contract": 403,
-      "meetsContract": true,
-      "error": "Access to this organization is forbidden",
-      "code": "FORBIDDEN"
-    },
-    {
-      "probe": "signed-in-team-path-after-create",
-      "method": "GET",
-      "path": "/api/teams/5ef8ba70-39e9-4deb-9e27-cd33722406f7",
-      "status": 403,
-      "contract": 403,
-      "meetsContract": true,
-      "error": "Access to this organization is forbidden",
+      "contract": 200,
+      "meetsContract": false,
+      "error": "You can only create a team that you own",
       "code": "FORBIDDEN"
     }
   ],
@@ -179,7 +151,7 @@
     },
     {
       "name": "clerk-user-list",
-      "detail": "HTTP 200, 4 users visible to the instance key"
+      "detail": "HTTP 200, 5 users visible to the instance key"
     },
     {
       "name": "clerk-identity-selected",
@@ -187,7 +159,7 @@
     },
     {
       "name": "clerk-session-created",
-      "detail": "sess_3MDtN8Gq8jVJZ6oFWguoJETaVI8"
+      "detail": "sess_3MGYQdokNSdIHJWTFtT4eSUBr3q"
     },
     {
       "name": "clerk-token-minted",
@@ -195,23 +167,16 @@
     },
     {
       "name": "clerk-session-revoked",
-      "detail": "sess_3MDtN8Gq8jVJZ6oFWguoJETaVI8"
+      "detail": "sess_3MGYQdokNSdIHJWTFtT4eSUBr3q"
     }
   ],
   "findings": [
     "a signed-in identity with no membership is answered 200 on GET /api/events (contract 403); it can read 0 unscoped rows",
     "a signed-in identity with no membership is answered 200 on GET /api/remediation/runs (contract 403)",
-    "a signed-in identity with no membership is answered 200 on GET /api/check-results (contract 403)",
-    "a team created by the authenticated identity does not appear in GET /api/teams: the membership is not bound to the authenticated user"
+    "a signed-in identity with no membership is answered 200 on GET /api/check-results (contract 403)"
   ],
-  "createdArtifacts": [
-    {
-      "kind": "team",
-      "id": "5ef8ba70-39e9-4deb-9e27-cd33722406f7",
-      "slug": "noc263-verify-44031469452"
-    }
-  ],
+  "createdArtifacts": [],
   "valuesIncluded": false,
   "finished": true,
-  "finishedAt": "2026-11-17T06:29:04.450Z"
+  "finishedAt": "2026-11-18T05:06:14.464Z"
 }
