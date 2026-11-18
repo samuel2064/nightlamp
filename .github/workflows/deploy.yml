@@ -234,3 +234,34 @@ jobs:
           curl -fsS -X POST "$WEBHOOK" \
             -H "Content-Type: application/json" \
             -d '{"text":"Nightlamp deploy finished on main. Job status: '"${{ job.status }}"'. Commit: '"${{ github.sha }}"'."}'
+
+  alert-on-failure:
+    name: Alert on deployment failure
+    needs: [verify, verify-frontend, deploy-backend, deploy-frontend, smoke]
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    env:
+      VERIFY_RESULT: ${{ needs.verify.result }}
+      VERIFY_FRONTEND_RESULT: ${{ needs['verify-frontend'].result }}
+      DEPLOY_BACKEND_RESULT: ${{ needs['deploy-backend'].result }}
+      DEPLOY_FRONTEND_RESULT: ${{ needs['deploy-frontend'].result }}
+      SMOKE_RESULT: ${{ needs.smoke.result }}
+      WEBHOOK: ${{ secrets.DEPLOY_WEBHOOK_URL }}
+    steps:
+      - name: Determine failed job
+        id: failed-job
+        run: |
+          FAILED=""
+          if [ "$VERIFY_RESULT" = "failure" ]; then FAILED="verify"; fi
+          if [ "$VERIFY_FRONTEND_RESULT" = "failure" ]; then FAILED="verify-frontend"; fi
+          if [ "$DEPLOY_BACKEND_RESULT" = "failure" ]; then FAILED="deploy-backend"; fi
+          if [ "$DEPLOY_FRONTEND_RESULT" = "failure" ]; then FAILED="deploy-frontend"; fi
+          if [ "$SMOKE_RESULT" = "failure" ]; then FAILED="smoke"; fi
+          echo "failed_job=$FAILED" >> $GITHUB_OUTPUT
+      - name: Post failure alert to webhook
+        if: ${{ env.WEBHOOK != '' }}
+        run: |
+          FAILED_JOB="${{ steps.failed-job.outputs.failed_job }}"
+          curl -fsS -X POST "$WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d '{"text":"Nightlamp DEPLOYMENT FAILURE on main","attachments":[{"color":"danger","fields":[{"title":"Failed Job","value":"'"$FAILED_JOB"'"},{"title":"Commit","value":"'"${{ github.sha }}"'"},{"title":"Workflow","value":"'"${{ github.workflow }}"'"},{"title":"Run URL","value":"'"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"'"}]}]}'
