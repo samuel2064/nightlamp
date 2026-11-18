@@ -1,6 +1,6 @@
 {
-  "run": "44241821166",
-  "startedAt": "2026-11-18T05:05:55.633Z",
+  "run": "44299379233",
+  "startedAt": "2026-11-18T11:57:37.634Z",
   "backendUrl": "https://nightlamp-api.onrender.com",
   "identity": {
     "id": "user_3LtREI9rJxiLlyzoPcuwvWd7ayd",
@@ -11,7 +11,7 @@
     "alg": "RS256",
     "kid": "ins_3EzDIgqXss1pzQBDsG8owOCTBIp",
     "iss": "https://capable-goldfish-98.clerk.accounts.dev",
-    "exp": 1794978416,
+    "exp": 1795003118,
     "version": 2,
     "claimKeys": [
       "exp",
@@ -46,6 +46,20 @@
     "checkResultsStatus": 200,
     "checkResultsMeetsContract": false
   },
+  "teamCreation": {
+    "attempts": [
+      {
+        "shape": "no-owner-id",
+        "status": 400
+      },
+      {
+        "shape": "clerk-owner-id",
+        "status": 403
+      }
+    ],
+    "contract": 200
+  },
+  "cleanup": null,
   "probes": [
     {
       "probe": "anonymous-events",
@@ -122,7 +136,16 @@
       "error": "Event not found"
     },
     {
-      "probe": "signed-in-create-team",
+      "probe": "signed-in-create-team-without-owner-id",
+      "method": "POST",
+      "path": "/api/teams",
+      "status": 400,
+      "contract": 200,
+      "meetsContract": false,
+      "error": "name, slug, and ownerId are required"
+    },
+    {
+      "probe": "signed-in-create-team-with-clerk-owner-id",
       "method": "POST",
       "path": "/api/teams",
       "status": 403,
@@ -159,7 +182,7 @@
     },
     {
       "name": "clerk-session-created",
-      "detail": "sess_3MGYQdokNSdIHJWTFtT4eSUBr3q"
+      "detail": "sess_3MHMUug6KG6Qy209ibOA3XqMeNT"
     },
     {
       "name": "clerk-token-minted",
@@ -167,16 +190,17 @@
     },
     {
       "name": "clerk-session-revoked",
-      "detail": "sess_3MGYQdokNSdIHJWTFtT4eSUBr3q"
+      "detail": "sess_3MHMUug6KG6Qy209ibOA3XqMeNT"
     }
   ],
   "findings": [
     "a signed-in identity with no membership is answered 200 on GET /api/events (contract 403); it can read 0 unscoped rows",
     "a signed-in identity with no membership is answered 200 on GET /api/remediation/runs (contract 403)",
-    "a signed-in identity with no membership is answered 200 on GET /api/check-results (contract 403)"
+    "a signed-in identity with no membership is answered 200 on GET /api/check-results (contract 403)",
+    "the build refuses to create a team for the authenticated identity (no-owner-id=400, clerk-owner-id=403); the member case is unreachable"
   ],
   "createdArtifacts": [],
   "valuesIncluded": false,
   "finished": true,
-  "finishedAt": "2026-11-18T05:06:14.464Z"
+  "finishedAt": "2026-11-18T11:57:56.730Z"
 }
