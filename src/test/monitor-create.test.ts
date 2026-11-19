@@ -141,6 +141,40 @@ describe('NOC-315 tenant-scoped monitor creation', () => {
     assert.strictEqual(row.enabled, true);
   });
 
+  it('answers the create request with the flat monitor fields the wizard client reads', async () => {
+    const wizardConfig = {
+      url: 'https://myapp.example.com',
+      platform: 'vercel',
+      checkType: 'http',
+      checkUrl: 'https://myapp.example.com/health',
+      interval: 60,
+      alertChannels: ['email'],
+      alertEmail: '',
+    };
+    const res = await createMonitor(MEMBER_CLERK, {
+      source: 'wizard',
+      name: 'My Production App',
+      config: wizardConfig,
+      enabled: true,
+    });
+
+    assert.strictEqual(res.status, 201, JSON.stringify(res.body));
+    assert.strictEqual(typeof res.body.id, 'string');
+    assert.strictEqual(res.body.name, 'My Production App');
+    assert.strictEqual(res.body.source, 'wizard');
+    assert.strictEqual(res.body.enabled, true);
+    assert.strictEqual(typeof res.body.createdAt, 'string');
+    assert.deepStrictEqual(res.body.monitor, {
+      id: res.body.id,
+      source: 'wizard',
+      name: 'My Production App',
+      config: wizardConfig,
+      enabled: true,
+      createdAt: res.body.createdAt,
+      updatedAt: res.body.updatedAt,
+    });
+  });
+
   it('never writes the team id supplied in the request body', async () => {
     const own = await createMonitor(MEMBER_CLERK, {
       source: 'http',

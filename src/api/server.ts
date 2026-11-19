@@ -1346,18 +1346,20 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             );
             hotCache.clear();
             const row = db.exec('SELECT created_at, updated_at FROM checks WHERE id = ?', [id]);
+            const monitor = {
+              id,
+              source: input.source,
+              name: input.name,
+              config: input.config,
+              enabled: input.enabled,
+              createdAt: row[0].values[0][0],
+              updatedAt: row[0].values[0][1],
+            };
             res.writeHead(201);
             res.end(JSON.stringify({
               success: true,
-              monitor: {
-                id,
-                source: input.source,
-                name: input.name,
-                config: input.config,
-                enabled: input.enabled,
-                createdAt: row[0].values[0][0],
-                updatedAt: row[0].values[0][1],
-              },
+              ...monitor,
+              monitor,
             }));
           });
           return;
