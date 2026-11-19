@@ -86,8 +86,9 @@
       "expected": [
         403
       ],
-      "status": 404,
-      "ok": false
+      "status": 403,
+      "code": "FORBIDDEN",
+      "ok": true
     },
     {
       "label": "a member cannot reach the admin endpoint",
@@ -114,8 +115,9 @@
       "expected": [
         403
       ],
-      "status": 404,
-      "ok": false
+      "status": 403,
+      "code": "FORBIDDEN",
+      "ok": true
     },
     {
       "label": "the owner gets a truthful 404 for a target that does not exist",
@@ -127,15 +129,24 @@
       "ok": true
     },
     {
+      "label": "the member role persists after the attempts",
+      "test": "member-role-persists",
+      "expected": [
+        "member"
+      ],
+      "status": 200,
+      "code": "member",
+      "ok": true
+    },
+    {
       "label": "approving an unknown run does not claim success",
       "test": "approve-unknown-run",
       "expected": [
         400,
         404
       ],
-      "status": 403,
-      "code": "FORBIDDEN",
-      "ok": false
+      "status": 400,
+      "ok": true
     },
     {
       "label": "rejecting an unknown run does not claim success",
@@ -144,9 +155,8 @@
         400,
         404
       ],
-      "status": 403,
-      "code": "FORBIDDEN",
-      "ok": false
+      "status": 400,
+      "ok": true
     },
     {
       "label": "retrying an unknown run does not claim success",
@@ -155,9 +165,8 @@
         400,
         404
       ],
-      "status": 403,
-      "code": "FORBIDDEN",
-      "ok": false
+      "status": 400,
+      "ok": true
     },
     {
       "label": "an unknown action is rejected without claiming success",
@@ -166,9 +175,8 @@
         400,
         404
       ],
-      "status": 403,
-      "code": "FORBIDDEN",
-      "ok": false
+      "status": 400,
+      "ok": true
     },
     {
       "label": "a signed-in no-team can list the events",
@@ -421,8 +429,8 @@
     "memberJoinedViaInvitation": true,
     "testTeamRemoved": true,
     "fullMatrixRun": true,
-    "privilegeProbesRun": 15,
-    "privilegeProbesPassed": 9,
+    "privilegeProbesRun": 16,
+    "privilegeProbesPassed": 16,
     "controlledOwnerDeleted": true,
     "noTeamExpectedStatus": 403,
     "contractMismatches": 0
@@ -484,23 +492,24 @@
     "Member rewrite team: 403 PASS",
     "Member delete team: 403 PASS",
     "--- NOC-280: Member create privileged invitation ---",
-    "Member create admin invitation: 404 FAIL",
+    "Member create admin invitation: 403 PASS",
     "--- NOC-280: Admin endpoint ---",
     "Member admin endpoint: 403 PASS",
     "--- NOC-280: Unknown team ---",
     "Unknown team: 404 PASS",
     "--- NOC-280: Non-member role target ---",
-    "Non-member target: 404 FAIL",
+    "Non-member target: 403 PASS",
     "--- NOC-280: Owner target that does not exist ---",
     "Owner target that does not exist: 404 PASS",
+    "Member role persists as: member PASS",
     "--- NOC-274: Owner/admin approval reaches truthful terminal result ---",
-    "Approve unknown run: 403 FAIL",
-    "Reject unknown run: 403 FAIL",
-    "Retry unknown run: 403 FAIL",
-    "Unknown action rejected: 403 FAIL",
+    "Approve unknown run: 400 PASS",
+    "Reject unknown run: 400 PASS",
+    "Retry unknown run: 400 PASS",
+    "Unknown action rejected: 400 PASS",
     "--- Cleanup: Removing test team ---",
-    "DELETE team <id> -> HTTP 404",
-    "Failed to remove test team",
+    "DELETE team <id> -> HTTP 200",
+    "Test team removed successfully",
     "PASS a signed-in no-team can list the events expected 403 got 403 FORBIDDEN",
     "PASS a signed-in no-team can list the remediation runs expected 403 got 403 FORBIDDEN",
     "PASS acknowledging an event that does not exist answers 404 for no-team expected 404 got 404",
@@ -534,6 +543,6 @@
   ],
   "valuesIncluded": false,
   "bodiesIncluded": false,
-  "probesPassed": 29,
-  "probesTotal": 35
+  "probesPassed": 36,
+  "probesTotal": 36
 }
