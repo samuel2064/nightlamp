@@ -124,7 +124,15 @@ export function useDraftGuard(onDismiss: () => void) {
 
   const keepEditing = useCallback(() => setConfirming(false), [])
 
-  return { requestClose, confirming, keepEditing, discardNow: onDismiss }
+  // Confirming Discard here is the explicit discard: the shared in-memory
+  // draft is cleared at the same time, so the next surface does not ask again
+  // about answers the user already threw away.
+  const discardNow = useCallback(() => {
+    feedbackDraftStore.clear('explicit-discard')
+    onDismiss()
+  }, [onDismiss])
+
+  return { requestClose, confirming, keepEditing, discardNow }
 }
 
 // Shared scalar mapping: arrays are joined, oversized or non-scalar values are
