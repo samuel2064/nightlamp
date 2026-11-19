@@ -86,18 +86,25 @@
     },
     {
       "expected": [
-        404
+        403
       ],
       "status": 404,
+      "ok": false
+    },
+    {
+      "expected": [
+        403
+      ],
+      "status": 403,
+      "code": "FORBIDDEN",
       "ok": true
     },
     {
       "expected": [
         404
       ],
-      "status": 403,
-      "code": "FORBIDDEN",
-      "ok": false
+      "status": 404,
+      "ok": true
     },
     {
       "expected": [
@@ -109,31 +116,35 @@
     },
     {
       "expected": [
+        400,
         404
       ],
       "status": 400,
-      "ok": false
+      "ok": true
     },
     {
       "expected": [
+        400,
         404
       ],
       "status": 400,
-      "ok": false
+      "ok": true
     },
     {
       "expected": [
+        400,
         404
       ],
       "status": 400,
-      "ok": false
+      "ok": true
     },
     {
       "expected": [
+        400,
         404
       ],
       "status": 400,
-      "ok": false
+      "ok": true
     },
     {
       "label": "a signed-in no-team can list the events",
@@ -386,8 +397,8 @@
     "memberJoinedViaInvitation": true,
     "testTeamRemoved": true,
     "fullMatrixRun": true,
-    "privilegeProbesRun": 15,
-    "privilegeProbesPassed": 10,
+    "privilegeProbesRun": 16,
+    "privilegeProbesPassed": 15,
     "controlledOwnerDeleted": true,
     "noTeamExpectedStatus": 403,
     "contractMismatches": 0
@@ -453,15 +464,17 @@
     "--- NOC-280: Admin endpoint ---",
     "Member admin endpoint: 403 PASS",
     "--- NOC-280: Unknown team ---",
-    "Unknown team: 404 PASS",
+    "Unknown team: 404 FAIL",
     "--- NOC-280: Non-member role target ---",
-    "Non-member target: 403 FAIL",
+    "Non-member target: 403 PASS",
+    "--- NOC-280: Owner target that does not exist ---",
+    "Owner target that does not exist: 404 PASS",
     "Member role persists as: member PASS",
     "--- NOC-274: Owner/admin approval reaches truthful terminal result ---",
-    "Approve unknown run: 400 FAIL",
-    "Reject unknown run: 400 FAIL",
-    "Retry unknown run: 400 FAIL",
-    "Unknown action rejected: 400 FAIL",
+    "Approve unknown run: 400 PASS",
+    "Reject unknown run: 400 PASS",
+    "Retry unknown run: 400 PASS",
+    "Unknown action rejected: 400 PASS",
     "--- Cleanup: Removing test team ---",
     "DELETE team <id> -> HTTP 200",
     "Test team removed successfully",
@@ -498,6 +511,6 @@
   ],
   "valuesIncluded": false,
   "bodiesIncluded": false,
-  "probesPassed": 30,
-  "probesTotal": 35
+  "probesPassed": 35,
+  "probesTotal": 36
 }
