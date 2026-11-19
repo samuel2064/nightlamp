@@ -80,6 +80,13 @@ jobs:
           echo "--- the report, values excluded ---"
           cat "$RESULT_FILE"
 
+      - name: Run identifier redaction guard on report
+        if: always()
+        run: |
+          if [ -f "$RESULT_FILE" ]; then
+            node ops/guard-harness.js ops/verify-controlled-identities.js "$RESULT_FILE"
+          fi
+
       - name: Publish the status-only report
         if: always()
         run: |
@@ -117,10 +124,3 @@ jobs:
           git add reports/controlled-identity-verification.json
           git commit -m "controlled identity verification report $GITHUB_RUN_ID" || true
           git push origin "HEAD:$REPORT_BRANCH"
-
-      - name: Run identifier redaction guard on report
-        if: always()
-        run: |
-          if [ -f "$RESULT_FILE" ]; then
-            node ops/guard-harness.js ops/verify-controlled-identities.js "$RESULT_FILE"
-          fi
