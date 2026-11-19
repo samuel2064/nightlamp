@@ -437,6 +437,16 @@ async function fetchHealth() {
   }
 }
 
+function extractUptimeAndBootId(health) {
+  if (!health || !health.body || typeof health.body !== 'object') {
+    return { uptime: undefined, bootId: undefined };
+  }
+  const body = health.body;
+  const uptime = body.uptimeSeconds !== undefined ? body.uptimeSeconds : body.uptime;
+  const bootId = body.bootId;
+  return { uptime, bootId };
+}
+
 async function probeWithForeignRowCheck(label, url, options, expected, userId, userRole) {
   const response = await fetch(url, options);
   const text = await response.text();
@@ -835,15 +845,28 @@ async function revokeAllSessions() {
 
 async function checkServerRestart() {
   if (!initialHealth || !finalHealth) {
-    return { valid: true, reason: 'health check skipped' };
+    return { valid: false, reason: 'health check missing: initial or final health not captured' };
   }
   
-  const initialUptime = initialHealth.body?.uptime;
-  const finalUptime = finalHealth.body?.uptime;
-  const initialBootId = initialHealth.body?.bootId;
-  const finalBootId = finalHealth.body?.bootId;
+  const initial = extractUptimeAndBootId(initialHealth);
+  const final = extractUptimeAndBootId(finalHealth);
   
-  if (initialUptime !== undefined && finalUptime !== undefined) {
+  const initialUptime = initial.uptime;
+  const finalUptime = final.uptime;
+  const initialBootId = initial.bootId;
+  const finalBootId = final.bootId;
+  
+  const hasUptimeSignal = initialUptime !== undefined && finalUptime !== undefined;
+  const hasBootIdSignal = initialBootId !== undefined && finalBootId !== undefined;
+  
+  if (!hasUptimeSignal && !hasBootIdSignal) {
+    return { 
+      valid: false, 
+      reason: 'health payload exposed no usable uptime or boot id signal' 
+    };
+  }
+  
+  if (hasUptimeSignal) {
     if (finalUptime < initialUptime) {
       return { 
         valid: false, 
@@ -852,7 +875,7 @@ async function checkServerRestart() {
     }
   }
   
-  if (initialBootId && finalBootId && initialBootId !== finalBootId) {
+  if (hasBootIdSignal && initialBootId !== finalBootId) {
     return { 
       valid: false, 
       reason: `server restart detected: boot id changed (initial: ${initialBootId}, final: ${finalBootId})` 
@@ -864,7 +887,8 @@ async function checkServerRestart() {
 
 async function run() {
   initialHealth = await fetchHealth();
-  log(`Initial health check: HTTP ${initialHealth.status} ${initialHealth.body ? `(uptime: ${initialHealth.body.uptime}s, bootId: ${initialHealth.body.bootId})` : 'no body'}`);
+  const initialUptimeInfo = extractUptimeAndBootId(initialHealth);
+  log(`Initial health check: HTTP ${initialHealth.status} ${initialHealth.body ? `(uptimeSeconds: ${initialUptimeInfo.uptime}s, bootId: ${initialUptimeInfo.bootId})` : 'no body'}`);
   
   if (!await fetchFrontendEnv()) return;
   
@@ -1068,7 +1092,8 @@ async function run() {
   }
   
   finalHealth = await fetchHealth();
-  log(`Final health check: HTTP ${finalHealth.status} ${finalHealth.body ? `(uptime: ${finalHealth.body.uptime}s, bootId: ${finalHealth.body.bootId})` : 'no body'}`);
+  const finalUptimeInfo = extractUptimeAndBootId(finalHealth);
+  log(`Final health check: HTTP ${finalHealth.status} ${finalHealth.body ? `(uptimeSeconds: ${finalUptimeInfo.uptime}s, bootId: ${finalUptimeInfo.bootId})` : 'no body'}`);
 }
 
 function filterReportForPublish(report) {
