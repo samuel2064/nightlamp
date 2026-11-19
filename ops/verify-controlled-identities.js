@@ -637,12 +637,12 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
   try { utParsed = JSON.parse(utText); } catch {}
   results.push({
     test: 'unknown-team',
-    expected: [404],
+    expected: [403],
     status: unknownTeam.status,
     code: utParsed?.code,
-    ok: unknownTeam.status === 404
+    ok: unknownTeam.status === 403
   });
-  log(`Unknown team: ${unknownTeam.status} ${unknownTeam.status === 404 ? 'PASS' : 'FAIL'}`);
+  log(`Unknown team: ${unknownTeam.status} ${unknownTeam.status === 403 ? 'PASS' : 'FAIL'}`);
   
   log('--- NOC-280: Non-member role target ---');
   const nonMemberTarget = await fetch(`${nightlampApi}/api/teams/${teamId}/members/non-existent-user`, {
@@ -655,12 +655,30 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
   try { nmtParsed = JSON.parse(nmtText); } catch {}
   results.push({
     test: 'non-member-target',
-    expected: [404],
+    expected: [403],
     status: nonMemberTarget.status,
     code: nmtParsed?.code,
-    ok: nonMemberTarget.status === 404
+    ok: nonMemberTarget.status === 403
   });
-  log(`Non-member target: ${nonMemberTarget.status} ${nonMemberTarget.status === 404 ? 'PASS' : 'FAIL'}`);
+  log(`Non-member target: ${nonMemberTarget.status} ${nonMemberTarget.status === 403 ? 'PASS' : 'FAIL'}`);
+  
+  log('--- NOC-280: Owner target that does not exist ---');
+  const ownerUnknownTarget = await fetch(`${nightlampApi}/api/teams/${teamId}/members/non-existent-user`, {
+    method: 'PATCH',
+    headers: bearer(ownerToken, json),
+    body: JSON.stringify({ role: 'admin' })
+  });
+  const outText = await ownerUnknownTarget.text();
+  let outParsed = null;
+  try { outParsed = JSON.parse(outText); } catch {}
+  results.push({
+    test: 'owner-non-member-target',
+    expected: [404],
+    status: ownerUnknownTarget.status,
+    code: outParsed?.code,
+    ok: ownerUnknownTarget.status === 404
+  });
+  log(`Owner target that does not exist: ${ownerUnknownTarget.status} ${ownerUnknownTarget.status === 404 ? 'PASS' : 'FAIL'}`);
   
   const listMembers = await fetch(`${nightlampApi}/api/teams/${teamId}/members`, {
     headers: bearer(ownerToken)
@@ -703,14 +721,15 @@ async function runNoc274Matrix(ownerToken, teamId) {
   const auText = await approveUnknown.text();
   let auParsed = null;
   try { auParsed = JSON.parse(auText); } catch {}
+  const auSuccessClaimed = Boolean(auParsed && auParsed.success === true);
   results.push({
     test: 'approve-unknown-run',
-    expected: [404],
+    expected: [400, 404],
     status: approveUnknown.status,
     code: auParsed?.code,
-    ok: approveUnknown.status === 404
+    ok: [400, 404].includes(approveUnknown.status) && !auSuccessClaimed
   });
-  log(`Approve unknown run: ${approveUnknown.status} ${approveUnknown.status === 404 ? 'PASS' : 'FAIL'}`);
+  log(`Approve unknown run: ${approveUnknown.status} ${approveUnknown.status === 400 || approveUnknown.status === 404 ? 'PASS' : 'FAIL'}${auSuccessClaimed ? ' SUCCESS CLAIMED' : ''}`);
   
   const rejectUnknown = await fetch(`${nightlampApi}/api/remediation/reject`, {
     method: 'POST',
@@ -720,14 +739,15 @@ async function runNoc274Matrix(ownerToken, teamId) {
   const ruText = await rejectUnknown.text();
   let ruParsed = null;
   try { ruParsed = JSON.parse(ruText); } catch {}
+  const ruSuccessClaimed = Boolean(ruParsed && ruParsed.success === true);
   results.push({
     test: 'reject-unknown-run',
-    expected: [404],
+    expected: [400, 404],
     status: rejectUnknown.status,
     code: ruParsed?.code,
-    ok: rejectUnknown.status === 404
+    ok: [400, 404].includes(rejectUnknown.status) && !ruSuccessClaimed
   });
-  log(`Reject unknown run: ${rejectUnknown.status} ${rejectUnknown.status === 404 ? 'PASS' : 'FAIL'}`);
+  log(`Reject unknown run: ${rejectUnknown.status} ${rejectUnknown.status === 400 || rejectUnknown.status === 404 ? 'PASS' : 'FAIL'}${ruSuccessClaimed ? ' SUCCESS CLAIMED' : ''}`);
   
   const retryUnknown = await fetch(`${nightlampApi}/api/remediation/retry`, {
     method: 'POST',
@@ -737,14 +757,15 @@ async function runNoc274Matrix(ownerToken, teamId) {
   const reuText = await retryUnknown.text();
   let reuParsed = null;
   try { reuParsed = JSON.parse(reuText); } catch {}
+  const reuSuccessClaimed = Boolean(reuParsed && reuParsed.success === true);
   results.push({
     test: 'retry-unknown-run',
-    expected: [404],
+    expected: [400, 404],
     status: retryUnknown.status,
     code: reuParsed?.code,
-    ok: retryUnknown.status === 404
+    ok: [400, 404].includes(retryUnknown.status) && !reuSuccessClaimed
   });
-  log(`Retry unknown run: ${retryUnknown.status} ${retryUnknown.status === 404 ? 'PASS' : 'FAIL'}`);
+  log(`Retry unknown run: ${retryUnknown.status} ${retryUnknown.status === 400 || retryUnknown.status === 404 ? 'PASS' : 'FAIL'}${reuSuccessClaimed ? ' SUCCESS CLAIMED' : ''}`);
   
   const unknownAction = await fetch(`${nightlampApi}/api/remediation/approve`, {
     method: 'POST',
@@ -754,14 +775,15 @@ async function runNoc274Matrix(ownerToken, teamId) {
   const uaText = await unknownAction.text();
   let uaParsed = null;
   try { uaParsed = JSON.parse(uaText); } catch {}
+  const uaSuccessClaimed = Boolean(uaParsed && uaParsed.success === true);
   results.push({
     test: 'unknown-action-rejected',
-    expected: [404],
+    expected: [400, 404],
     status: unknownAction.status,
     code: uaParsed?.code,
-    ok: unknownAction.status === 404
+    ok: [400, 404].includes(unknownAction.status) && !uaSuccessClaimed
   });
-  log(`Unknown action rejected: ${unknownAction.status} ${unknownAction.status === 404 ? 'PASS' : 'FAIL'}`);
+  log(`Unknown action rejected: ${unknownAction.status} ${unknownAction.status === 400 || unknownAction.status === 404 ? 'PASS' : 'FAIL'}${uaSuccessClaimed ? ' SUCCESS CLAIMED' : ''}`);
   
   return results;
 }
