@@ -32,6 +32,8 @@ export interface ApiConfig {
   stripeClient?: StripeClient;
   stripeWebhookSecret?: string;
   baseUrl?: string;
+  storageMode?: 'sqlite' | 'postgres';
+  bootId?: string;
 }
 
 interface EndpointRule {
@@ -1740,6 +1742,10 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           status: 'ok',
           timestamp: new Date().toISOString(),
           uptimeSeconds,
+          storage: {
+            mode: config.storageMode || 'sqlite',
+            bootId: config.bootId || 'unknown',
+          },
           stats: {
             checks: checkCount[0]?.values[0]?.[0] || 0,
             failureEvents: eventCount[0]?.values[0]?.[0] || 0,

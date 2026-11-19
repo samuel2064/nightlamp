@@ -556,6 +556,543 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   return db;
 }
 
+export function applySchema(db: SqlJsDatabase): void {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS checks (
+      id TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      name TEXT NOT NULL,
+      config TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS check_results (
+      id TEXT PRIMARY KEY,
+      check_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      summary TEXT,
+      details TEXT,
+      raw_data TEXT,
+      executed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (check_id) REFERENCES checks(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS failure_events (
+      id TEXT PRIMARY KEY,
+      check_id TEXT NOT NULL,
+      failure_type TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'warning',
+      title TEXT NOT NULL,
+      description TEXT,
+      raw_data TEXT,
+      detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+      acknowledged INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (check_id) REFERENCES checks(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS playbook_entries (
+      id TEXT PRIMARY KEY,
+      failure_type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_occurrence_at TEXT NOT NULL DEFAULT (datetime('now')),
+      occurrence_count INTEGER NOT NULL DEFAULT 1
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS customers (
+      id TEXT PRIMARY KEY,
+      stripe_customer_id TEXT UNIQUE,
+      email TEXT NOT NULL,
+      name TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      clerk_user_id TEXT UNIQUE,
+      email TEXT NOT NULL,
+      name TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      id TEXT PRIMARY KEY,
+      customer_id TEXT NOT NULL,
+      stripe_subscription_id TEXT UNIQUE,
+      plan_tier TEXT NOT NULL CHECK(plan_tier IN ('basic', 'advanced', 'white_glove')),
+      status TEXT NOT NULL DEFAULT 'incomplete' CHECK(status IN ('incomplete', 'active', 'past_due', 'canceled', 'trialing', 'incomplete_expired')),
+      current_period_start TEXT,
+      current_period_end TEXT,
+      cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (customer_id) REFERENCES customers(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS usage_records (
+      id TEXT PRIMARY KEY,
+      customer_id TEXT NOT NULL,
+      metric TEXT NOT NULL,
+      value REAL NOT NULL DEFAULT 0,
+      recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (customer_id) REFERENCES customers(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS dependencies (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      current_version TEXT NOT NULL,
+      specified_range TEXT NOT NULL,
+      is_dev INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS dependency_updates (
+      id TEXT PRIMARY KEY,
+      dependency_id TEXT NOT NULL,
+      available_version TEXT NOT NULL,
+      current_version TEXT NOT NULL,
+      change_type TEXT NOT NULL CHECK(change_type IN ('major', 'minor', 'patch', 'unknown')),
+      is_breaking INTEGER NOT NULL DEFAULT 0,
+      changelog_url TEXT,
+      detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (dependency_id) REFERENCES dependencies(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS remediation_log (
+      id TEXT PRIMARY KEY,
+      playbook_entry_id TEXT NOT NULL,
+      failure_type TEXT NOT NULL,
+      script TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'success', 'failed', 'skipped')),
+      output TEXT,
+      executed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (playbook_entry_id) REFERENCES playbook_entries(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS remediation_actions (
+      id TEXT PRIMARY KEY,
+      failure_type TEXT NOT NULL,
+      action_name TEXT NOT NULL,
+      description TEXT,
+      risk_level TEXT NOT NULL DEFAULT 'medium',
+      enabled INTEGER NOT NULL DEFAULT 1
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS remediation_runs (
+      id TEXT PRIMARY KEY,
+      playbook_entry_id TEXT REFERENCES playbook_entries(id),
+      action_name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      initiated_by TEXT,
+      approved_by TEXT,
+      output TEXT,
+      error TEXT,
+      started_at TEXT,
+      completed_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS remediation_policies (
+      id TEXT PRIMARY KEY,
+      failure_type TEXT NOT NULL,
+      auto_approve INTEGER NOT NULL DEFAULT 0,
+      require_dry_run INTEGER NOT NULL DEFAULT 1,
+      cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+      UNIQUE(failure_type)
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS x_tokens (
+      id TEXT PRIMARY KEY,
+      access_token TEXT NOT NULL,
+      refresh_token TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      expires_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS x_scheduled_posts (
+      id TEXT PRIMARY KEY,
+      tweet_text TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      in_reply_to_id TEXT,
+      tweet_id TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'posted', 'failed')),
+      error TEXT,
+      scheduled_at TEXT,
+      posted_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.run('CREATE INDEX IF NOT EXISTS idx_failure_events_detected ON failure_events(detected_at)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_failure_events_type_detected ON failure_events(failure_type, detected_at)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_failure_events_severity_detected ON failure_events(severity, detected_at)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_check_results_executed ON check_results(executed_at)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_check_results_check_executed ON check_results(check_id, executed_at)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_remediation_runs_status ON remediation_runs(status)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_remediation_runs_action ON remediation_runs(action_name)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_remediation_actions_failure ON remediation_actions(failure_type)');
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS perf_runs (
+      id TEXT PRIMARY KEY,
+      url TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'running', 'completed', 'failed')),
+      lcp REAL,
+      tbt REAL,
+      cls REAL,
+      fcp REAL,
+      inp REAL,
+      score REAL,
+      raw_output TEXT,
+      started_at TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at TEXT
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS perf_metrics (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      value REAL NOT NULL,
+      unit TEXT NOT NULL DEFAULT 'ms',
+      score REAL,
+      FOREIGN KEY (run_id) REFERENCES perf_runs(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS perf_regressions (
+      id TEXT PRIMARY KEY,
+      metric TEXT NOT NULL,
+      current_value REAL NOT NULL,
+      baseline_mean REAL NOT NULL,
+      baseline_stddev REAL NOT NULL,
+      p_value REAL NOT NULL,
+      direction TEXT NOT NULL CHECK(direction IN ('degradation', 'improvement')),
+      trend TEXT NOT NULL DEFAULT 'declining' CHECK(trend IN ('improving', 'declining', 'stable')),
+      url TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+      acknowledged INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (run_id) REFERENCES perf_runs(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS perf_diagnoses (
+      id TEXT PRIMARY KEY,
+      regression_id TEXT NOT NULL,
+      diagnosis TEXT NOT NULL,
+      recommendation TEXT NOT NULL,
+      impact TEXT NOT NULL CHECK(impact IN ('high', 'medium', 'low')),
+      category TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (regression_id) REFERENCES perf_regressions(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS teams (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      owner_id TEXT NOT NULL,
+      plan TEXT NOT NULL DEFAULT 'free',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS memberships (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member')),
+      invited_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(team_id, user_id),
+      FOREIGN KEY (team_id) REFERENCES teams(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS invitations (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL,
+      email TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member' CHECK(role IN ('admin', 'member')),
+      token TEXT NOT NULL UNIQUE,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (team_id) REFERENCES teams(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS team_workspaces (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL UNIQUE,
+      monitors TEXT NOT NULL DEFAULT '[]',
+      playbooks TEXT NOT NULL DEFAULT '[]',
+      alerts TEXT NOT NULL DEFAULT '[]',
+      settings TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (team_id) REFERENCES teams(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS alert_channels (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('slack', 'email', 'pagerduty', 'in-app-websocket')),
+      config TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      team_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (team_id) REFERENCES teams(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS alert_rules (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      failure_types TEXT NOT NULL,
+      min_severity TEXT NOT NULL DEFAULT 'info' CHECK(min_severity IN ('critical', 'warning', 'info')),
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (channel_id) REFERENCES alert_channels(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS onboarding_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      current_step TEXT NOT NULL DEFAULT 'app-detection' CHECK(current_step IN ('app-detection', 'monitor-selection', 'alert-config', 'team-invite')),
+      step_data TEXT NOT NULL DEFAULT '{}',
+      completed_at TEXT,
+      created_team_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS alert_log (
+      id TEXT PRIMARY KEY,
+      rule_id TEXT,
+      channel_id TEXT NOT NULL,
+      failure_event_id TEXT,
+      failure_type TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      channel_type TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('sent', 'failed', 'skipped', 'pending', 'delivered')),
+      error_message TEXT,
+      sent_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS custom_playbooks (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'published')),
+      version INTEGER NOT NULL DEFAULT 1,
+      variables TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (team_id) REFERENCES teams(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS playbook_nodes (
+      id TEXT PRIMARY KEY,
+      playbook_id TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('trigger', 'condition', 'action', 'notification')),
+      subtype TEXT NOT NULL,
+      config TEXT NOT NULL DEFAULT '{}',
+      position_x REAL NOT NULL DEFAULT 0,
+      position_y REAL NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (playbook_id) REFERENCES custom_playbooks(id) ON DELETE CASCADE
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS playbook_edges (
+      id TEXT PRIMARY KEY,
+      playbook_id TEXT NOT NULL,
+      source_node_id TEXT NOT NULL,
+      target_node_id TEXT NOT NULL,
+      source_port TEXT NOT NULL DEFAULT 'out',
+      target_port TEXT NOT NULL DEFAULT 'in',
+      edge_type TEXT NOT NULL DEFAULT 'next' CHECK(edge_type IN ('next', 'failure')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (playbook_id) REFERENCES custom_playbooks(id) ON DELETE CASCADE,
+      FOREIGN KEY (source_node_id) REFERENCES playbook_nodes(id) ON DELETE CASCADE,
+      FOREIGN KEY (target_node_id) REFERENCES playbook_nodes(id) ON DELETE CASCADE
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS playbook_versions (
+      id TEXT PRIMARY KEY,
+      playbook_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      node_snapshot TEXT NOT NULL DEFAULT '[]',
+      edge_snapshot TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (playbook_id) REFERENCES custom_playbooks(id) ON DELETE CASCADE
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS playbook_executions (
+      id TEXT PRIMARY KEY,
+      playbook_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'running', 'waiting_decision', 'completed', 'failed', 'cancelled')),
+      current_step_id TEXT,
+      context TEXT NOT NULL DEFAULT '{}',
+      step_results TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at TEXT,
+      error TEXT,
+      FOREIGN KEY (playbook_id) REFERENCES custom_playbooks(id) ON DELETE CASCADE
+    );
+  `);
+
+  db.run('CREATE INDEX IF NOT EXISTS idx_playbook_nodes_playbook ON playbook_nodes(playbook_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_playbook_edges_playbook ON playbook_edges(playbook_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_playbook_versions_playbook ON playbook_versions(playbook_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_custom_playbooks_team ON custom_playbooks(team_id)');
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS notification_rate_limits (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      max_per_minute INTEGER NOT NULL DEFAULT 10,
+      max_per_hour INTEGER NOT NULL DEFAULT 100,
+      window_start TEXT NOT NULL,
+      current_count INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (channel_id) REFERENCES alert_channels(id)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS notification_deduplication (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      suppress_until TEXT,
+      suppression_count INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (channel_id) REFERENCES alert_channels(id)
+    );
+  `);
+
+  db.run('CREATE INDEX IF NOT EXISTS idx_dedup_fingerprint ON notification_deduplication(channel_id, fingerprint)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_rate_limit_channel ON notification_rate_limits(channel_id, window_start)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_alert_channels_team ON alert_channels(team_id)');
+
+  db.run('CREATE INDEX IF NOT EXISTS idx_perf_runs_url_started ON perf_runs(url, started_at DESC)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_perf_metrics_run_name ON perf_metrics(run_id, name)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_perf_regressions_url_detected ON perf_regressions(url, detected_at DESC)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_perf_diagnoses_regression ON perf_diagnoses(regression_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_dep_updates_dep_detected ON dependency_updates(dependency_id, detected_at DESC)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_usage_customer_recorded ON usage_records(customer_id, recorded_at DESC)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_subscriptions_customer ON subscriptions(customer_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_failure_check_detected ON failure_events(check_id, detected_at DESC)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_playbook_failure_type ON playbook_entries(failure_type)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_x_posts_schedule ON x_scheduled_posts(status, scheduled_at)');
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS leads (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'webinar',
+      name TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email ON leads(email)');
+
+  db.run('CREATE INDEX IF NOT EXISTS idx_failure_events_severity ON failure_events(severity)');
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS webhook_events (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL DEFAULT 'stripe',
+      event_type TEXT NOT NULL,
+      livemode INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'received' CHECK(status IN ('received', 'processed', 'failed', 'skipped')),
+      error TEXT,
+      payload TEXT,
+      received_at TEXT NOT NULL DEFAULT (datetime('now')),
+      processed_at TEXT
+    );
+  `);
+  db.run('CREATE INDEX IF NOT EXISTS idx_webhook_events_type ON webhook_events(event_type)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_webhook_events_received ON webhook_events(received_at DESC)');
+
+  applyTenantIsolationMigration(db);
+  applyMonitoredAppsMigration(db);
+  applyAnalyticsEventsMigration(db);
+  applyPersonalOwnershipMigration(db);
+  applyOwnerIndexMigration(db);
+}
+
 export function saveDatabase(db: SqlJsDatabase, dbPath: string): void {
   const fs = require('fs');
   const path = require('path');

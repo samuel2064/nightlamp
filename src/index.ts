@@ -2,10 +2,10 @@ import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as cron from 'node-cron';
-import { Database } from 'sql.js';
+import { Database as SqlJsDatabase } from 'sql.js';
 import * as dotenv from 'dotenv';
 import { v4 as uuidv4 } from 'uuid';
-import { createDatabase, saveDatabase } from './db';
+import { createDatabaseWithUrl, getBootId, saveDatabaseWithMode, StorageMode } from './db';
 import { SentryConfig, SentryIssue, UptimeRobotConfig, UptimeRobotMonitor, XConfig, buildAuthorizeUrl, postThread, verifyCredentials, refreshAccessToken, exchangeCodeForToken, parseLaunchThread, isSentryConfigPlaceholder, isUptimeRobotConfigPlaceholder } from './connectors';
 import { runSentryCheck, runUptimeRobotCheck, sanitizeChecks } from './engine';
 import { createStripeClient } from './billing';
@@ -27,13 +27,24 @@ const DB_PATH = process.env.DB_PATH || './data/nightlamp.db';
 const PLAYBOOK_DIR = process.env.PLAYBOOK_DIR || './playbook';
 const API_PORT = parseInt(process.env.PORT || process.env.API_PORT || '3001', 10);
 
-let db: Database;
+let db: SqlJsDatabase;
+let storageMode: StorageMode = 'sqlite';
 let sentryIssueCache: SentryIssue[] = [];
 let uptimeRobotMonitorCache: UptimeRobotMonitor[] = [];
 
 async function init(): Promise<void> {
   console.log('[Nightlamp] Initializing health check engine...');
-  db = await createDatabase(DB_PATH);
+  const dbResult = await createDatabaseWithUrl(DB_PATH);
+  db = dbResult.db;
+  storageMode = dbResult.mode;
+  const bootId = getBootId();
+  
+  if (storageMode === 'sqlite' && process.env.NODE_ENV === 'production') {
+    console.warn('[Nightlamp] WARNING: Running in production with ephemeral SQLite storage. Data will be lost on restart. Set DATABASE_URL for persistent storage.');
+  }
+  
+  console.log(`[Nightlamp] Storage mode: ${storageMode}, boot ID: ${bootId}`);
+  
   setDb(db);
   initEngine();
 
@@ -45,7 +56,7 @@ async function init(): Promise<void> {
       `[Nightlamp] Monitor hygiene: ${sanitized.duplicatesDisabled} duplicate(s) disabled, ` +
       `${sanitized.placeholdersDisabled} placeholder monitor(s) disabled`
     );
-    saveDatabase(db, DB_PATH);
+    saveDatabaseWithMode(db, DB_PATH);
   }
 
   const sentryToken = process.env.SENTRY_AUTH_TOKEN;
@@ -66,9 +77,9 @@ async function init(): Promise<void> {
         if (result.failureEvents > 0) {
           console.log(`[Nightlamp] ${result.failureEvents} failure(s) detected, playbook: ${result.playbookEntries.join(', ')}`);
         }
-        saveDatabase(db, DB_PATH);
-      } catch (err: any) {
-        console.error(`[Nightlamp] Sentry check failed: ${err.message}`);
+saveDatabaseWithMode(db, DB_PATH);
+        } catch (err: any) {
+          console.error(`[Nightlamp] Sentry check failed: ${err.message}`);
       }
     });
     console.log(`[Nightlamp] Sentry monitor scheduled: every ${POLL_INTERVAL_SEC}s`);
@@ -94,9 +105,9 @@ async function init(): Promise<void> {
         if (result.failureEvents > 0) {
           console.log(`[Nightlamp] ${result.failureEvents} failure(s) detected, playbook: ${result.playbookEntries.join(', ')}`);
         }
-        saveDatabase(db, DB_PATH);
-      } catch (err: any) {
-        console.error(`[Nightlamp] UptimeRobot check failed: ${err.message}`);
+saveDatabaseWithMode(db, DB_PATH);
+        } catch (err: any) {
+          console.error(`[Nightlamp] UptimeRobot check failed: ${err.message}`);
       }
     });
     console.log(`[Nightlamp] UptimeRobot monitor scheduled: every ${POLL_INTERVAL_SEC}s`);
@@ -123,10 +134,12 @@ async function init(): Promise<void> {
       stripeClient,
       stripeWebhookSecret,
       baseUrl,
+      storageMode,
+      bootId: getBootId(),
     });
     console.log(`[Nightlamp] Billing API configured (port ${API_PORT})`);
   } else {
-    startApiServer(db, { port: API_PORT });
+    startApiServer(db, { port: API_PORT, storageMode, bootId: getBootId() });
     console.log(`[Nightlamp] API server started without billing (port ${API_PORT})`);
     console.log('[Nightlamp] Set STRIPE_SECRET_KEY to enable subscription billing');
   }
@@ -155,7 +168,7 @@ async function init(): Promise<void> {
               `INSERT INTO x_tokens (id, access_token, refresh_token, scope, expires_at) VALUES (?, ?, ?, ?, ?)`,
               ['active', refreshed.accessToken, refreshed.refreshToken, refreshed.scope, expiresAt]
             );
-            saveDatabase(db, DB_PATH);
+            saveDatabaseWithMode(db, DB_PATH);
             console.log('[Nightlamp] X/Twitter token refreshed');
           } catch (err: any) {
             console.error(`[Nightlamp] X/Twitter token refresh failed: ${err.message}`);
@@ -203,7 +216,7 @@ async function init(): Promise<void> {
                 [results[i].tweetId, group[i].id]
               );
             }
-            saveDatabase(db, DB_PATH);
+            saveDatabaseWithMode(db, DB_PATH);
             console.log(`[Nightlamp] Scheduled thread posted: ${results.length} tweets`);
           } catch (err: any) {
             for (const p of group) {
@@ -212,7 +225,7 @@ async function init(): Promise<void> {
                 [err.message, p.id]
               );
             }
-            saveDatabase(db, DB_PATH);
+            saveDatabaseWithMode(db, DB_PATH);
             console.error(`[Nightlamp] Scheduled thread post failed: ${err.message}`);
           }
         }
@@ -252,8 +265,8 @@ async function init(): Promise<void> {
                   [postId, results[i].text, i + 1, results[i].tweetId]
                 );
               }
-              saveDatabase(db, DB_PATH);
-            }).catch((err: any) => {
+saveDatabaseWithMode(db, DB_PATH);
+             }).catch((err: any) => {
               console.error(`[Nightlamp] Failed to post launch thread: ${err.message}`);
             });
           } else {
@@ -283,7 +296,7 @@ init().catch((err) => {
 process.on('SIGINT', () => {
   console.log('[Nightlamp] Shutting down...');
   if (db) {
-    saveDatabase(db, DB_PATH);
+    saveDatabaseWithMode(db, DB_PATH);
   }
   process.exit(0);
 });

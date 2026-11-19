@@ -1,4 +1,4 @@
 import { createDatabase, saveDatabase } from './schema';
+import { createDatabase as createDatabaseWithUrl, getBootId, saveDatabase as saveDatabaseWithMode, StorageMode } from './connection';
 
-export { createDatabase, saveDatabase };
-export type { NightlampDb } from './schema';
+export { createDatabase, saveDatabase, createDatabaseWithUrl, getBootId, saveDatabaseWithMode, StorageMode };
