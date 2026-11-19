@@ -1,3 +1,7 @@
+// NOC-324: Updated for controlled identity workflow gate
+// - Exits non-zero on probe failures, contract mismatches, or server restart
+// - Report derived from observed results (testTeamRemoved, fullMatrixRun)
+// - Server restart detection via /api/health uptime/bootId comparison
 const fs = require('fs');
 const { execFileSync } = require('child_process');
 
