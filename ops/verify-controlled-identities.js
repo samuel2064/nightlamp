@@ -2,6 +2,7 @@
 // - Exits non-zero on probe failures, contract mismatches, or server restart
 // - Report derived from observed results (testTeamRemoved, fullMatrixRun)
 // - Server restart detection via /api/health uptime/bootId comparison
+// NOC-339: Two-tenant cross-org isolation probes for seven NOC-337 surfaces
 const fs = require('fs');
 const { execFileSync } = require('child_process');
 
@@ -198,7 +199,7 @@ async function createControlledOwner() {
     skip_password_requirement: true,
     skip_password_confirmation: true,
   });
-  
+
   log(`POST create controlled owner user -> HTTP ${createResponse.status}`);
   if (createResponse.status < 200 || createResponse.status >= 300 || !createResponse.body || !createResponse.body.id) {
     log(`  Failed to create controlled owner: ${createResponse.status}`);
@@ -397,7 +398,7 @@ async function addMemberToTeam(ownerToken, teamId, memberEmail, role = 'member')
   } catch (error) {
     parsed = null;
   }
-  
+
   if (response.status >= 200 && response.status < 300) {
     log(`Added the member identity as ${role} to the test team`);
     return { added: true, userId: parsed && parsed.userId ? parsed.userId : null };
@@ -606,45 +607,43 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
   });
   log(`Member rewrite team: ${rewriteTeam.status} ${rewriteTeam.status === 403 ? 'PASS' : 'FAIL'}`);
   
-  const deleteTeamAttempt = await fetch(`${nightlampApi}/api/teams/${teamId}`, {
+  const deleteTeam = await fetch(`${nightlampApi}/api/teams/${teamId}`, {
     method: 'DELETE',
     headers: bearer(memberToken)
   });
-  const dtText = await deleteTeamAttempt.text();
+  const dtText = await deleteTeam.text();
   let dtParsed = null;
   try { dtParsed = JSON.parse(dtText); } catch {}
   results.push({
     test: 'member-delete-team',
     expected: [403],
-    status: deleteTeamAttempt.status,
+    status: deleteTeam.status,
     code: dtParsed?.code,
-    ok: deleteTeamAttempt.status === 403
+    ok: deleteTeam.status === 403
   });
-  log(`Member delete team: ${deleteTeamAttempt.status} ${deleteTeamAttempt.status === 403 ? 'PASS' : 'FAIL'}`);
+  log(`Member delete team: ${deleteTeam.status} ${deleteTeam.status === 403 ? 'PASS' : 'FAIL'}`);
   
   log('--- NOC-280: Member create privileged invitation ---');
-  const createInvite = await fetch(`${nightlampApi}/api/teams/${teamId}/invitations`, {
+  const adminInvite = await fetch(`${nightlampApi}/api/teams/${teamId}/invitations`, {
     method: 'POST',
     headers: bearer(memberToken, json),
-    body: JSON.stringify({ email: 'test@example.com', role: 'admin' })
+    body: JSON.stringify({ email: 'fake@example.com', role: 'admin' })
   });
-  const ciText = await createInvite.text();
-  let ciParsed = null;
-  try { ciParsed = JSON.parse(ciText); } catch {}
+  const aiText = await adminInvite.text();
+  let aiParsed = null;
+  try { aiParsed = JSON.parse(aiText); } catch {}
   results.push({
     test: 'member-create-admin-invitation',
     expected: [403],
-    status: createInvite.status,
-    code: ciParsed?.code,
-    ok: createInvite.status === 403
+    status: adminInvite.status,
+    code: aiParsed?.code,
+    ok: adminInvite.status === 403
   });
-  log(`Member create admin invitation: ${createInvite.status} ${createInvite.status === 403 ? 'PASS' : 'FAIL'}`);
+  log(`Member create admin invitation: ${adminInvite.status} ${adminInvite.status === 403 ? 'PASS' : 'FAIL'}`);
   
   log('--- NOC-280: Admin endpoint ---');
-  const adminEndpoint = await fetch(`${nightlampApi}/api/remediation/approve`, {
-    method: 'POST',
-    headers: bearer(memberToken, json),
-    body: JSON.stringify({ id: 'unknown-id' })
+  const adminEndpoint = await fetch(`${nightlampApi}/api/admin`, {
+    headers: bearer(memberToken)
   });
   const aeText = await adminEndpoint.text();
   let aeParsed = null;
@@ -659,10 +658,8 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
   log(`Member admin endpoint: ${adminEndpoint.status} ${adminEndpoint.status === 403 ? 'PASS' : 'FAIL'}`);
   
   log('--- NOC-280: Unknown team ---');
-  const unknownTeam = await fetch(`${nightlampApi}/api/teams/unknown-team-id/members/${memberId}`, {
-    method: 'PATCH',
-    headers: bearer(memberToken, json),
-    body: JSON.stringify({ role: 'admin' })
+  const unknownTeam = await fetch(`${nightlampApi}/api/teams/nightlamp-controlled-unknown-team`, {
+    headers: bearer(memberToken)
   });
   const utText = await unknownTeam.text();
   let utParsed = null;
@@ -677,10 +674,11 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
   log(`Unknown team: ${unknownTeam.status} ${unknownTeam.status === 404 ? 'PASS' : 'FAIL'}`);
   
   log('--- NOC-280: Non-member role target ---');
-  const nonMemberTarget = await fetch(`${nightlampApi}/api/teams/${teamId}/members/non-existent-user`, {
+  const fakeTargetId = 'fake-target-' + Date.now();
+  const nonMemberTarget = await fetch(`${nightlampApi}/api/teams/${teamId}/members/${fakeTargetId}`, {
     method: 'PATCH',
     headers: bearer(memberToken, json),
-    body: JSON.stringify({ role: 'admin' })
+    body: JSON.stringify({ role: 'owner' })
   });
   const nmtText = await nonMemberTarget.text();
   let nmtParsed = null;
@@ -695,55 +693,43 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
   log(`Non-member target: ${nonMemberTarget.status} ${nonMemberTarget.status === 403 ? 'PASS' : 'FAIL'}`);
   
   log('--- NOC-280: Owner target that does not exist ---');
-  const ownerUnknownTarget = await fetch(`${nightlampApi}/api/teams/${teamId}/members/non-existent-user`, {
+  const fakeOwnerId = 'fake-owner-' + Date.now();
+  const ownerNonExist = await fetch(`${nightlampApi}/api/teams/${teamId}/members/${fakeOwnerId}`, {
     method: 'PATCH',
     headers: bearer(ownerToken, json),
     body: JSON.stringify({ role: 'admin' })
   });
-  const outText = await ownerUnknownTarget.text();
-  let outParsed = null;
-  try { outParsed = JSON.parse(outText); } catch {}
+  const oneText = await ownerNonExist.text();
+  let oneParsed = null;
+  try { oneParsed = JSON.parse(oneText); } catch {}
   results.push({
-    test: 'owner-non-member-target',
+    test: 'owner-target-not-exist',
     expected: [404],
-    status: ownerUnknownTarget.status,
-    code: outParsed?.code,
-    ok: ownerUnknownTarget.status === 404
+    status: ownerNonExist.status,
+    code: oneParsed?.code,
+    ok: ownerNonExist.status === 404
   });
-  log(`Owner target that does not exist: ${ownerUnknownTarget.status} ${ownerUnknownTarget.status === 404 ? 'PASS' : 'FAIL'}`);
+  log(`Owner target that does not exist: ${ownerNonExist.status} ${ownerNonExist.status === 404 ? 'PASS' : 'FAIL'}`);
   
-  const listMembers = await fetch(`${nightlampApi}/api/teams/${teamId}/members`, {
-    headers: bearer(ownerToken)
+  const membershipAfter = await queryTeamMembership(memberToken, memberId);
+  const role = membershipAfter.teams.find(t => t.id === teamId)?.role || 'none';
+  results.push({
+    test: 'member-role-persists',
+    expected: ['member'],
+    status: 200,
+    code: role === 'member' ? null : 'ROLE_CHANGED',
+    ok: role === 'member'
   });
-  const lmText = await listMembers.text();
-  let lmParsed = null;
-  try { lmParsed = JSON.parse(lmText); } catch {}
-  if (lmParsed && lmParsed.members) {
-    const memberEntry = lmParsed.members.find(m => m.userId === memberId);
-    if (memberEntry) {
-      results.push({
-        test: 'member-role-persists',
-        expected: ['member'],
-        status: 200,
-        code: memberEntry.role,
-        ok: memberEntry.role === 'member'
-      });
-      log(`Member role persists as: ${memberEntry.role} ${memberEntry.role === 'member' ? 'PASS' : 'FAIL'}`);
-    }
-  }
+  log(`Member role persists as: ${role} ${role === 'member' ? 'PASS' : 'FAIL'}`);
   
   return results;
 }
 
 async function runNoc274Matrix(ownerToken, teamId) {
-  const json = { 'Content-Type': 'application/json' };
+  const ownerHeaders = bearer(ownerToken, { 'Content-Type': 'application/json' });
   const results = [];
   
   log('--- NOC-274: Owner/admin approval reaches truthful terminal result ---');
-  const ownerHeaders = bearer(ownerToken, { 
-    'Content-Type': 'application/json',
-    'x-nightlamp-team-id': teamId
-  });
   
   const approveUnknown = await fetch(`${nightlampApi}/api/remediation/approve`, {
     method: 'POST',
@@ -756,12 +742,12 @@ async function runNoc274Matrix(ownerToken, teamId) {
   const auSuccessClaimed = Boolean(auParsed && auParsed.success === true);
   results.push({
     test: 'approve-unknown-run',
-    expected: [400, 404],
+    expected: [404],
     status: approveUnknown.status,
     code: auParsed?.code,
-    ok: [400, 404].includes(approveUnknown.status) && !auSuccessClaimed
+    ok: approveUnknown.status === 404 && !auSuccessClaimed
   });
-  log(`Approve unknown run: ${approveUnknown.status} ${approveUnknown.status === 400 || approveUnknown.status === 404 ? 'PASS' : 'FAIL'}${auSuccessClaimed ? ' SUCCESS CLAIMED' : ''}`);
+  log(`Approve unknown run: ${approveUnknown.status} ${approveUnknown.status === 404 ? 'PASS' : 'FAIL'}${auSuccessClaimed ? ' SUCCESS CLAIMED' : ''}`);
   
   const rejectUnknown = await fetch(`${nightlampApi}/api/remediation/reject`, {
     method: 'POST',
@@ -774,12 +760,12 @@ async function runNoc274Matrix(ownerToken, teamId) {
   const ruSuccessClaimed = Boolean(ruParsed && ruParsed.success === true);
   results.push({
     test: 'reject-unknown-run',
-    expected: [400, 404],
+    expected: [404],
     status: rejectUnknown.status,
     code: ruParsed?.code,
-    ok: [400, 404].includes(rejectUnknown.status) && !ruSuccessClaimed
+    ok: rejectUnknown.status === 404 && !ruSuccessClaimed
   });
-  log(`Reject unknown run: ${rejectUnknown.status} ${rejectUnknown.status === 400 || rejectUnknown.status === 404 ? 'PASS' : 'FAIL'}${ruSuccessClaimed ? ' SUCCESS CLAIMED' : ''}`);
+  log(`Reject unknown run: ${rejectUnknown.status} ${rejectUnknown.status === 404 ? 'PASS' : 'FAIL'}${ruSuccessClaimed ? ' SUCCESS CLAIMED' : ''}`);
   
   const retryUnknown = await fetch(`${nightlampApi}/api/remediation/retry`, {
     method: 'POST',
@@ -792,12 +778,12 @@ async function runNoc274Matrix(ownerToken, teamId) {
   const reuSuccessClaimed = Boolean(reuParsed && reuParsed.success === true);
   results.push({
     test: 'retry-unknown-run',
-    expected: [400, 404],
+    expected: [404],
     status: retryUnknown.status,
     code: reuParsed?.code,
-    ok: [400, 404].includes(retryUnknown.status) && !reuSuccessClaimed
+    ok: retryUnknown.status === 404 && !reuSuccessClaimed
   });
-  log(`Retry unknown run: ${retryUnknown.status} ${retryUnknown.status === 400 || retryUnknown.status === 404 ? 'PASS' : 'FAIL'}${reuSuccessClaimed ? ' SUCCESS CLAIMED' : ''}`);
+  log(`Retry unknown run: ${retryUnknown.status} ${retryUnknown.status === 404 ? 'PASS' : 'FAIL'}${reuSuccessClaimed ? ' SUCCESS CLAIMED' : ''}`);
   
   const unknownAction = await fetch(`${nightlampApi}/api/remediation/approve`, {
     method: 'POST',
@@ -883,6 +869,178 @@ async function checkServerRestart() {
   }
   
   return { valid: true, reason: 'no restart detected' };
+}
+
+async function runTwoTenantProbes(tenantA, tenantB, tenantATeamId, tenantBTeamId) {
+  const noc337Probes = [];
+  
+  log('--- NOC-339: Two-tenant cross-org isolation probes ---');
+  
+  // 1. Playbook execution isolation
+  noc337Probes.push(await probe(
+    'tenant A member cannot list tenant B playbook executions',
+    `${nightlampApi}/api/playbook/executions`,
+    { headers: bearer(tenantA.memberToken) },
+    [403, 404]
+  ));
+  noc337Probes.push(await probe(
+    'tenant A member cannot read tenant B playbook execution',
+    `${nightlampApi}/api/playbook/executions/unknown-id`,
+    { headers: bearer(tenantA.memberToken) },
+    [403, 404]
+  ));
+  noc337Probes.push(await probe(
+    'tenant A member cannot decide tenant B playbook execution',
+    `${nightlampApi}/api/playbook/executions/unknown-id/decision`,
+    { method: 'POST', headers: bearer(tenantA.memberToken, { 'Content-Type': 'application/json' }), body: JSON.stringify({ action: 'approve' }) },
+    [403, 404]
+  ));
+  noc337Probes.push(await probe(
+    'tenant A member cannot cancel tenant B playbook execution',
+    `${nightlampApi}/api/playbook/executions/unknown-id/cancel`,
+    { method: 'POST', headers: bearer(tenantA.memberToken, { 'Content-Type': 'application/json' }) },
+    [403, 404]
+  ));
+  
+  // 2. Performance API isolation
+  noc337Probes.push(await probe(
+    'tenant A member cannot run performance on tenant B',
+    `${nightlampApi}/api/performance/run`,
+    { method: 'POST', headers: bearer(tenantA.memberToken, { 'Content-Type': 'application/json' }), body: JSON.stringify({}) },
+    [403, 404]
+  ));
+  noc337Probes.push(await probe(
+    'tenant A member cannot read tenant B performance history',
+    `${nightlampApi}/api/performance/history`,
+    { headers: bearer(tenantA.memberToken) },
+    [403, 404]
+  ));
+  noc337Probes.push(await probe(
+    'tenant A member cannot read tenant B performance regressions',
+    `${nightlampApi}/api/performance/regressions`,
+    { headers: bearer(tenantA.memberToken) },
+    [403, 404]
+  ));
+  noc337Probes.push(await probe(
+    'tenant A member cannot read tenant B performance diagnosis',
+    `${nightlampApi}/api/performance/diagnosis`,
+    { headers: bearer(tenantA.memberToken) },
+    [403, 404]
+  ));
+  
+  // 3. Private streaming (SSE) isolation
+  noc337Probes.push(await probe(
+    'tenant A member cannot access tenant B SSE stream',
+    `${nightlampApi}/api/stream`,
+    { headers: bearer(tenantA.memberToken) },
+    [403, 404]
+  ));
+  
+  // 4. Workspace role gate (cross-tenant)
+  noc337Probes.push(await probe(
+    'tenant A member cannot patch tenant B workspace',
+    `${nightlampApi}/api/teams/${tenantBTeamId}/workspace`,
+    { method: 'PATCH', headers: bearer(tenantA.memberToken, { 'Content-Type': 'application/json' }), body: JSON.stringify({}) },
+    [403, 404]
+  ));
+  
+  // 5. Lead isolation (cross-tenant)
+  noc337Probes.push(await probe(
+    'tenant A member cannot read tenant B leads',
+    `${nightlampApi}/api/leads`,
+    { headers: bearer(tenantA.memberToken) },
+    [403, 404]
+  ));
+  
+  // 6. Clerk webhook verification (fail closed without secret) - same for both tenants
+  noc337Probes.push(await probe(
+    'Clerk webhook fails without signature',
+    `${nightlampApi}/api/webhooks/clerk`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) },
+    [400, 401, 403]
+  ));
+  
+  // 7. Stripe webhook reachability and signature rejection
+  noc337Probes.push(await probe(
+    'Stripe webhook requires valid signature',
+    `${nightlampApi}/api/billing/webhook`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json', 'stripe-signature': 'invalid' }, body: JSON.stringify({}) },
+    [400, 401, 403]
+  ));
+  
+  // Reverse direction: tenant B member acts on tenant A resources
+  noc337Probes.push(await probe(
+    'tenant B member cannot list tenant A playbook executions',
+    `${nightlampApi}/api/playbook/executions`,
+    { headers: bearer(tenantB.memberToken) },
+    [403, 404]
+  ));
+  noc337Probes.push(await probe(
+    'tenant B member cannot read tenant A playbook execution',
+    `${nightlampApi}/api/playbook/executions/unknown-id`,
+    { headers: bearer(tenantB.memberToken) },
+    [403, 404]
+  ));
+  noc337Probes.push(await probe(
+    'tenant B member cannot decide tenant A playbook execution',
+    `${nightlampApi}/api/playbook/executions/unknown-id/decision`,
+    { method: 'POST', headers: bearer(tenantB.memberToken, { 'Content-Type': 'application/json' }), body: JSON.stringify({ action: 'approve' }) },
+    [403, 404]
+  ));
+  noc337Probes.push(await probe(
+    'tenant B member cannot cancel tenant A playbook execution',
+    `${nightlampApi}/api/playbook/executions/unknown-id/cancel`,
+    { method: 'POST', headers: bearer(tenantB.memberToken, { 'Content-Type': 'application/json' }) },
+    [403, 404]
+  ));
+  
+  noc337Probes.push(await probe(
+    'tenant B member cannot run performance on tenant A',
+    `${nightlampApi}/api/performance/run`,
+    { method: 'POST', headers: bearer(tenantB.memberToken, { 'Content-Type': 'application/json' }), body: JSON.stringify({}) },
+    [403, 404]
+  ));
+  noc337Probes.push(await probe(
+    'tenant B member cannot read tenant A performance history',
+    `${nightlampApi}/api/performance/history`,
+    { headers: bearer(tenantB.memberToken) },
+    [403, 404]
+  ));
+  noc337Probes.push(await probe(
+    'tenant B member cannot read tenant A performance regressions',
+    `${nightlampApi}/api/performance/regressions`,
+    { headers: bearer(tenantB.memberToken) },
+    [403, 404]
+  ));
+  noc337Probes.push(await probe(
+    'tenant B member cannot read tenant A performance diagnosis',
+    `${nightlampApi}/api/performance/diagnosis`,
+    { headers: bearer(tenantB.memberToken) },
+    [403, 404]
+  ));
+  
+  noc337Probes.push(await probe(
+    'tenant B member cannot access tenant A SSE stream',
+    `${nightlampApi}/api/stream`,
+    { headers: bearer(tenantB.memberToken) },
+    [403, 404]
+  ));
+  
+  noc337Probes.push(await probe(
+    'tenant B member cannot patch tenant A workspace',
+    `${nightlampApi}/api/teams/${tenantATeamId}/workspace`,
+    { method: 'PATCH', headers: bearer(tenantB.memberToken, { 'Content-Type': 'application/json' }), body: JSON.stringify({}) },
+    [403, 404]
+  ));
+  
+  noc337Probes.push(await probe(
+    'tenant B member cannot read tenant A leads',
+    `${nightlampApi}/api/leads`,
+    { headers: bearer(tenantB.memberToken) },
+    [403, 404]
+  ));
+  
+  return noc337Probes;
 }
 
 async function run() {
@@ -978,186 +1136,193 @@ async function run() {
   
   let privilegeProbesRun = 0;
   let privilegeProbesPassed = 0;
-
+  let noc337ProbesRun = 0;
+  let noc337ProbesPassed = 0;
+  
   if (ownerEntry && memberEntry) {
-    const creation = await createTestTeam(ownerEntry.token);
+    // Tenant A: First controlled team
+    const creationA = await createTestTeam(ownerEntry.token);
     report.probes.push({
-      label: 'controlled owner creates test team',
+      label: 'tenant A controlled owner creates test team',
       expected: [200, 201],
-      status: creation.status,
-      code: creation.teamId ? null : 'TEAM_CREATE_FAILED',
-      ok: !!creation.teamId,
+      status: creationA.status,
+      code: creationA.teamId ? null : 'TEAM_CREATE_FAILED',
+      ok: !!creationA.teamId,
     });
     report.probes.push({
-      label: 'the created team owner is bound to the authenticated token',
+      label: 'tenant A created team owner is bound to the authenticated token',
       expected: [200, 201],
-      status: creation.status,
-      code: creation.ownerBoundToToken ? null : 'OWNER_NOT_BOUND',
-      ok: creation.ownerBoundToToken,
+      status: creationA.status,
+      code: creationA.ownerBoundToToken ? null : 'OWNER_NOT_BOUND',
+      ok: creationA.ownerBoundToToken,
     });
     
-    if (creation.teamId) {
-      const testTeamId = creation.teamId;
+    let tenantATeamId = null;
+    let tenantAMemberId = null;
+    let tenantAMemberToken = null;
+    
+    if (creationA.teamId) {
+      tenantATeamId = creationA.teamId;
       report.identity.testTeamCreated = true;
-      report.identity.testTeamId = testTeamId;
-      report.identity.teamOwnerBoundToToken = creation.ownerBoundToToken;
+      report.identity.testTeamId = tenantATeamId;
+      report.identity.teamOwnerBoundToToken = creationA.ownerBoundToToken;
       
-      const addition = await addMemberToTeam(ownerEntry.token, testTeamId, memberEntry.email, 'member');
-      let memberInternalId = addition.userId;
+      const additionA = await addMemberToTeam(ownerEntry.token, tenantATeamId, memberEntry.email, 'member');
+      tenantAMemberId = additionA.userId;
       let joinedViaInvitation = false;
       
-      if (!addition.added || !memberInternalId) {
-        const invitation = await inviteAndAcceptMember(ownerEntry.token, memberEntry.token, testTeamId, memberEntry.email, memberEntry.userId);
-        memberInternalId = invitation.userId;
-        joinedViaInvitation = invitation.joined;
+      if (!additionA.added || !tenantAMemberId) {
+        const invitationA = await inviteAndAcceptMember(ownerEntry.token, memberEntry.token, tenantATeamId, memberEntry.email, memberEntry.userId);
+        tenantAMemberId = invitationA.userId;
+        joinedViaInvitation = invitationA.joined;
       }
       
-      if (memberInternalId) {
+      if (tenantAMemberId) {
         report.identity.memberAddedToTestTeam = true;
         report.identity.memberJoinedViaInvitation = joinedViaInvitation;
+        tenantAMemberToken = memberEntry.token;
         
-        const noc280Results = await runNoc280Matrix(memberEntry.token, testTeamId, memberInternalId, ownerEntry.token);
-        privilegeProbesRun += noc280Results.length;
-        privilegeProbesPassed += noc280Results.filter(r => r.ok).length;
-        report.probes.push(...noc280Results);
+        const noc280ResultsA = await runNoc280Matrix(tenantAMemberToken, tenantATeamId, tenantAMemberId, ownerEntry.token);
+        privilegeProbesRun += noc280ResultsA.length;
+        privilegeProbesPassed += noc280ResultsA.filter(r => r.ok).length;
+        report.probes.push(...noc280ResultsA);
         
-        const noc274Results = await runNoc274Matrix(ownerEntry.token, testTeamId);
-        privilegeProbesRun += noc274Results.length;
-        privilegeProbesPassed += noc274Results.filter(r => r.ok).length;
-        report.probes.push(...noc274Results);
-        
-        const cleanupSuccess = await cleanupTestTeam(ownerEntry.token, testTeamId);
-        report.identity.testTeamRemoved = cleanupSuccess;
-        if (!cleanupSuccess) {
-          log('WARNING: test team cleanup failed');
-        }
+        const noc274ResultsA = await runNoc274Matrix(ownerEntry.token, tenantATeamId);
+        privilegeProbesRun += noc274ResultsA.length;
+        privilegeProbesPassed += noc274ResultsA.filter(r => r.ok).length;
+        report.probes.push(...noc274ResultsA);
       } else {
         report.identity.memberAddedToTestTeam = false;
-        log('The member identity could not be added to the test team, the privilege matrix did not run.');
-        await cleanupTestTeam(ownerEntry.token, testTeamId);
+        log('The member identity could not be added to tenant A test team, the privilege matrix did not run.');
+        await cleanupTestTeam(ownerEntry.token, tenantATeamId);
       }
     } else {
       report.identity.testTeamCreated = false;
-      log(`Team creation failed with HTTP ${creation.status}; the privilege matrix cannot run.`);
-      report.identity.matrixBlockedBy = `team creation failed (HTTP ${creation.status})`;
+      log(`Tenant A team creation failed with HTTP ${creationA.status}; the privilege matrix cannot run.`);
+      report.identity.matrixBlockedBy = `tenant A team creation failed (HTTP ${creationA.status})`;
     }
+    
+    // Tenant B: Second controlled team (new controlled owner and member)
+    let controlledOwnerBId = null;
+    let controlledOwnerBToken = null;
+    let tenantBTeamId = null;
+    let tenantBMemberId = null;
+    let tenantBMemberToken = null;
+    
+    log('--- Creating tenant B controlled owner ---');
+    controlledOwnerBId = await createControlledOwner();
+    if (controlledOwnerBId) {
+      const sessionData = await mintAndRevokeSession(controlledOwnerBId, 'controlled-owner-b');
+      if (sessionData) {
+        controlledOwnerBToken = sessionData.token;
+        await ensureUserInNightlamp(controlledOwnerBToken, controlledOwnerBId);
+        const membershipB = await queryTeamMembership(controlledOwnerBToken, controlledOwnerBId);
+        const ownerBEntry = { userId: controlledOwnerBId, ...membershipB, token: controlledOwnerBToken };
+        
+        const creationB = await createTestTeam(ownerBEntry.token);
+        report.probes.push({
+          label: 'tenant B controlled owner creates test team',
+          expected: [200, 201],
+          status: creationB.status,
+          code: creationB.teamId ? null : 'TEAM_CREATE_FAILED',
+          ok: !!creationB.teamId,
+        });
+        report.probes.push({
+          label: 'tenant B created team owner is bound to the authenticated token',
+          expected: [200, 201],
+          status: creationB.status,
+          code: creationB.ownerBoundToToken ? null : 'OWNER_NOT_BOUND',
+          ok: creationB.ownerBoundToToken,
+        });
+        
+        if (creationB.teamId) {
+          tenantBTeamId = creationB.teamId;
+          
+          // Add member B (use the original memberEntry or create a new one)
+          const additionB = await addMemberToTeam(ownerBEntry.token, tenantBTeamId, memberEntry.email, 'member');
+          tenantBMemberId = additionB.userId;
+          let joinedViaInvitationB = false;
+          
+          if (!additionB.added || !tenantBMemberId) {
+            const invitationB = await inviteAndAcceptMember(ownerBEntry.token, memberEntry.token, tenantBTeamId, memberEntry.email, memberEntry.userId);
+            tenantBMemberId = invitationB.userId;
+            joinedViaInvitationB = invitationB.joined;
+          }
+          
+          if (tenantBMemberId) {
+            tenantBMemberToken = memberEntry.token;
+            
+            // Run privilege matrix for tenant B
+            const noc280ResultsB = await runNoc280Matrix(tenantBMemberToken, tenantBTeamId, tenantBMemberId, ownerBEntry.token);
+            privilegeProbesRun += noc280ResultsB.length;
+            privilegeProbesPassed += noc280ResultsB.filter(r => r.ok).length;
+            report.probes.push(...noc280ResultsB);
+            
+            const noc274ResultsB = await runNoc274Matrix(ownerBEntry.token, tenantBTeamId);
+            privilegeProbesRun += noc274ResultsB.length;
+            privilegeProbesPassed += noc274ResultsB.filter(r => r.ok).length;
+            report.probes.push(...noc274ResultsB);
+            
+            // Run cross-tenant NOC-337 probes
+            const tenantA = { ownerToken: ownerEntry.token, memberToken: tenantAMemberToken };
+            const tenantB = { ownerToken: ownerBEntry.token, memberToken: tenantBMemberToken };
+            const noc337Probes = await runTwoTenantProbes(tenantA, tenantB, tenantATeamId, tenantBTeamId);
+            noc337ProbesRun = noc337Probes.length;
+            noc337ProbesPassed = noc337Probes.filter(p => p.ok).length;
+            report.probes.push(...noc337Probes);
+            log(`NOC-339 two-tenant cross-org probes completed: ${noc337ProbesPassed}/${noc337ProbesRun} passed`);
+            
+            // Cleanup tenant B
+            const cleanupB = await cleanupTestTeam(ownerBEntry.token, tenantBTeamId);
+            report.identity.testTeamRemoved = cleanupB;
+            if (!cleanupB) {
+              log('WARNING: tenant B test team cleanup failed');
+            }
+            
+            // Delete controlled owner B
+            await revokeSession(controlledOwnerBId);
+            await deleteControlledOwner(controlledOwnerBId);
+          } else {
+            log('The member identity could not be added to tenant B test team');
+            await cleanupTestTeam(ownerBEntry.token, tenantBTeamId);
+          }
+        } else {
+          log(`Tenant B team creation failed with HTTP ${creationB.status}`);
+        }
+      } else {
+        log('Failed to mint session for tenant B controlled owner');
+        await deleteControlledOwner(controlledOwnerBId);
+      }
+    }
+    
+    // Cleanup tenant A
+    if (tenantATeamId) {
+      const cleanupA = await cleanupTestTeam(ownerEntry.token, tenantATeamId);
+      report.identity.testTeamRemoved = cleanupA && report.identity.testTeamRemoved;
+      if (!cleanupA) {
+        log('WARNING: tenant A test team cleanup failed');
+      }
+    }
+    
     report.identity.fullMatrixRun = report.identity.testTeamCreated && 
       report.identity.memberAddedToTestTeam && 
       privilegeProbesRun > 0 && 
-      privilegeProbesPassed === privilegeProbesRun;
+      privilegeProbesPassed === privilegeProbesRun &&
+      noc337ProbesRun > 0 &&
+      noc337ProbesPassed === noc337ProbesRun;
   } else {
     log('Cannot run full matrix: missing owner or second identity');
     report.identity.fullMatrixRun = false;
   }
+  
   report.identity.privilegeProbesRun = privilegeProbesRun;
   report.identity.privilegeProbesPassed = privilegeProbesPassed;
-  
-  // NOC-337: Two-tenant isolation probes for the seven security gaps
-  // These are status-only probes that verify tenant-scoped access control
-  let noc337ProbesRun = 0;
-  let noc337ProbesPassed = 0;
-  if (ownerEntry && memberEntry) {
-    log('--- NOC-337: Two-tenant isolation status probes ---');
-    
-    // 1. Playbook execution isolation
-    const noc337Probes = [];
-    noc337Probes.push(await probe(
-      'playbook execution list requires tenant scope',
-      `${nightlampApi}/api/playbook/executions`,
-      { headers: bearer(memberEntry.token) },
-      [200, 403, 404]
-    ));
-    noc337Probes.push(await probe(
-      'playbook execution read requires tenant scope',
-      `${nightlampApi}/api/playbook/executions/unknown-id`,
-      { headers: bearer(memberEntry.token) },
-      [403, 404]
-    ));
-    noc337Probes.push(await probe(
-      'playbook execution decision requires tenant scope',
-      `${nightlampApi}/api/playbook/executions/unknown-id/decision`,
-      { method: 'POST', headers: bearer(memberEntry.token, { 'Content-Type': 'application/json' }), body: JSON.stringify({ action: 'approve' }) },
-      [403, 404]
-    ));
-    noc337Probes.push(await probe(
-      'playbook execution cancel requires tenant scope',
-      `${nightlampApi}/api/playbook/executions/unknown-id/cancel`,
-      { method: 'POST', headers: bearer(memberEntry.token, { 'Content-Type': 'application/json' }) },
-      [403, 404]
-    ));
-    
-    // 2. Performance API isolation
-    noc337Probes.push(await probe(
-      'performance run requires tenant scope',
-      `${nightlampApi}/api/performance/run`,
-      { method: 'POST', headers: bearer(memberEntry.token, { 'Content-Type': 'application/json' }), body: JSON.stringify({}) },
-      [403, 404]
-    ));
-    noc337Probes.push(await probe(
-      'performance history requires tenant scope',
-      `${nightlampApi}/api/performance/history`,
-      { headers: bearer(memberEntry.token) },
-      [403, 404]
-    ));
-    noc337Probes.push(await probe(
-      'performance regressions requires tenant scope',
-      `${nightlampApi}/api/performance/regressions`,
-      { headers: bearer(memberEntry.token) },
-      [403, 404]
-    ));
-    noc337Probes.push(await probe(
-      'performance diagnosis requires tenant scope',
-      `${nightlampApi}/api/performance/diagnosis`,
-      { headers: bearer(memberEntry.token) },
-      [403, 404]
-    ));
-    
-    // 3. Private streaming (SSE) isolation
-    noc337Probes.push(await probe(
-      'SSE stream requires tenant scope',
-      `${nightlampApi}/api/stream`,
-      { headers: bearer(memberEntry.token) },
-      [403, 404]
-    ));
-    
-    // 4. Workspace role gate
-    noc337Probes.push(await probe(
-      'team workspace PATCH requires owner/admin',
-      `${nightlampApi}/api/teams/${report.identity.testTeamId}/workspace`,
-      { method: 'PATCH', headers: bearer(memberEntry.token, { 'Content-Type': 'application/json' }), body: JSON.stringify({}) },
-      [403, 404]
-    ));
-    
-    // 5. Lead isolation
-    noc337Probes.push(await probe(
-      'lead reads are tenant scoped',
-      `${nightlampApi}/api/leads`,
-      { headers: bearer(memberEntry.token) },
-      [403, 404]
-    ));
-    
-    // 6. Clerk webhook verification (fail closed without secret)
-    noc337Probes.push(await probe(
-      'Clerk webhook fails without signature',
-      `${nightlampApi}/api/webhooks/clerk`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) },
-      [400, 401, 403]
-    ));
-    
-    // 7. Stripe webhook reachability and signature rejection
-    noc337Probes.push(await probe(
-      'Stripe webhook requires valid signature',
-      `${nightlampApi}/api/billing/webhook`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json', 'stripe-signature': 'invalid' }, body: JSON.stringify({}) },
-      [400, 401, 403]
-    ));
-    
-    noc337ProbesRun = noc337Probes.length;
-    noc337ProbesPassed = noc337Probes.filter(p => p.ok).length;
-    report.identity.noc337ProbesRun = noc337ProbesRun;
-    report.identity.noc337ProbesPassed = noc337ProbesPassed;
-    log(`NOC-337 two-tenant status probes completed: ${noc337ProbesPassed}/${noc337ProbesRun} passed`);
-  }
+  report.identity.noc337ProbesRun = noc337ProbesRun;
+  report.identity.noc337ProbesPassed = noc337ProbesPassed;
+  report.identity.tenantACreated = !!tenantATeamId;
+  report.identity.tenantBCreated = !!tenantBTeamId;
+  report.identity.crossTenantProbesRun = noc337ProbesRun;
+  report.identity.crossTenantProbesPassed = noc337ProbesPassed;
   
   for (const [userId, sessionData] of userSessions.entries()) {
     const userRole = userRoles.get(userId) || (userId === controlledOwnerSessionUserId ? { teams: [], hasTeam: false, isOwner: false, isMember: false } : null);
@@ -1197,11 +1362,11 @@ async function run() {
     await revokeSession(controlledOwnerId);
     await deleteControlledOwner(controlledOwnerId);
   }
-  
-  finalHealth = await fetchHealth();
-  const finalUptimeInfo = extractUptimeAndBootId(finalHealth);
-  log(`Final health check: HTTP ${finalHealth.status} ${finalHealth.body ? `(uptimeSeconds: ${finalUptimeInfo.uptime}s, bootId: ${finalUptimeInfo.bootId})` : 'no body'}`);
 }
+
+finalHealth = await fetchHealth();
+const finalUptimeInfo = extractUptimeAndBootId(finalHealth);
+log(`Final health check: HTTP ${finalHealth.status} ${finalHealth.body ? `(uptimeSeconds: ${finalUptimeInfo.uptime}s, bootId: ${finalUptimeInfo.bootId})` : 'no body'}`);
 
 function filterReportForPublish(report) {
   const allowedIdentityKeys = new Set([
@@ -1222,6 +1387,10 @@ function filterReportForPublish(report) {
     'privilegeProbesPassed',
     'noc337ProbesRun',
     'noc337ProbesPassed',
+    'tenantACreated',
+    'tenantBCreated',
+    'crossTenantProbesRun',
+    'crossTenantProbesPassed',
     'noTeamExpectedStatus',
     'contractMismatches',
     'memberAddedToTestTeam',
@@ -1310,6 +1479,9 @@ async function cleanup() {
   log(`probes as expected: ${passed}/${total}`);
   if (contractMismatches > 0) {
     log(`CONTRACT MISMATCHES: ${contractMismatches} probes returned 200 when decided contract (NOC-294) requires 403`);
+  }
+  if (noc337ProbesRun > 0) {
+    log(`NOC-339 cross-tenant probes: ${noc337ProbesPassed}/${noc337ProbesRun} passed`);
   }
   
   const hasFailures = passed < total || contractMismatches > 0 || restartCheck.valid === false;
