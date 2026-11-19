@@ -106,16 +106,29 @@ async function init(): Promise<void> {
     console.log('[Nightlamp] UptimeRobot not configured (set UPTIMEROBOT_API_KEY)');
   }
 
-  const stripeKey = process.env.STRIPE_SECRET_KEY;
+const stripeKey = process.env.STRIPE_SECRET_KEY;
   const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
   const baseUrl = process.env.BASE_URL || `http://localhost:${API_PORT}`;
 
+  const stripePriceBasic = process.env.STRIPE_PRICE_BASIC;
+  const stripePriceAdvanced = process.env.STRIPE_PRICE_ADVANCED;
+  const stripePriceWhiteGlove = process.env.STRIPE_PRICE_WHITE_GLOVE;
+
   if (stripeKey) {
+    if (!stripePriceBasic || !stripePriceAdvanced || !stripePriceWhiteGlove) {
+      console.warn(
+        '[Nightlamp] STRIPE_SECRET_KEY is set but one or more price IDs are missing (' +
+          `STRIPE_PRICE_BASIC=${stripePriceBasic}, STRIPE_PRICE_ADVANCED=${stripePriceAdvanced}, ` +
+          `STRIPE_PRICE_WHITE_GLOVE=${stripePriceWhiteGlove}). ` +
+          'Billing API will fail closed until all price IDs are configured. ' +
+          'Run `npm run stripe:catalogue:dry-run` to see the canonical price mappings.'
+      );
+    }
     const stripeClient = createStripeClient({
       secretKey: stripeKey,
-      priceBasic: process.env.STRIPE_PRICE_BASIC,
-      priceAdvanced: process.env.STRIPE_PRICE_ADVANCED,
-      priceWhiteGlove: process.env.STRIPE_PRICE_WHITE_GLOVE,
+      priceBasic: stripePriceBasic,
+      priceAdvanced: stripePriceAdvanced,
+      priceWhiteGlove: stripePriceWhiteGlove,
     });
 
     startApiServer(db, {
