@@ -1,7 +1,7 @@
 # NOC-314 Operational Debt List
 
 **Created:** 2026-11-18
-**Branch:** `ops/deployment-hardening`
+**Branch:** `release/deployment-hardening`
 **Owner:** Platform Engineer
 
 ## Deployment Risks

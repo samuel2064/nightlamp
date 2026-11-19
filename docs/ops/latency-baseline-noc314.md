@@ -2,7 +2,7 @@
 
 **Measurement Date:** TBD (to be run against production)
 **Method:** Production API probing + SQL.js EXPLAIN QUERY PLAN
-**Branch:** `ops/deployment-hardening`
+**Branch:** `release/deployment-hardening`
 
 ## Measurement Method
 
