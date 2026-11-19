@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - main
       - ops/controlled-identity-verification
 
 permissions:
@@ -19,8 +20,24 @@ env:
   RESULT_FILE: /tmp/controlled-identity-result.json
 
 jobs:
+  guard-checks:
+    name: Guard checks - ownership claims and identifier redaction
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Run harness ownership claim guard
+        run: |
+          set -euo pipefail
+          node ops/guard-harness.js
+        env:
+          RESULT_FILE: /tmp/controlled-identity-result.json
+
   verify:
     name: Verify controlled identities and run NOC-280/NOC-274 production matrix
+    needs: guard-checks
     runs-on: ubuntu-latest
     env:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
@@ -46,6 +63,13 @@ jobs:
           node ops/verify-controlled-identities.js
           echo "--- the report, values excluded ---"
           cat "$RESULT_FILE"
+
+      - name: Run report identifier redaction guard
+        run: |
+          set -euo pipefail
+          node ops/guard-harness.js
+        env:
+          RESULT_FILE: /tmp/controlled-identity-result.json
 
       - name: Publish the status-only report
         if: always()
