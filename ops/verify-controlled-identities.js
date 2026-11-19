@@ -637,12 +637,12 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
   try { utParsed = JSON.parse(utText); } catch {}
   results.push({
     test: 'unknown-team',
-    expected: [403],
+    expected: [404],
     status: unknownTeam.status,
     code: utParsed?.code,
-    ok: unknownTeam.status === 403
+    ok: unknownTeam.status === 404
   });
-  log(`Unknown team: ${unknownTeam.status} ${unknownTeam.status === 403 ? 'PASS' : 'FAIL'}`);
+  log(`Unknown team: ${unknownTeam.status} ${unknownTeam.status === 404 ? 'PASS' : 'FAIL'}`);
   
   log('--- NOC-280: Non-member role target ---');
   const nonMemberTarget = await fetch(`${nightlampApi}/api/teams/${teamId}/members/non-existent-user`, {
@@ -1040,9 +1040,28 @@ function filterReportForPublish(report) {
     }
   }
   
+  const probeLabels = {
+    'self-promotion-to-owner': 'a member cannot promote itself to owner',
+    'self-promotion-to-admin': 'a member cannot promote itself to admin',
+    'member-add-member': 'a member cannot add another member',
+    'member-remove-self': 'a member cannot remove itself',
+    'member-rewrite-team': 'a member cannot rewrite the team',
+    'member-delete-team': 'a member cannot delete the team',
+    'member-create-admin-invitation': 'a member cannot create an admin invitation',
+    'member-admin-endpoint': 'a member cannot reach the admin endpoint',
+    'unknown-team': 'a member cannot reach a team it does not belong to',
+    'owner-non-member-target': 'the owner gets a truthful 404 for a target that does not exist',
+    'member-role-persists': 'the member role persists after the attempts',
+    'approve-unknown-run': 'approving an unknown run does not claim success',
+    'reject-unknown-run': 'rejecting an unknown run does not claim success',
+    'retry-unknown-run': 'retrying an unknown run does not claim success',
+    'unknown-action-rejected': 'an unknown action is rejected without claiming success',
+  };
+  
   return {
     probes: report.probes.map(p => ({
-      label: p.label,
+      label: p.label || probeLabels[p.test] || p.test || 'a probe',
+      test: p.test,
       expected: p.expected,
       expectedStatusUsed: p.expectedStatusUsed,
       status: p.status,
