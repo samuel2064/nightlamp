@@ -47,7 +47,7 @@ jobs:
             echo "PASS: Stale harness fixture correctly FAILS the guard"
           fi
       
-      - name: Run identifier redaction guard on fixture report
+      - name: Run identifier redaction guard on fixture report (PR + matrix)
         run: |
           node ops/guard-harness.js ops/verify-controlled-identities.js ops/fixtures/status-report.json
 

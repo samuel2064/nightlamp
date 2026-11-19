@@ -113,7 +113,10 @@ async function main() {
   }
   
   console.log('\n=== Checking fixture for ownership claims (stale blob test) ===');
-  if (fs.existsSync(fixturePath)) {
+  if (!fs.existsSync(fixturePath)) {
+    console.log('FAIL: Stale blob fixture not found at ' + fixturePath);
+    hasViolations = true;
+  } else {
     const fixtureViolations = checkOwnershipClaimsInHarness(fixturePath);
     if (fixtureViolations.length > 0) {
       console.log('PASS: Stale blob fixture correctly FAILS the guard (violations detected):');
@@ -124,9 +127,6 @@ async function main() {
       console.log('FAIL: Stale blob fixture should FAIL the guard but passed');
       hasViolations = true;
     }
-  } else {
-    console.log('FAIL: Stale blob fixture not found at ' + fixturePath);
-    hasViolations = true;
   }
   
   if (hasViolations) {

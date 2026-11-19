@@ -442,7 +442,7 @@ function extractUptimeAndBootId(health) {
     return { uptime: undefined, bootId: undefined };
   }
   const body = health.body;
-  const uptime = body.uptimeSeconds !== undefined ? body.uptimeSeconds : body.uptime;
+  const uptime = body.uptimeSeconds !== undefined ? body.uptimeSeconds : (body.uptime !== undefined ? body.uptime : undefined);
   const bootId = body.bootId;
   return { uptime, bootId };
 }
@@ -862,7 +862,7 @@ async function checkServerRestart() {
   if (!hasUptimeSignal && !hasBootIdSignal) {
     return { 
       valid: false, 
-      reason: 'health payload exposed no usable uptime or boot id signal' 
+      reason: 'health payload exposed no usable uptime or boot id signal; run invalidated' 
     };
   }
   
@@ -1052,6 +1052,113 @@ async function run() {
   report.identity.privilegeProbesRun = privilegeProbesRun;
   report.identity.privilegeProbesPassed = privilegeProbesPassed;
   
+  // NOC-337: Two-tenant isolation probes for the seven security gaps
+  // These are status-only probes that verify tenant-scoped access control
+  let noc337ProbesRun = 0;
+  let noc337ProbesPassed = 0;
+  if (ownerEntry && memberEntry) {
+    log('--- NOC-337: Two-tenant isolation status probes ---');
+    
+    // 1. Playbook execution isolation
+    const noc337Probes = [];
+    noc337Probes.push(await probe(
+      'playbook execution list requires tenant scope',
+      `${nightlampApi}/api/playbook/executions`,
+      { headers: bearer(memberEntry.token) },
+      [200, 403, 404]
+    ));
+    noc337Probes.push(await probe(
+      'playbook execution read requires tenant scope',
+      `${nightlampApi}/api/playbook/executions/unknown-id`,
+      { headers: bearer(memberEntry.token) },
+      [403, 404]
+    ));
+    noc337Probes.push(await probe(
+      'playbook execution decision requires tenant scope',
+      `${nightlampApi}/api/playbook/executions/unknown-id/decision`,
+      { method: 'POST', headers: bearer(memberEntry.token, { 'Content-Type': 'application/json' }), body: JSON.stringify({ action: 'approve' }) },
+      [403, 404]
+    ));
+    noc337Probes.push(await probe(
+      'playbook execution cancel requires tenant scope',
+      `${nightlampApi}/api/playbook/executions/unknown-id/cancel`,
+      { method: 'POST', headers: bearer(memberEntry.token, { 'Content-Type': 'application/json' }) },
+      [403, 404]
+    ));
+    
+    // 2. Performance API isolation
+    noc337Probes.push(await probe(
+      'performance run requires tenant scope',
+      `${nightlampApi}/api/performance/run`,
+      { method: 'POST', headers: bearer(memberEntry.token, { 'Content-Type': 'application/json' }), body: JSON.stringify({}) },
+      [403, 404]
+    ));
+    noc337Probes.push(await probe(
+      'performance history requires tenant scope',
+      `${nightlampApi}/api/performance/history`,
+      { headers: bearer(memberEntry.token) },
+      [403, 404]
+    ));
+    noc337Probes.push(await probe(
+      'performance regressions requires tenant scope',
+      `${nightlampApi}/api/performance/regressions`,
+      { headers: bearer(memberEntry.token) },
+      [403, 404]
+    ));
+    noc337Probes.push(await probe(
+      'performance diagnosis requires tenant scope',
+      `${nightlampApi}/api/performance/diagnosis`,
+      { headers: bearer(memberEntry.token) },
+      [403, 404]
+    ));
+    
+    // 3. Private streaming (SSE) isolation
+    noc337Probes.push(await probe(
+      'SSE stream requires tenant scope',
+      `${nightlampApi}/api/stream`,
+      { headers: bearer(memberEntry.token) },
+      [403, 404]
+    ));
+    
+    // 4. Workspace role gate
+    noc337Probes.push(await probe(
+      'team workspace PATCH requires owner/admin',
+      `${nightlampApi}/api/teams/${report.identity.testTeamId}/workspace`,
+      { method: 'PATCH', headers: bearer(memberEntry.token, { 'Content-Type': 'application/json' }), body: JSON.stringify({}) },
+      [403, 404]
+    ));
+    
+    // 5. Lead isolation
+    noc337Probes.push(await probe(
+      'lead reads are tenant scoped',
+      `${nightlampApi}/api/leads`,
+      { headers: bearer(memberEntry.token) },
+      [403, 404]
+    ));
+    
+    // 6. Clerk webhook verification (fail closed without secret)
+    noc337Probes.push(await probe(
+      'Clerk webhook fails without signature',
+      `${nightlampApi}/api/webhooks/clerk`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) },
+      [400, 401, 403]
+    ));
+    
+    // 7. Stripe webhook reachability and signature rejection
+    noc337Probes.push(await probe(
+      'Stripe webhook requires valid signature',
+      `${nightlampApi}/api/billing/webhook`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json', 'stripe-signature': 'invalid' }, body: JSON.stringify({}) },
+      [400, 401, 403]
+    ));
+    
+    noc337ProbesRun = noc337Probes.length;
+    noc337ProbesPassed = noc337Probes.filter(p => p.ok).length;
+    report.identity.noc337ProbesRun = noc337ProbesRun;
+    report.identity.noc337ProbesPassed = noc337ProbesPassed;
+    log(`NOC-337 two-tenant status probes completed: ${noc337ProbesPassed}/${noc337ProbesRun} passed`);
+  }
+  
   for (const [userId, sessionData] of userSessions.entries()) {
     const userRole = userRoles.get(userId) || (userId === controlledOwnerSessionUserId ? { teams: [], hasTeam: false, isOwner: false, isMember: false } : null);
     if (!userRole) continue;
@@ -1113,6 +1220,8 @@ function filterReportForPublish(report) {
     'fullMatrixRun',
     'privilegeProbesRun',
     'privilegeProbesPassed',
+    'noc337ProbesRun',
+    'noc337ProbesPassed',
     'noTeamExpectedStatus',
     'contractMismatches',
     'memberAddedToTestTeam',
