@@ -2,7 +2,7 @@ import { Database } from 'sql.js';
 import { IncomingMessage, ServerResponse } from 'http';
 import { v4 as uuidv4 } from 'uuid';
 import type { AuthContext } from '../api/auth';
-import { tenantFilter } from '../api/tenant';
+import { tenantOwnedFilter } from '../api/tenant';
 
 export type PlaybookNodeType = 'trigger' | 'condition' | 'action' | 'notification';
 export type PlaybookStatus = 'draft' | 'published';
@@ -127,7 +127,7 @@ export class PlaybookBuilderApi {
   }
 
   private playbookScope(teamId: string | null): { clause: string; params: any[] } {
-    return tenantFilter('team_id', teamId);
+    return tenantOwnedFilter('team_id', teamId);
   }
 
   private findPlaybook(playbookId: string, teamId: string | null): any[] | null {

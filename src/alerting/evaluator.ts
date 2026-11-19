@@ -1,7 +1,7 @@
 import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
 import { ChannelType, ChannelConfig, sendNotification, NotificationPayload } from './channels';
-import { tenantFilter } from '../api/tenant';
+import { tenantOwnedFilter } from '../api/tenant';
 
 export interface AlertChannel {
   id: string;
@@ -34,7 +34,7 @@ export interface AlertLogEntry {
 }
 
 function parseConfig(db: Database, channelId: string, teamId: string | null): ChannelConfig | null {
-  const scope = tenantFilter('team_id', teamId);
+  const scope = tenantOwnedFilter('team_id', teamId);
   const result = db.exec(
     `SELECT type, config FROM alert_channels WHERE id = ? AND ${scope.clause}`,
     [channelId, ...scope.params]
@@ -44,7 +44,7 @@ function parseConfig(db: Database, channelId: string, teamId: string | null): Ch
 }
 
 function getChannelType(db: Database, channelId: string, teamId: string | null): ChannelType | null {
-  const scope = tenantFilter('team_id', teamId);
+  const scope = tenantOwnedFilter('team_id', teamId);
   const result = db.exec(
     `SELECT type FROM alert_channels WHERE id = ? AND ${scope.clause}`,
     [channelId, ...scope.params]
@@ -67,7 +67,7 @@ function resolveEventTeam(db: Database, eventId: string | undefined, teamId: str
 function getMatchingRules(db: Database, failureType: string, severity: string, teamId: string | null): AlertRule[] {
   const severityOrder: Record<string, number> = { critical: 3, warning: 2, info: 1 };
   const eventSeverity = severityOrder[severity] || 1;
-  const scope = tenantFilter('team_id', teamId);
+  const scope = tenantOwnedFilter('team_id', teamId);
 
   const result = db.exec(
     `SELECT id, name, channel_id, failure_types, min_severity FROM alert_rules WHERE enabled = 1 AND ${scope.clause}`,

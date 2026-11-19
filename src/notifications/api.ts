@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { ChannelType, ChannelConfig } from '../alerting/channels';
 import { processNotification, sendDirectNotification, getChannelType, getChannelConfig, checkRateLimit, logDelivery, markDelivered } from './service';
 import { AuthContext } from '../api/auth';
-import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant } from '../api/tenant';
+import { tenantOwnedFilter, rowBelongsToTenant } from '../api/tenant';
 
 export class NotificationApi {
   private validTypes: Set<string> = new Set(['slack-webhook', 'email-smtp', 'in-app-websocket']);
@@ -160,7 +160,13 @@ export class NotificationApi {
           return;
         }
 
-        if (teamId === null || !rowBelongsToTenant(this.db, 'alert_channels', channelId, teamId)) {
+        if (teamId === null) {
+          res.writeHead(403);
+          res.end(JSON.stringify({ error: 'A team membership is required to access this resource', code: 'FORBIDDEN' }));
+          return;
+        }
+
+        if (!rowBelongsToTenant(this.db, 'alert_channels', channelId, teamId)) {
           res.writeHead(404);
           res.end(JSON.stringify({ error: 'Channel not found' }));
           return;

@@ -6,6 +6,7 @@ import assert from 'assert';
 import { v4 as uuidv4 } from 'uuid';
 import { createTestToken, fetchWithoutAuth, TEST_CLERK_USER_ID, TEST_LOCAL_USER_ID } from './setup';
 import { cleanupVerificationTeams, VERIFICATION_TEAM_PREFIX } from '../../scripts/cleanup-verification-teams';
+import { evaluateAndNotify } from '../alerting/evaluator';
 
 const OWNER_CLERK = 'noc319-owner-clerk';
 const MEMBER_CLERK = 'noc319-member-clerk';
@@ -328,6 +329,82 @@ describe('NOC-319 team membership binding and fail-closed scoping', () => {
       const serialized = JSON.stringify(res.body);
       assert.ok(!serialized.includes(ownedEventId), 'the body must carry no owned row');
       assert.ok(!serialized.includes(sharedEventId), 'the body must carry no unscoped row');
+    });
+  });
+
+  describe('the remaining mutation and background paths fail closed for a teamless caller', () => {
+    it('answers 403 on /api/notifications/send when no membership exists', async () => {
+      const sharedChannelId = uuidv4();
+      db.run(
+        `INSERT INTO alert_channels (id, name, type, config, team_id) VALUES (?, 'Unscoped Channel', 'slack', ?, NULL)`,
+        [sharedChannelId, JSON.stringify({ webhookUrl: 'https://hooks.example.com/services/unused' })],
+      );
+
+      const res = await call(LONELY_CLERK, '/api/notifications/send', {
+        method: 'POST',
+        body: JSON.stringify({ channelId: sharedChannelId, title: 'Teamless send', failureType: 'expired_token', severity: 'critical' }),
+      });
+      assert.strictEqual(res.status, 403, JSON.stringify(res.body));
+      assert.strictEqual(res.body.code, 'FORBIDDEN');
+      const logs = db.exec('SELECT COUNT(*) FROM alert_log WHERE channel_id = ?', [sharedChannelId]);
+      assert.strictEqual(logs[0].values[0][0], 0);
+    });
+
+    it('refuses an onboarding session addressed to another user', async () => {
+      const foreignUserId = internalUserId(OWNER_CLERK);
+      const start = await call(LONELY_CLERK, '/api/onboarding/start', {
+        method: 'POST',
+        body: JSON.stringify({ userId: foreignUserId }),
+      });
+      assert.strictEqual(start.status, 403, JSON.stringify(start.body));
+      const sessions = db.exec('SELECT COUNT(*) FROM onboarding_sessions WHERE user_id = ?', [foreignUserId]);
+      assert.strictEqual(sessions[0].values[0][0], 0);
+    });
+
+    it('hides another user onboarding session from status and step', async () => {
+      const mine = await call(OTHER_LONELY_CLERK, '/api/onboarding/start', {
+        method: 'POST',
+        body: JSON.stringify({ userId: internalUserId(OTHER_LONELY_CLERK) }),
+      });
+      assert.strictEqual(mine.status, 200, JSON.stringify(mine.body));
+      const sessionId = mine.body.sessionId as string;
+
+      const foreignStatus = await call(LONELY_CLERK, `/api/onboarding/${sessionId}/status`);
+      assert.strictEqual(foreignStatus.status, 404);
+
+      const foreignStep = await call(LONELY_CLERK, `/api/onboarding/${sessionId}/step`, {
+        method: 'POST',
+        body: JSON.stringify({ step: 'monitor-selection', data: {} }),
+      });
+      assert.strictEqual(foreignStep.status, 404);
+
+      const ownStatus = await call(OTHER_LONELY_CLERK, `/api/onboarding/${sessionId}/status`);
+      assert.strictEqual(ownStatus.status, 200);
+      assert.strictEqual(ownStatus.body.session.id, sessionId);
+    });
+
+    it('delivers no alert for an event that resolves to no team', async () => {
+      const channelId = uuidv4();
+      const ruleId = uuidv4();
+      const eventId = uuidv4();
+      db.run(
+        `INSERT INTO alert_channels (id, name, type, config, team_id) VALUES (?, 'Unscoped Eval Channel', 'slack', ?, NULL)`,
+        [channelId, JSON.stringify({ webhookUrl: 'https://hooks.example.com/services/unused' })],
+      );
+      db.run(
+        `INSERT INTO alert_rules (id, name, channel_id, failure_types, min_severity, team_id) VALUES (?, 'Unscoped Eval Rule', ?, ?, 'info', NULL)`,
+        [ruleId, channelId, JSON.stringify(['noc319_eval_type'])],
+      );
+      db.run(
+        `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, detected_at, team_id)
+         VALUES (?, 'noc319-check-2', 'noc319_eval_type', 'warning', 'Teamless event', 'teamless', datetime('now'), NULL)`,
+        [eventId],
+      );
+
+      await evaluateAndNotify(db, 'noc319_eval_type', 'warning', 'Teamless event', 'teamless', new Date().toISOString(), 'noc319-check-2', eventId);
+
+      const logs = db.exec('SELECT COUNT(*) FROM alert_log WHERE rule_id = ?', [ruleId]);
+      assert.strictEqual(logs[0].values[0][0], 0);
     });
   });
 
