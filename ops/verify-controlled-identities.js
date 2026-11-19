@@ -359,7 +359,7 @@ async function inviteAndAcceptMember(ownerToken, memberToken, teamId, memberEmai
       continue;
     }
     
-    const accept = await fetch(`${nightlampApi}/api/invitations/${inviteJson.token}`, {
+    const accept = await fetch(`${nightlampApi}/api/invitations/${inviteJson.token}/accept`, {
       method: 'POST',
       headers: bearer(memberToken, { 'Content-Type': 'application/json' }),
       body: JSON.stringify({})
