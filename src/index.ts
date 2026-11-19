@@ -10,6 +10,7 @@ import { SentryConfig, SentryIssue, UptimeRobotConfig, UptimeRobotMonitor, XConf
 import { runSentryCheck, runUptimeRobotCheck, sanitizeChecks } from './engine';
 import { createStripeClient } from './billing';
 import { startApiServer } from './api';
+import { warnIfClerkJwtAudienceConfigured } from './api/auth';
 import { initEngine, setDb } from './remediation/engine';
 
 process.on('uncaughtException', (err) => {
@@ -33,6 +34,7 @@ let uptimeRobotMonitorCache: UptimeRobotMonitor[] = [];
 const bootId: string = getBootId();
 
 async function init(): Promise<void> {
+  warnIfClerkJwtAudienceConfigured();
   const dbConfig = getDatabaseConfig();
   
   console.log(`[Nightlamp] Starting with storage mode: ${dbConfig.mode}`);

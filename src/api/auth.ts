@@ -99,6 +99,15 @@ function getVerificationConfig(): JwtVerificationConfig {
   };
 }
 
+export function warnIfClerkJwtAudienceConfigured(
+  warn: (message: string) => void = console.warn,
+): void {
+  if (!process.env.CLERK_JWT_AUDIENCE?.trim()) return;
+  warn(
+    '[Nightlamp] WARNING: CLERK_JWT_AUDIENCE is set; the configured Clerk instance issues tokens without an "aud" claim, so every authenticated request will be rejected with 401. Keep it unset.',
+  );
+}
+
 function verifyHs256(signingInput: string, signature: Buffer, secret: string): boolean {
   const expected = crypto.createHmac('sha256', secret).update(signingInput).digest();
   return signature.length === expected.length && crypto.timingSafeEqual(signature, expected);
