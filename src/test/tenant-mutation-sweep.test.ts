@@ -300,8 +300,9 @@ describe('cross-tenant mutation sweep', () => {
 
     it('shows a signed-in user with no membership nothing from any tenant', async () => {
       const channels = await call('GET', '/api/alerting/channels', { clerkId: LONELY_CLERK });
-      assert.strictEqual(channels.status, 200);
-      assert.strictEqual((channels.payload.channels || []).length, 0);
+      assert.strictEqual(channels.status, 403);
+      assert.strictEqual(channels.payload.code, 'FORBIDDEN');
+      assert.strictEqual(channels.payload.channels, undefined);
 
       const runs = await call('GET', '/api/remediation/runs', { clerkId: LONELY_CLERK });
       assert.strictEqual(runs.status, 403);

@@ -246,7 +246,8 @@ describe('NOC-319 team membership binding and fail-closed scoping', () => {
         [channelId, 'NOC-319 legacy channel', 'in-app-websocket', '{}']);
 
       const list = await call(LONELY_CLERK, '/api/alerting/channels');
-      assert.strictEqual(list.status, 200);
+      assert.strictEqual(list.status, 403);
+      assert.strictEqual(list.body.code, 'FORBIDDEN');
       assert.ok(!(list.body.channels || []).some((channel: any) => channel.id === channelId));
 
       // A teamless identity has no team role, so the admin gate refuses the

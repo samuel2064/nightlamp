@@ -718,6 +718,9 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           });
           return;
         }
+        if (!requireTenantScope(res, teamId)) {
+          return;
+        }
         const tenantScope = tenantOwnedFilter('team_id', teamId);
         const result = db.exec(`SELECT id, name, type, enabled, team_id, created_at FROM alert_channels WHERE ${tenantScope.clause} ORDER BY created_at DESC`, tenantScope.params);
         const channels = result.length > 0 ? result[0].values.map((row: any) => ({
@@ -804,6 +807,9 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
               res.end(JSON.stringify({ error: err.message }));
             }
           });
+          return;
+        }
+        if (!requireTenantScope(res, teamId)) {
           return;
         }
         const ruleScope = tenantOwnedFilter('ar.team_id', teamId);
