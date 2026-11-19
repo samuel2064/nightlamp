@@ -163,6 +163,32 @@ describe('P0 API authorization', () => {
       assert.match(warnings[0], /CLERK_JWT_AUDIENCE is set.*tokens without an .aud. claim.*401/i);
       assert.ok(!warnings[0].includes('\n'));
     });
+
+    it('stays quiet when the audience is unset', () => {
+      delete process.env.CLERK_JWT_AUDIENCE;
+      const warnings: string[] = [];
+
+      warnIfClerkJwtAudienceConfigured((message) => warnings.push(message));
+
+      assert.deepStrictEqual(
+        warnings,
+        [],
+        'the guard must stay silent in the configuration production runs',
+      );
+    });
+
+    it('stays quiet when the audience is whitespace only', () => {
+      process.env.CLERK_JWT_AUDIENCE = '   \t\n  ';
+      const warnings: string[] = [];
+
+      warnIfClerkJwtAudienceConfigured((message) => warnings.push(message));
+
+      assert.deepStrictEqual(
+        warnings,
+        [],
+        'a whitespace only value is the same as unset and must not warn',
+      );
+    });
   });
 
   describe('request authentication', () => {
