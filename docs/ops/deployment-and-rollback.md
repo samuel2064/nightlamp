@@ -52,17 +52,30 @@ When a hotfix must ship immediately:
      -d '{}'
    ```
 
-## Rollback Procedure (target < 5 minutes)
+## Recovery Procedure: Forward Fix Only
 
-1. Open the Render dashboard → affected service → `Events` / `Deploys`.
-2. Locate the last known-good deploy (the deploy immediately before the failing commit).
-3. Click **Deploy** / **Redeploy** on that commit (or "Deploy last-good").
-4. Render rebuilds and swaps traffic. Health checks gate the rollback.
-5. Verify backend `/api/health` returns 200 and frontend `/` returns 200.
-6. Post an incident note to the ops channel documenting the rollback commit (`<bad-sha>` → `<good-sha>`).
+**Rollback is not available.** The previous production build lacks the P0 authorization gate (NOC-280) and remediation fixes (NOC-274). Rolling back would re-introduce critical security vulnerabilities.
 
-Rollback is a dashboard operation and does not require code changes, so it stays well under the 5-minute target as long as the prior commit is healthy.
+The only safe recovery path is a **forward fix**:
+
+1. **Identify the failure**: Deployment workflow fails, smoke checks fail, or production health endpoint returns non-200.
+2. **Create a fix branch from `main`**: `git checkout -b fix/<short-description> main`
+3. **Apply the minimal fix**: Address the specific regression (e.g., revert the breaking change, fix the config, add the missing guard).
+4. **Open a PR to `main`**: The CI `verify` job must pass (typecheck, tests, build).
+5. **Merge to `main`**: The automated CD pipeline runs verify + deploy + smoke.
+6. **Verify the deploy**: Backend `/api/health` returns 200, frontend `/` returns 200, key API endpoints respond correctly.
+7. **Post an incident note** to the ops channel documenting the failure commit, fix commit, root cause, and time to recovery.
+
+Target recovery time: **< 15 minutes** from fix commit to verified deploy.
+
+## Alerting (NOC-314)
+
+- **Deployment failure**: `alert-on-failure` job in `deploy.yml` posts to `DEPLOY_WEBHOOK_URL` on any job failure.
+- **Health monitoring**: UptimeRobot monitors `/api/health` (backend) and `/` (frontend) — see `docs/ops/uptimerobot-monitor-setup.md`.
+- **Error tracking**: Sentry integration available when `SENTRY_DSN` is configured in GitHub Secrets.
 
 ## Zero-Manual-Step Guarantee
 
 Standard deployments require no manual console interaction: push to `main` → pipeline handles build, test, deploy, smoke, notify.
+
+Forward-fix deployments follow the same automated path; the only manual step is creating the fix commit.
