@@ -1,13 +1,37 @@
 import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
+import * as fs from 'fs';
+import * as path from 'path';
 import { up as applyTenantIsolationMigration } from './migrations/008-tenant-isolation';
 
 export interface NightlampDb {
   db: SqlJsDatabase;
 }
 
+const SQLITE_MAGIC_HEADER = 'SQLite format 3\0';
+
 export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   const SQL = await initSqlJs();
-  const db = new SQL.Database();
+  let db: SqlJsDatabase;
+
+  if (dbPath && fs.existsSync(dbPath)) {
+    const persisted = fs.readFileSync(dbPath);
+    
+    // Validate SQLite file before loading - fail loud on corrupt files
+    if (persisted.length === 0) {
+      throw new Error(`Database file ${dbPath} is empty (0 bytes). This indicates a corrupted or incomplete database file.`);
+    }
+    if (persisted.length < 16) {
+      throw new Error(`Database file ${dbPath} is too small (${persisted.length} bytes) to be a valid SQLite database.`);
+    }
+    const header = persisted.toString('utf8', 0, 16);
+    if (header !== SQLITE_MAGIC_HEADER) {
+      throw new Error(`Database file ${dbPath} is not a valid SQLite database (invalid magic header).`);
+    }
+    
+    db = new SQL.Database(persisted);
+  } else {
+    db = new SQL.Database();
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS checks (
@@ -549,13 +573,29 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
 }
 
 export function saveDatabase(db: SqlJsDatabase, dbPath: string): void {
-  const fs = require('fs');
-  const path = require('path');
   const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  const data = db.export();
-  const buffer = Buffer.from(data);
-  fs.writeFileSync(dbPath, buffer);
+
+  const buffer = Buffer.from(db.export());
+  const tempPath = `${dbPath}.${process.pid}.${Date.now()}.tmp`;
+  let fileDescriptor: number | null = null;
+
+  try {
+    fileDescriptor = fs.openSync(tempPath, 'wx');
+    fs.writeFileSync(fileDescriptor, buffer);
+    fs.fsyncSync(fileDescriptor);
+    fs.closeSync(fileDescriptor);
+    fileDescriptor = null;
+    fs.renameSync(tempPath, dbPath);
+  } catch (error) {
+    if (fileDescriptor !== null) {
+      fs.closeSync(fileDescriptor);
+    }
+    if (fs.existsSync(tempPath)) {
+      fs.unlinkSync(tempPath);
+    }
+    throw error;
+  }
 }

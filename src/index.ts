@@ -5,7 +5,7 @@ import * as cron from 'node-cron';
 import { Database } from 'sql.js';
 import * as dotenv from 'dotenv';
 import { v4 as uuidv4 } from 'uuid';
-import { createDatabase, saveDatabase } from './db';
+import { createDatabase, saveDatabase, getDatabaseConfig, isProduction, getBootId } from './db';
 import { SentryConfig, SentryIssue, UptimeRobotConfig, UptimeRobotMonitor, XConfig, buildAuthorizeUrl, postThread, verifyCredentials, refreshAccessToken, exchangeCodeForToken, parseLaunchThread, isSentryConfigPlaceholder, isUptimeRobotConfigPlaceholder } from './connectors';
 import { runSentryCheck, runUptimeRobotCheck, sanitizeChecks } from './engine';
 import { createStripeClient } from './billing';
@@ -30,10 +30,26 @@ const API_PORT = parseInt(process.env.PORT || process.env.API_PORT || '3001', 10
 let db: Database;
 let sentryIssueCache: SentryIssue[] = [];
 let uptimeRobotMonitorCache: UptimeRobotMonitor[] = [];
+const bootId: string = getBootId();
 
 async function init(): Promise<void> {
+  const dbConfig = getDatabaseConfig();
+  
+  console.log(`[Nightlamp] Starting with storage mode: ${dbConfig.mode}`);
+  console.log(`[Nightlamp] Boot ID: ${bootId}`);
+  
+  // Warn only when the database path is on the local container filesystem (not persistent volume)
+  // and we're in production. The CEO chose Option 1 (Render disk) with DB_PATH on the mount,
+  // so warn when the path is NOT under the persistent disk mount point.
+  if (isProduction() && dbConfig.mode === 'sqlite') {
+    const isOnPersistentVolume = dbConfig.sqlitePath && dbConfig.sqlitePath.startsWith('/var/data/');
+    if (!isOnPersistentVolume) {
+      console.warn('⚠️  [Nightlamp] WARNING: Running in production with SQLite file storage on local container filesystem. Data will be lost on restart/deploy! Set DB_PATH to a persistent volume mount point or set DATABASE_URL for PostgreSQL.');
+    }
+  }
+
   console.log('[Nightlamp] Initializing health check engine...');
-  db = await createDatabase(DB_PATH);
+  db = await createDatabase(dbConfig.sqlitePath);
   setDb(db);
   initEngine();
 
