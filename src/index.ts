@@ -273,10 +273,10 @@ async function init(): Promise<void> {
 
 init().catch((err) => {
   console.error('[Nightlamp] Fatal initialization error:', err.message, err.stack);
-  console.log('[Nightlamp] Starting fallback health server...');
+  console.log('[Nightlamp] Starting degraded mode health server...');
   http.createServer((q, r) => {
-    r.writeHead(200, { 'Content-Type': 'application/json' });
-    r.end(JSON.stringify({ status: 'ok', mode: 'fallback', error: err.message }));
+    r.writeHead(500, { 'Content-Type': 'application/json' });
+    r.end(JSON.stringify({ status: 'error', mode: 'degraded', error: err.message }));
   }).listen(API_PORT);
 });
 

@@ -15,6 +15,7 @@ export class NotificationApi {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = parsedUrl.pathname;
     const teamId = auth ? auth.teamId : null;
+    const userId = auth ? auth.userId : null;
 
     const channelMatch = path.match(/^\/api\/notifications\/channels(?:\/([a-zA-Z0-9-]+))?$/);
 
@@ -36,7 +37,7 @@ export class NotificationApi {
     }
 
     if ((path === '/api/notifications/send' || path === '/api/notifications/send/') && req.method === 'POST') {
-      this.handleSendNotification(req, res, teamId);
+      this.handleSendNotification(req, res, teamId, userId);
       return true;
     }
 
@@ -147,7 +148,7 @@ export class NotificationApi {
     res.end(JSON.stringify({ success: true }));
   }
 
-  private handleSendNotification(req: IncomingMessage, res: ServerResponse, teamId: string | null): void {
+  private handleSendNotification(req: IncomingMessage, res: ServerResponse, teamId: string | null, userId: string | null): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', async () => {
@@ -166,10 +167,22 @@ export class NotificationApi {
           return;
         }
 
-        if (!rowBelongsToTenant(this.db, 'alert_channels', channelId, teamId)) {
-          res.writeHead(404);
-          res.end(JSON.stringify({ error: 'Channel not found' }));
-          return;
+        if (!rowBelongsToTenant(this.db, 'alert_channels', channelId, teamId) && userId !== null) {
+          const channelOwnedResult = this.db.exec(
+            `SELECT owner_id FROM alert_channels WHERE id = ?`,
+            [channelId]
+          );
+          if (channelOwnedResult.length === 0 || channelOwnedResult[0].values.length === 0) {
+            res.writeHead(404);
+            res.end(JSON.stringify({ error: 'Channel not found' }));
+            return;
+          }
+          const channelOwnerId = channelOwnedResult[0].values[0][0] as string;
+          if (channelOwnerId !== userId) {
+            res.writeHead(404);
+            res.end(JSON.stringify({ error: 'Channel not found' }));
+            return;
+          }
         }
 
         const channelType = getChannelType(this.db, channelId);
