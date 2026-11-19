@@ -320,6 +320,8 @@
     "Created test team: <id> (<team>)",
     "The server bound the team owner to the authenticated token: yes",
     "Failed to add member: HTTP 404",
+    "The invitation was not accepted: HTTP 405",
+    "The invitation was not accepted: HTTP 405",
     "The member identity could not be added to the test team, the privilege matrix did not run.",
     "--- Cleanup: Removing test team ---",
     "DELETE team <id> -> HTTP 200",
