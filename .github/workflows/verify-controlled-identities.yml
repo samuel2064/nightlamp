@@ -47,14 +47,9 @@ jobs:
             echo "PASS: Stale harness fixture correctly FAILS the guard"
           fi
       
-      - name: Run identifier redaction guard (requires report file)
-        if: always()
+      - name: Run identifier redaction guard on fixture report
         run: |
-          if [ -f "$RESULT_FILE" ]; then
-            node ops/guard-harness.js ops/verify-controlled-identities.js "$RESULT_FILE"
-          else
-            echo "No report file found, skipping identifier redaction check"
-          fi
+          node ops/guard-harness.js ops/verify-controlled-identities.js ops/fixtures/status-report.json
 
   verify:
     name: Verify controlled identities and run NOC-280/NOC-274 production matrix

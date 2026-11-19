@@ -125,7 +125,8 @@ async function main() {
       hasViolations = true;
     }
   } else {
-    console.log('WARNING: Fixture file not found at ' + fixturePath);
+    console.log('FAIL: Stale blob fixture not found at ' + fixturePath);
+    hasViolations = true;
   }
   
   if (hasViolations) {
