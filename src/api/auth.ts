@@ -238,18 +238,6 @@ function validateClaims(claims: Record<string, any>, config: JwtVerificationConf
   };
 }
 
-/**
- * @deprecated Use verifyAccessTokenAsync instead. This synchronous version does not support JWKS fallback.
- */
-export function verifyAccessToken(token: string): VerifiedTokenClaims {
-  const parsed = parseToken(token);
-  const config = getVerificationConfig();
-  if (!verifySignature(parsed, config)) {
-    throw new ApiAuthError('Invalid authentication token', 401, 'UNAUTHORIZED');
-  }
-  return validateClaims(parsed.claims, config);
-}
-
 export async function verifyAccessTokenAsync(token: string): Promise<VerifiedTokenClaims> {
   const parsed = parseToken(token);
   const config = getVerificationConfig();
@@ -339,19 +327,6 @@ function buildAuthContext(db: Database, claims: VerifiedTokenClaims, token: stri
     role: membership ? membership.role : null,
     token,
   };
-}
-
-/**
- * @deprecated Use authenticateRequestAsync instead. This synchronous version does not support JWKS fallback.
- */
-export function authenticateRequest(db: Database, req: IncomingMessage): AuthContext {
-  const token = extractBearerToken(req.headers);
-  if (!token) {
-    throw new ApiAuthError('Authentication required', 401, 'UNAUTHORIZED');
-  }
-
-  const claims = verifyAccessToken(token);
-  return buildAuthContext(db, claims, token, req);
 }
 
 export async function authenticateRequestAsync(db: Database, req: IncomingMessage): Promise<AuthContext> {

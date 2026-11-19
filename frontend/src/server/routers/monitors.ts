@@ -29,22 +29,52 @@ export const monitorsRouter = router({
 
   create: protectedProcedure
     .input(z.object({
-      source: z.string(),
-      name: z.string(),
-      config: z.record(z.any()),
+      name: z.string().min(1),
+      url: z.string().url(),
+      platform: z.string().min(1),
+      checkType: z.enum(['http', 'tcp', 'keyword']).default('http'),
+      checkTarget: z.string().min(1),
+      checkIntervalSec: z.number().int().min(10).max(86400).optional(),
+      checkTimeoutSec: z.number().int().min(1).max(30).optional(),
+      keyword: z.string().min(1).optional(),
       enabled: z.boolean().optional(),
+      alertChannelId: z.string().min(1),
     }))
     .mutation(async ({ ctx, input }) => {
-      return createBackendClient(ctx.token).checks.create(input)
+      const { app } = await createBackendClient(ctx.token).apps.create(input)
+      return app
     }),
 
   testCheck: protectedProcedure
     .input(z.object({
-      url: z.string().url(),
-      type: z.string(),
-      checkType: z.string().optional(),
+      checkTarget: z.string().min(1),
+      checkType: z.enum(['http', 'tcp', 'keyword']).default('http'),
+      checkTimeoutSec: z.number().int().min(1).max(30).optional(),
+      keyword: z.string().min(1).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      return createBackendClient(ctx.token).checks.testCheck(input)
+      const { result } = await createBackendClient(ctx.token).apps.previewCheck({
+        checkTarget: input.checkTarget,
+        checkType: input.checkType,
+        checkTimeoutSec: input.checkTimeoutSec,
+        keyword: input.keyword,
+      })
+      return result
+    }),
+
+  channels: protectedProcedure
+    .query(async ({ ctx }) => {
+      const { channels } = await createBackendClient(ctx.token).channels.list()
+      return { channels }
+    }),
+
+  createChannel: protectedProcedure
+    .input(z.object({
+      name: z.string().min(1),
+      type: z.enum(['email-smtp', 'slack-webhook', 'in-app-websocket']),
+      config: z.record(z.any()),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      return createBackendClient(ctx.token).channels.create(input)
     }),
 })
