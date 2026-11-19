@@ -44,7 +44,7 @@ async function init(): Promise<void> {
   if (isProduction() && dbConfig.mode === 'sqlite') {
     const isOnPersistentVolume = dbConfig.sqlitePath && dbConfig.sqlitePath.startsWith('/var/data/');
     if (!isOnPersistentVolume) {
-      console.warn('⚠️  [Nightlamp] WARNING: Running in production with SQLite file storage on local container filesystem. Data will be lost on restart/deploy! Set DB_PATH to a persistent volume mount point or set DATABASE_URL for PostgreSQL.');
+      console.warn('⚠️  [Nightlamp] WARNING: Running in production with SQLite file storage on local container filesystem. Data will be lost on restart/deploy! DB_PATH must point at the mounted disk at /var/data/nightlamp.');
     }
   }
 

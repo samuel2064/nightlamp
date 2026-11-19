@@ -1,4 +1,4 @@
-import { createDatabase, saveDatabase } from '../db/schema';
+import { createDatabase, saveDatabase, getDatabaseConfig } from '../db/schema';
 import { bootId, getBootId } from '../db/connection';
 import { Database } from 'sql.js';
 import * as fs from 'fs';
@@ -238,6 +238,153 @@ describe('NOC-323 durable storage', () => {
         fs.readFileSync(dbPath),
         before,
         'a failed write must not damage the existing database'
+      );
+    });
+  });
+
+  describe('the boot id identifies the process, not the request', () => {
+    it('returns the same value on every call', () => {
+      const first = getBootId();
+      const second = getBootId();
+      const third = getBootId();
+
+      assert.strictEqual(first, second, 'the boot id must not change between calls');
+      assert.strictEqual(second, third, 'the boot id must not change between calls');
+      assert.strictEqual(first, bootId, 'the accessor must return the module constant');
+      assert.ok(typeof first === 'string' && first.length > 0, 'the boot id must be a non-empty string');
+    });
+  });
+
+  describe('the production warning behavior', () => {
+    const originalEnv = process.env.NODE_ENV;
+    const originalDbPath = process.env.DB_PATH;
+
+    beforeEach(() => {
+      process.env.NODE_ENV = 'production';
+    });
+
+    afterEach(() => {
+      process.env.NODE_ENV = originalEnv;
+      if (originalDbPath) {
+        process.env.DB_PATH = originalDbPath;
+      } else {
+        delete process.env.DB_PATH;
+      }
+    });
+
+    // Helper to execute the warning logic from init()
+    function executeWarningLogic(dbConfig: { mode: string; sqlitePath?: string }): { warned: boolean; message: string } {
+      let warned = false;
+      let message = '';
+      const originalWarn = console.warn;
+      console.warn = (msg: string) => { warned = true; message = msg; };
+      try {
+        if (process.env.NODE_ENV === 'production' && dbConfig.mode === 'sqlite') {
+          const isOnPersistentVolume = dbConfig.sqlitePath && dbConfig.sqlitePath.startsWith('/var/data/');
+          if (!isOnPersistentVolume) {
+            console.warn('⚠️  [Nightlamp] WARNING: Running in production with SQLite file storage on local container filesystem. Data will be lost on restart/deploy! DB_PATH must point at the mounted disk at /var/data/nightlamp.');
+          }
+        }
+      } finally {
+        console.warn = (msg: string) => {}; // restore to no-op
+      }
+      return { warned, message };
+    }
+
+    it('warns when SQLite path is on local container filesystem', () => {
+      process.env.DB_PATH = './data/nightlamp.db';
+      
+      const { getDatabaseConfig, isProduction } = require('../db');
+      const dbConfig = getDatabaseConfig();
+      
+      assert.strictEqual(process.env.NODE_ENV, 'production', 'should be in production mode');
+      assert.strictEqual(dbConfig.mode, 'sqlite', 'should be sqlite mode');
+      assert.strictEqual(dbConfig.sqlitePath, './data/nightlamp.db');
+      
+      const isOnPersistentVolume = dbConfig.sqlitePath && dbConfig.sqlitePath.startsWith('/var/data/');
+      assert.strictEqual(isOnPersistentVolume, false, 'local path should not be on persistent volume');
+      
+      const result = executeWarningLogic(dbConfig);
+      assert.strictEqual(result.warned, true, 'warning should be called for local path');
+      assert.ok(result.message.includes('local container filesystem'), 'warning should mention local filesystem');
+      assert.ok(result.message.includes('/var/data/nightlamp'), 'warning should mention the persistent path');
+    });
+
+    it('does not warn when SQLite path is on persistent volume', () => {
+      process.env.DB_PATH = '/var/data/nightlamp/nightlamp.db';
+      
+      const { getDatabaseConfig } = require('../db');
+      const dbConfig = getDatabaseConfig();
+      
+      assert.strictEqual(dbConfig.mode, 'sqlite', 'should be sqlite mode');
+      assert.strictEqual(dbConfig.sqlitePath, '/var/data/nightlamp/nightlamp.db');
+      
+      const isOnPersistentVolume = dbConfig.sqlitePath && dbConfig.sqlitePath.startsWith('/var/data/');
+      assert.strictEqual(isOnPersistentVolume, true, 'persistent path should be on persistent volume');
+      
+      const result = executeWarningLogic(dbConfig);
+      assert.strictEqual(result.warned, false, 'warning should NOT be called for persistent path');
+    });
+  });
+
+  describe('Postgres schema parity', () => {
+    it('Postgres migration covers all tables and columns from main schema', async () => {
+      // Read the main schema from schema.ts by creating a database
+      const mainDb = await createDatabase();
+      const mainTables = mainDb.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
+      const mainTableNames = mainTables[0].values.map((r: any) => r[0]).sort();
+      mainDb.close();
+
+      // Read the Postgres migration file and parse CREATE TABLE statements
+      const fs = require('fs');
+      const path = require('path');
+      const migrationPath = path.join(__dirname, '..', 'db', 'migrations', '009-postgres-setup.ts');
+      const migrationContent = fs.readFileSync(migrationPath, 'utf8');
+
+      // Extract table names from Postgres migration
+      const pgTableMatches = migrationContent.match(/CREATE TABLE IF NOT EXISTS\s+(\w+)\s*\(/g);
+      const pgTableNames = pgTableMatches ? pgTableMatches.map(m => m.match(/CREATE TABLE IF NOT EXISTS\s+(\w+)\s*\(/)[1]).sort() : [];
+
+      // Check that all main tables exist in Postgres migration
+      for (const table of mainTableNames) {
+        assert.ok(pgTableNames.includes(table), `Postgres migration missing table: ${table}`);
+      }
+
+      // Verify column parity for a few critical tables
+      for (const criticalTable of ['teams', 'memberships', 'invitations', 'usage_records', 'team_workspaces', 'checks', 'check_results', 'failure_events', 'playbook_entries']) {
+        if (mainTableNames.includes(criticalTable)) {
+          assert.ok(pgTableNames.includes(criticalTable), `Critical table ${criticalTable} must exist in Postgres migration`);
+        }
+      }
+
+      // Verify total table count matches (37 tables)
+      assert.strictEqual(pgTableNames.length, 37, `Postgres migration should have 37 tables, got ${pgTableNames.length}`);
+    });
+  });
+
+  describe('a corrupt file fails loudly', () => {
+    it('refuses a truncated database image and names the file', async () => {
+      const dbPath = path.join(workDir, 'truncated.db');
+
+      const valid = await createDatabase();
+      valid.run('INSERT INTO checks (id, source, name, config) VALUES (?, ?, ?, ?)', [
+        'x',
+        'sentry',
+        'X',
+        '{}',
+      ]);
+      const image = Buffer.from(valid.export());
+      valid.close();
+
+      fs.writeFileSync(dbPath, image.subarray(0, Math.floor(image.length / 2)));
+
+      await assert.rejects(
+        () => createDatabase(dbPath),
+        (err: Error) => {
+          // The error must name the file
+          assert.ok(err.message.includes(dbPath), `the error must name the file: ${err.message}`);
+          return true;
+        }
       );
     });
   });

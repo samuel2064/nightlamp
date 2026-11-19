@@ -28,7 +28,14 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
       throw new Error(`Database file ${dbPath} is not a valid SQLite database (invalid magic header).`);
     }
     
-    db = new SQL.Database(persisted);
+    // Load the database and force a parse to catch truncated images that pass header check
+    try {
+      db = new SQL.Database(persisted);
+      // Force a schema parse to detect truncated images that pass header check
+      db.exec('SELECT count(*) FROM sqlite_master');
+    } catch (err: any) {
+      throw new Error(`Database file ${dbPath} is corrupt and could not be opened: ${err.message}`);
+    }
   } else {
     db = new SQL.Database();
   }
