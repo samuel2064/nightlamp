@@ -26,6 +26,7 @@ import { createPlaybookEngine } from '../playbook/engine';
 import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
 import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership, authenticateRequestAsync, requireRole } from './auth';
 import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant } from './tenant';
+import { z } from 'zod';
 
 export interface ApiConfig {
   port: number;
@@ -117,6 +118,19 @@ function requireTenantScope(res: ServerResponse, teamId: string | null): boolean
   }));
   return false;
 }
+
+const MONITOR_RESERVED_SOURCES = ['sentry', 'uptimerobot'];
+const MONITOR_BODY_LIMIT_BYTES = 64 * 1024;
+
+const monitorCreateSchema = z.object({
+  source: z.string().trim().min(1).max(64)
+    .regex(/^[a-z][a-z0-9._-]*$/i, 'source must start with a letter and contain only letters, digits, dots, dashes or underscores')
+    .refine((value) => !MONITOR_RESERVED_SOURCES.includes(value.toLowerCase()), 'source is reserved for integration monitors'),
+  name: z.string().trim().min(1).max(200),
+  config: z.record(z.string(), z.unknown()).default({}),
+  enabled: z.boolean().optional().default(true),
+  teamId: z.string().optional(),
+}).strict();
 
 function buildEventsPayload(db: Database, params: URLSearchParams, teamId: string | null): { events: any[]; count: number; limit: number; offset: number } {
   const limit = Math.min(parseInt(params.get('limit') || '50', 10), 200);
@@ -1280,6 +1294,72 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           const body = JSON.stringify({ monitors, count: monitors.length, limit, offset });
           hotCache.set(ck, body);
           res.end(body);
+          return;
+        }
+        if (req.method === 'POST') {
+          if (!requireTenantScope(res, teamId)) {
+            return;
+          }
+          let body = '';
+          let rejected = false;
+          req.on('data', (chunk) => {
+            if (rejected) return;
+            body += chunk;
+            if (body.length > MONITOR_BODY_LIMIT_BYTES) {
+              rejected = true;
+              body = '';
+              res.writeHead(413);
+              res.end(JSON.stringify({ error: 'Request body is too large' }));
+              req.resume();
+            }
+          });
+          req.on('end', () => {
+            if (rejected) return;
+            let raw: unknown;
+            try {
+              raw = JSON.parse(body || '{}');
+            } catch {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: 'Invalid JSON body', code: 'VALIDATION_ERROR' }));
+              return;
+            }
+            const parsed = monitorCreateSchema.safeParse(raw);
+            if (!parsed.success) {
+              res.writeHead(400);
+              res.end(JSON.stringify({
+                error: 'Invalid monitor payload',
+                code: 'VALIDATION_ERROR',
+                issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message })),
+              }));
+              return;
+            }
+            const { teamId: requestedTeamId, ...input } = parsed.data;
+            if (requestedTeamId !== undefined && requestedTeamId !== teamId) {
+              res.writeHead(403);
+              res.end(JSON.stringify({ error: 'Cannot create a monitor for another organization', code: 'FORBIDDEN' }));
+              return;
+            }
+            const id = uuidv4();
+            db.run(
+              'INSERT INTO checks (id, source, name, config, enabled, team_id) VALUES (?, ?, ?, ?, ?, ?)',
+              [id, input.source, input.name, JSON.stringify(input.config), input.enabled ? 1 : 0, teamId],
+            );
+            hotCache.clear();
+            const row = db.exec('SELECT created_at, updated_at FROM checks WHERE id = ?', [id]);
+            res.writeHead(201);
+            res.end(JSON.stringify({
+              success: true,
+              monitor: {
+                id,
+                source: input.source,
+                name: input.name,
+                config: input.config,
+                enabled: input.enabled,
+                createdAt: row[0].values[0][0],
+                updatedAt: row[0].values[0][1],
+              },
+            }));
+          });
           return;
         }
         res.writeHead(405);

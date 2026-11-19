@@ -85,17 +85,22 @@ export function ensureCheck(
 
 /**
  * Collapse pre-existing duplicate monitor rows, keeping one enabled row per
- * (source, name). Older deployments created one row per poll interval.
+ * (team, source, name). Older deployments created one row per poll interval.
+ *
+ * The grouping is tenant-aware: two organizations may legitimately own
+ * monitors with the same source and name, and collapsing across tenants would
+ * silently disable a monitor another organization still owns.
  */
 export function deduplicateChecks(db: Database): number {
   const result = db.exec(
-    'SELECT id, source, name, enabled FROM checks ORDER BY created_at ASC, id ASC'
+    'SELECT id, source, name, enabled, team_id FROM checks ORDER BY created_at ASC, id ASC'
   );
   if (result.length === 0 || result[0].values.length === 0) return 0;
 
   const groups = new Map<string, { id: string; enabled: boolean }[]>();
   for (const row of result[0].values) {
-    const key = `${row[1]}\u0000${row[2]}`;
+    const team = row[4] === null || row[4] === undefined ? '' : String(row[4]);
+    const key = `${team}\u0000${row[1]}\u0000${row[2]}`;
     const group = groups.get(key) || [];
     group.push({ id: row[0] as string, enabled: Number(row[3]) === 1 });
     groups.set(key, group);
