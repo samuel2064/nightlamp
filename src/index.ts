@@ -42,9 +42,10 @@ async function init(): Promise<void> {
   // and we're in production. The CEO chose Option 1 (Render disk) with DB_PATH on the mount,
   // so warn when the path is NOT under the persistent disk mount point.
   if (isProduction() && dbConfig.mode === 'sqlite') {
-    const isOnPersistentVolume = dbConfig.sqlitePath && dbConfig.sqlitePath.startsWith('/var/data/');
+    const persistentMountPath = process.env.PERSISTENT_MOUNT_PATH || '/mnt/data/';
+    const isOnPersistentVolume = dbConfig.sqlitePath && dbConfig.sqlitePath.startsWith(persistentMountPath);
     if (!isOnPersistentVolume) {
-      console.warn('⚠️  [Nightlamp] WARNING: Running in production with SQLite file storage on local container filesystem. Data will be lost on restart/deploy! DB_PATH must point at the mounted disk at /var/data/nightlamp.');
+      console.warn(`⚠️  [Nightlamp] WARNING: Running in production with SQLite file storage on local container filesystem. Data will be lost on restart/deploy! DB_PATH must point at the mounted disk at ${persistentMountPath}nightlamp.db.`);
     }
   }
 

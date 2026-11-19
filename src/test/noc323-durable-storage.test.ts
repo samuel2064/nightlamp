@@ -258,6 +258,7 @@ describe('NOC-323 durable storage', () => {
   describe('the production warning behavior', () => {
     const originalEnv = process.env.NODE_ENV;
     const originalDbPath = process.env.DB_PATH;
+    const originalPersistentMountPath = process.env.PERSISTENT_MOUNT_PATH;
 
     beforeEach(() => {
       process.env.NODE_ENV = 'production';
@@ -270,6 +271,11 @@ describe('NOC-323 durable storage', () => {
       } else {
         delete process.env.DB_PATH;
       }
+      if (originalPersistentMountPath) {
+        process.env.PERSISTENT_MOUNT_PATH = originalPersistentMountPath;
+      } else {
+        delete process.env.PERSISTENT_MOUNT_PATH;
+      }
     });
 
     // Helper to execute the warning logic from init()
@@ -280,9 +286,10 @@ describe('NOC-323 durable storage', () => {
       console.warn = (msg: string) => { warned = true; message = msg; };
       try {
         if (process.env.NODE_ENV === 'production' && dbConfig.mode === 'sqlite') {
-          const isOnPersistentVolume = dbConfig.sqlitePath && dbConfig.sqlitePath.startsWith('/var/data/');
+          const persistentMountPath = process.env.PERSISTENT_MOUNT_PATH || '/mnt/data/';
+          const isOnPersistentVolume = dbConfig.sqlitePath && dbConfig.sqlitePath.startsWith(persistentMountPath);
           if (!isOnPersistentVolume) {
-            console.warn('⚠️  [Nightlamp] WARNING: Running in production with SQLite file storage on local container filesystem. Data will be lost on restart/deploy! DB_PATH must point at the mounted disk at /var/data/nightlamp.');
+            console.warn(`⚠️  [Nightlamp] WARNING: Running in production with SQLite file storage on local container filesystem. Data will be lost on restart/deploy! DB_PATH must point at the mounted disk at ${process.env.PERSISTENT_MOUNT_PATH || '/mnt/data/'}nightlamp.db.`);
           }
         }
       } finally {
@@ -294,32 +301,34 @@ describe('NOC-323 durable storage', () => {
     it('warns when SQLite path is on local container filesystem', () => {
       process.env.DB_PATH = './data/nightlamp.db';
       
-      const { getDatabaseConfig, isProduction } = require('../db');
+      const { getDatabaseConfig } = require('../db');
       const dbConfig = getDatabaseConfig();
       
       assert.strictEqual(process.env.NODE_ENV, 'production', 'should be in production mode');
       assert.strictEqual(dbConfig.mode, 'sqlite', 'should be sqlite mode');
       assert.strictEqual(dbConfig.sqlitePath, './data/nightlamp.db');
       
-      const isOnPersistentVolume = dbConfig.sqlitePath && dbConfig.sqlitePath.startsWith('/var/data/');
+      const persistentMountPath = process.env.PERSISTENT_MOUNT_PATH || '/mnt/data/';
+      const isOnPersistentVolume = dbConfig.sqlitePath && dbConfig.sqlitePath.startsWith(persistentMountPath);
       assert.strictEqual(isOnPersistentVolume, false, 'local path should not be on persistent volume');
       
       const result = executeWarningLogic(dbConfig);
       assert.strictEqual(result.warned, true, 'warning should be called for local path');
       assert.ok(result.message.includes('local container filesystem'), 'warning should mention local filesystem');
-      assert.ok(result.message.includes('/var/data/nightlamp'), 'warning should mention the persistent path');
+      assert.ok(result.message.includes('/mnt/data/nightlamp.db'), 'warning should mention the persistent path');
     });
 
     it('does not warn when SQLite path is on persistent volume', () => {
-      process.env.DB_PATH = '/var/data/nightlamp/nightlamp.db';
+      process.env.DB_PATH = '/mnt/data/nightlamp/nightlamp.db';
       
       const { getDatabaseConfig } = require('../db');
       const dbConfig = getDatabaseConfig();
       
       assert.strictEqual(dbConfig.mode, 'sqlite', 'should be sqlite mode');
-      assert.strictEqual(dbConfig.sqlitePath, '/var/data/nightlamp/nightlamp.db');
+      assert.strictEqual(dbConfig.sqlitePath, '/mnt/data/nightlamp/nightlamp.db');
       
-      const isOnPersistentVolume = dbConfig.sqlitePath && dbConfig.sqlitePath.startsWith('/var/data/');
+      const persistentMountPath = process.env.PERSISTENT_MOUNT_PATH || '/mnt/data/';
+      const isOnPersistentVolume = dbConfig.sqlitePath && dbConfig.sqlitePath.startsWith(persistentMountPath);
       assert.strictEqual(isOnPersistentVolume, true, 'persistent path should be on persistent volume');
       
       const result = executeWarningLogic(dbConfig);
