@@ -84,7 +84,107 @@ export interface HealthStats {
   }
 }
 
-function normalizeHealthStatus(raw: string | undefined): HealthStatus {
+export interface AppCreateInput {
+  name: string
+  url: string
+  platform: string
+  checkType: string
+  checkTarget: string
+  checkIntervalSec: number
+  checkTimeoutSec: number
+  keyword?: string
+  enabled?: boolean
+  alertChannelId: string
+}
+
+export interface AppResponse {
+  id: string
+  teamId: string | null
+  name: string
+  url: string
+  platform: string
+  checkType: string
+  checkTarget: string
+  checkUrl: string
+  checkIntervalSec: number
+  checkInterval: number
+  interval: number
+  checkTimeoutSec: number
+  timeout: number
+  keyword: string | null
+  enabled: boolean
+  alertChannelId: string
+  alertChannel: {
+    id: string
+    name: string
+    type: string
+    enabled: boolean
+  } | null
+  createdAt: string
+  updatedAt: string
+  latestHealth: {
+    id: string
+    appId: string
+    status: string
+    statusCode: number | null
+    latencyMs: number
+    errorType: string | null
+    errorDetail: string | null
+    checkedAt: string
+  } | null
+}
+
+export interface TestCheckInput {
+  checkType: string
+  checkTarget: string
+  checkTimeoutSec?: number
+  keyword?: string
+}
+
+export interface TestCheckResponse {
+  result: {
+    status: string
+    statusCode: number
+    latencyMs: number
+    errorType: string | null
+    errorDetail: string | null
+    checkedAt: string
+  }
+}
+
+export interface PreviewCheckInput {
+  checkType: string
+  checkTarget: string
+  checkTimeoutSec?: number
+  keyword?: string
+}
+
+export interface PreviewCheckResponse {
+  result: {
+    status: string
+    statusCode: number
+    latencyMs: number
+    errorType: string | null
+    errorDetail: string | null
+    checkedAt: string
+  }
+}
+
+export interface AlertChannelCreateInput {
+  name: string
+  type: string
+  config: Record<string, unknown>
+}
+
+export interface AlertChannelResponse {
+  success: boolean
+  id: string
+  name: string
+  type: string
+  teamId: string | null
+}
+
+function normalizeHealthStatus(raw: string | undefined): 'healthy' | 'degraded' | 'critical' {
   switch ((raw || '').toLowerCase()) {
     case 'ok':
     case 'healthy':
@@ -124,9 +224,15 @@ export interface BackendClient {
   checkResults: {
     list: (params?: { limit?: number; offset?: number; status?: string }) => Promise<{ results: CheckResult[]; count: number }>
   }
-  checks: {
-    create: (data: { source: string; name: string; config: any; enabled?: boolean }) => Promise<{ id: string; source: string; name: string; config: any; enabled: boolean; createdAt: string; updatedAt: string }>
-    testCheck: (data: { url: string; type: string; checkType?: string }) => Promise<{ success: boolean; statusCode?: number; latencyMs?: number; error?: string }>
+  apps: {
+    create: (input: AppCreateInput) => Promise<{ app: AppResponse }>
+    testCheck: (appId: string, input: TestCheckInput) => Promise<TestCheckResponse>
+    previewCheck: (input: PreviewCheckInput) => Promise<PreviewCheckResponse>
+    list: () => Promise<{ apps: AppResponse[]; count: number }>
+  }
+  notifications: {
+    createChannel: (input: AlertChannelCreateInput) => Promise<AlertChannelResponse>
+    listChannels: () => Promise<{ channels: { id: string; name: string; type: string; enabled: boolean; teamId: string | null; createdAt: string; updatedAt: string }[]; count: number }>
   }
   playbook: {
     list: () => Promise<{ entries: DiagnosticEntry[]; count: number }>
@@ -190,16 +296,22 @@ export function createBackendClient(token: string | null): BackendClient {
           `/api/check-results?${new URLSearchParams(params as Record<string, string>).toString()}`
         ),
     },
-    checks: {
-      create: (data: { source: string; name: string; config: any; enabled?: boolean }) =>
-        apiFetchPost<{ id: string; source: string; name: string; config: any; enabled: boolean; createdAt: string; updatedAt: string }>(
-          '/api/checks',
-          data
-        ),
-      testCheck: (data: { url: string; type: string; checkType?: string }) =>
-        apiFetchPost<{ success: boolean; statusCode?: number; latencyMs?: number; error?: string }>(
-          '/api/checks/test',
-          data
+    apps: {
+      create: (input: AppCreateInput) =>
+        apiFetchPost<{ app: AppResponse }>('/api/apps', input),
+      testCheck: (appId: string, input: TestCheckInput) =>
+        apiFetchPost<TestCheckResponse>(`/api/apps/${encodeURIComponent(appId)}/test-check`, input),
+      previewCheck: (input: PreviewCheckInput) =>
+        apiFetchPost<PreviewCheckResponse>('/api/apps/test-check', input),
+      list: () =>
+        apiFetch<{ apps: AppResponse[]; count: number }>('/api/apps'),
+    },
+    notifications: {
+      createChannel: (input: AlertChannelCreateInput) =>
+        apiFetchPost<AlertChannelResponse>('/api/notifications/channels', input),
+      listChannels: () =>
+        apiFetch<{ channels: { id: string; name: string; type: string; enabled: boolean; teamId: string | null; createdAt: string; updatedAt: string }[]; count: number }>(
+          '/api/notifications/channels'
         ),
     },
     playbook: {

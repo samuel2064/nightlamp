@@ -1,5 +1,7 @@
 import { router } from './trpc'
 import { monitorsRouter } from './routers/monitors'
+import { appsRouter } from './routers/apps'
+import { notificationsRouter } from './routers/notifications'
 import { incidentsRouter } from './routers/incidents'
 import { healthRouter } from './routers/health'
 import { dependenciesRouter } from './routers/dependencies'
@@ -10,6 +12,8 @@ import { remediationRouter } from './routers/remediation'
 
 export const appRouter = router({
   monitors: monitorsRouter,
+  apps: appsRouter,
+  notifications: notificationsRouter,
   incidents: incidentsRouter,
   health: healthRouter,
   dependencies: dependenciesRouter,
