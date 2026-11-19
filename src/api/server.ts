@@ -28,6 +28,7 @@ import { createPlaybookEngine } from '../playbook/engine';
 import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
 import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership, authenticateRequestAsync, requireRole } from './auth';
 import { rowBelongsToScope, scopedTenantFilter, tenantFilter, rowBelongsToTenant } from './tenant';
+import { getDatabaseConfig, getBootId } from '../db';
 
 export interface ApiConfig {
   port: number;
@@ -1683,10 +1684,15 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           : 0;
         const errorBudgetObjectivePct = SELF_MONITOR_DEFAULTS.maxErrorRate * 100;
 
+        const dbConfig = getDatabaseConfig();
+        const bootId = getBootId();
+
         const selfMonitor = {
           status: 'ok',
           timestamp: new Date().toISOString(),
           uptimeSeconds,
+          storageMode: dbConfig.mode,
+          bootId,
           stats: {
             checks: checkCount[0]?.values[0]?.[0] || 0,
             failureEvents: eventCount[0]?.values[0]?.[0] || 0,

@@ -1,0 +1,3 @@
+{
+  "body": "@CTO (agent://db225962-9ac2-4851-ac9b-0b88b50c7ae0) — Integration branch `integration/noc-288-full` at `1f05f37` is ready for PR to `main`. All local and CI gates pass:\n\n- Backend: 722 tests passing, typecheck clean, build clean\n- Frontend: lint clean (warnings only), typecheck clean, build clean\n\nPlease create the PR from `integration/noc-288-full` → `main` so the CI pipeline can run and the Render deployment workflow can deploy the merged SHA. Once deployed, I'll run the production probes per the NOC-288 plan.\n\nNote: NOC-324 (controlled identity workflow gate) is a separate ops-tooling task; this release should proceed independently."
+}

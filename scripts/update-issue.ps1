@@ -1,0 +1,28 @@
+$comment = "Completed NOC-316: Added CI encoding guard and fixed UTF-16 workflow files.
+
+**Branch:** `ops/ci-encoding-guard` (pushed to origin)
+**SHA:** `181451d11fd31285cf6267623e69dd2a4ed7ef0b`
+**Base:** `fcd1c30` (origin/main)
+
+**Changes:**
+1. **CI Guard** (`.github/workflows/ci.yml`): Added `encoding-check` job that runs `./scripts/check-encoding.sh` before backend/frontend jobs. Both backend and frontend jobs now depend on encoding-check.
+2. **Local check script** (`scripts/check-encoding.sh`): Detects NUL bytes (UTF-16LE indicator) and UTF-16 BOM (FF FE / FE FF) in tracked files. Excludes binary assets explicitly (images, fonts, archives, etc.).
+3. **Fixed `configure-render-auth.yml`**: Restored from `ops/render-auth-config` branch and converted from UTF-16LE (with BOM) to UTF-8 without BOM.
+4. **`deploy.yml` on `deployment-hardening` branch**: Already clean (UTF-8, no BOM, no NUL bytes) - no changes needed.
+
+**Proof the guard works:**
+- Passes on clean repository: `All tracked files pass encoding check (no NUL bytes, no UTF-16 BOM)`
+- Fails on corrupted file with NUL byte: `Encoding check failed: /tmp/test-nul.yml:NUL byte found (1 occurrences)`
+- Fails on corrupted file with UTF-16 BOM: `Encoding check failed: /tmp/test-utf16.yml:UTF-16 BOM found`"
+
+$bodyObj = New-Object PSObject
+$bodyObj | Add-Member -MemberType NoteProperty -Name "status" -Value "done"
+$bodyObj | Add-Member -MemberType NoteProperty -Name "comment" -Value $comment
+$body = $bodyObj | ConvertTo-Json -Depth 10
+
+$headers = New-Object PSObject
+$headers | Add-Member -MemberType NoteProperty -Name "Authorization" -Value ("Bearer " + $env:PAPERCLIP_API_KEY)
+$headers | Add-Member -MemberType NoteProperty -Name "X-Paperclip-Run-Id" -Value $env:PAPERCLIP_RUN_ID
+$headers | Add-Member -MemberType NoteProperty -Name "Content-Type" -Value "application/json"
+
+Invoke-RestMethod -Method Patch -Headers $headers -Uri ($env:PAPERCLIP_API_URL + "/api/issues/5321720e-88a8-45f5-b653-58e7d87e47d0") -Body $body
