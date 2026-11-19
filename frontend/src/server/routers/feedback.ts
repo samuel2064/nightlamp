@@ -1,12 +1,15 @@
 import { z } from 'zod'
-import { router, protectedProcedure } from '../trpc'
+import { TRPCError } from '@trpc/server'
+import { router, tokenProcedure } from '../trpc'
 import { createBackendClient } from '../services/backend'
 import { FEEDBACK_TYPES, SURVEY_IDS } from '@/lib/feedback/contract'
+import { receiptStatusFromRecord } from '@/lib/feedback/receipt'
 
 // The payload shape is the protected backend response contract
 // (origin/feat/noc-253-analytics-ingestion, src/analytics/event-contract.ts
 // validateFeedbackResponse). Exactly the six allowed fields, one response_id
-// per intended submission, and scalar answers only.
+// per intended submission, and scalar answers only. The schema is strict: any
+// unknown top-level key is rejected here instead of being proxied.
 
 const responseIdSchema = z
   .string()
@@ -14,7 +17,7 @@ const responseIdSchema = z
 
 const scalarSchema = z.union([z.string().max(4000), z.number(), z.boolean()])
 
-const submissionSchema = z
+export const submissionSchema = z
   .object({
     response_id: responseIdSchema,
     kind: z.enum(['feedback', 'survey']),
@@ -25,6 +28,7 @@ const submissionSchema = z
     // never copied into analytics.
     response: z.record(z.string(), scalarSchema),
   })
+  .strict()
   .superRefine((value, ctx) => {
     if (value.kind === 'feedback') {
       if (!value.feedback_type) {
@@ -67,15 +71,29 @@ const submissionSchema = z
   })
 
 export const feedbackRouter = router({
-  submit: protectedProcedure
+  submit: tokenProcedure
     .input(submissionSchema)
     .mutation(async ({ ctx, input }) => {
       return createBackendClient(ctx.token).feedback.submit(input)
     }),
 
-  receipt: protectedProcedure
-    .input(z.object({ responseId: responseIdSchema }))
+  receipt: tokenProcedure
+    .input(z.object({ responseId: responseIdSchema }).strict())
     .query(async ({ ctx, input }) => {
-      return createBackendClient(ctx.token).feedback.receipt(input.responseId)
+      const record = await createBackendClient(ctx.token)
+        .feedback.receipt(input.responseId)
+        .catch((error: unknown) => {
+          // The protected backend answers 404 when it has no such response.
+          const message = error instanceof Error ? error.message : String(error)
+          if (/^Backend API error 404/.test(message)) return null
+          throw error
+        })
+      // Metadata-only DTO: raw answers, team and user identifiers stay on the
+      // server. An unknown or unusable record answers NOT_FOUND.
+      const status = record === null ? null : receiptStatusFromRecord(record)
+      if (!status || status.response_id !== input.responseId) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Response not found' })
+      }
+      return status
     }),
 })

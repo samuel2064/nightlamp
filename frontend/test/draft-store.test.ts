@@ -9,11 +9,18 @@ import {
   type FeedbackDraft,
 } from '../src/lib/feedback/draft.ts'
 
-function draft(patch: Partial<FeedbackDraft> = {}): Omit<FeedbackDraft, 'dirty'> & { dirty?: boolean } {
+function draft(
+  patch: Partial<FeedbackDraft> = {}
+): Omit<FeedbackDraft, 'dirty' | 'responseId' | 'payloadFingerprint'> & {
+  dirty?: boolean
+  responseId?: string | null
+  payloadFingerprint?: string | null
+} {
   return {
     kind: 'survey',
     surface: 'nps_day14',
     answers: { score: 9 },
+    responseId: null,
     ...patch,
   }
 }
@@ -66,9 +73,19 @@ test('markDirty promotes a clean draft', () => {
 })
 
 test('a dirty user-created draft is confirmed before it is discarded', () => {
-  const dirty: FeedbackDraft = { ...draft(), dirty: true }
+  const dirty: FeedbackDraft = {
+    ...draft(),
+    dirty: true,
+    responseId: null,
+    payloadFingerprint: null,
+  }
   assert.deepEqual(shouldConfirmDiscard(dirty), { confirm: true, offer: 'keep' })
-  const clean: FeedbackDraft = { ...draft(), dirty: false }
+  const clean: FeedbackDraft = {
+    ...draft(),
+    dirty: false,
+    responseId: null,
+    payloadFingerprint: null,
+  }
   assert.deepEqual(shouldConfirmDiscard(clean), { confirm: false, offer: null })
   assert.deepEqual(shouldConfirmDiscard(null), { confirm: false, offer: null })
 })

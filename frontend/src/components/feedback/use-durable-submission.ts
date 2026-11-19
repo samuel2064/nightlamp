@@ -38,10 +38,12 @@ export interface DurableSubmissionApi {
 // Wires a surface's values to the durable submission machine while preserving
 // the in-memory draft. The draft is cleared only after a confirmed success or
 // an explicit discard - never on navigation attempts that the user declined.
+// A remounted surface (authentication expiry, navigation back) resumes the
+// session draft, including the original response_id bound to it.
 export function useDurableSubmission<TValues extends Record<string, string | number | boolean | string[]>>(
   config: DurableSubmissionConfig<TValues>,
 ): DurableSubmissionApi {
-  const submission = useFeedbackSubmission()
+  const submission = useFeedbackSubmission({ kind: config.kind, surface: config.surface })
   const [issues, setIssues] = useState<{ fieldId: string; message: string }[]>([])
   const { kind, surface, values, validate, toSubmission } = config
 
@@ -53,6 +55,18 @@ export function useDurableSubmission<TValues extends Record<string, string | num
       feedbackDraftStore.set(draft)
     }
   }, [draft, values])
+
+  // Keep the draft's response_id and payload binding in step with the
+  // controller: the id the answers are bound to must survive a remount and a
+  // reauthentication.
+  useEffect(() => {
+    if (submission.state.responseId !== null) {
+      feedbackDraftStore.setResponseId(
+        submission.state.responseId,
+        submission.state.payloadFingerprint
+      )
+    }
+  }, [submission.state.responseId, submission.state.payloadFingerprint])
 
   const buildSubmission = useCallback((): Omit<FeedbackSubmission, 'response_id'> | null => {
     const mapped = mapValuesToResponse(values)

@@ -12,6 +12,7 @@ import { FeedbackSurface } from './feedback-form'
 import { SURFACE_SHEET_CLASS } from './survey-modal'
 import { useDraftGuard } from './use-durable-submission'
 import { DraftDiscardConfirm } from './draft-confirm'
+import { restoredAnswers } from '@/lib/feedback/draft'
 import { feedbackDefinitionFor, type FeedbackValues } from '@/lib/feedback/feedback-definitions'
 import type { FeedbackType } from '@/lib/feedback/contract'
 
@@ -30,9 +31,11 @@ export function FeedbackSheet({ type, open, onClose, idPrefix = 'feedback' }: Fe
   const [values, setValues] = React.useState<FeedbackValues>({})
   const definition = feedbackDefinitionFor(type)
 
+  // Resume the session draft on open so a remount (authentication expiry,
+  // navigation back) does not lose the answers or their response_id.
   React.useEffect(() => {
-    if (!open) setValues({})
-  }, [open, type])
+    if (open && definition) setValues(restoredAnswers('feedback', definition.feedback_type))
+  }, [open, type, definition])
 
   const guard = useDraftGuard(onClose)
 

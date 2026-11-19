@@ -52,3 +52,18 @@ export interface FeedbackReceipt {
   received_at: string
   forward_status?: string
 }
+
+/**
+ * Safe metadata-only view of a stored response, served by the frontend receipt
+ * route. The raw backend record carries the raw answers, team and user
+ * identifiers; those never leave the server. Only what an ambiguous timeout
+ * reconciliation needs is published: identity, canonical event and timestamps.
+ */
+export interface FeedbackReceiptStatus {
+  response_id: string
+  kind: 'feedback' | 'survey'
+  event: 'survey_completed' | 'feedback_submitted'
+  event_id: string | null
+  received_at: string
+  score: number | null
+}

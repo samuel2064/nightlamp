@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react'
 import { trpc } from '@/lib/trpc'
 import type { FeedbackReceipt, FeedbackSubmission } from '@/lib/feedback/contract'
+import { restoredBinding } from '@/lib/feedback/draft'
+import { receiptFromStatus } from '@/lib/feedback/receipt'
 import {
   createSubmissionController,
   type SubmissionController,
@@ -28,21 +30,44 @@ function isDurableReceipt(value: unknown): value is FeedbackReceipt {
   )
 }
 
+/** Surface identity used to restore a session draft after a remount or a
+ * reauthentication: only the same kind+surface draft is offered back. */
+export interface RestoreKey {
+  kind: 'feedback' | 'survey'
+  surface: string
+}
+
 // Wires the pure submission state machine to the protected tRPC mutation.
-// Success is only reachable through a durable 2xx receipt from the server;
-// anything else (including an uncertain timeout) lands in the failed state with
-// the draft and its response_id preserved for a retry.
-export function useFeedbackSubmission(): FeedbackSubmissionApi {
+// Success is only reachable through a complete, validated durable receipt from
+// the server; anything else (including an uncertain timeout) lands in the
+// failed state with the draft and its response_id preserved for a retry. An
+// ambiguous failure is reconciled through the receipt route before the
+// "not sent yet" copy is shown.
+export function useFeedbackSubmission(restore: RestoreKey | null = null): FeedbackSubmissionApi {
   const submitMutation = trpc.feedback.submit.useMutation()
-  const [controller] = useState(() =>
-    createSubmissionController(async (submission: FeedbackSubmission) => {
-      const receipt = await submitMutation.mutateAsync(submission)
-      if (!isDurableReceipt(receipt)) {
-        throw new Error('The server did not record the response')
+  const utils = trpc.useUtils()
+  const [controller] = useState(() => {
+    const binding = restore ? restoredBinding(restore.kind, restore.surface) : null
+    return createSubmissionController(
+      async (submission: FeedbackSubmission) => {
+        const receipt = await submitMutation.mutateAsync(submission)
+        if (!isDurableReceipt(receipt)) {
+          throw new Error('The server did not record the response')
+        }
+        return receipt
+      },
+      {
+        responseId: binding?.responseId,
+        payloadFingerprint: binding?.payloadFingerprint ?? null,
+        reconcile: async (submission: FeedbackSubmission) => {
+          // The receipt route answers NOT_FOUND for an unknown response, which
+          // reconciles as "no record" (the draft was not sent).
+          const status = await utils.feedback.receipt.fetch({ responseId: submission.response_id })
+          return receiptFromStatus(status, submission)
+        },
       }
-      return receipt
-    })
-  )
+    )
+  })
   const [state, setState] = useState<SubmissionState>(controller.getState())
 
   useEffect(() => controller.subscribe(setState), [controller])

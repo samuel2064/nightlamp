@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { SurveyInterior } from './survey-surface'
 import { useDraftGuard } from './use-durable-submission'
 import { DraftDiscardConfirm } from './draft-confirm'
+import { restoredAnswers } from '@/lib/feedback/draft'
 import type { SurveyAnswers, SurveyDefinition } from '@/lib/feedback/survey-definitions'
 
 // Inline microsurvey surface (contextual, automatic prompts).
@@ -35,23 +36,25 @@ export function MicrosurveyInline({
 }: MicrosurveyInlineProps) {
   const [answers, setAnswers] = React.useState<SurveyAnswers>({})
 
+  // Resume the session draft on open so a remount does not lose the answers or
+  // the response_id bound to them.
   React.useEffect(() => {
-    if (!open) setAnswers({})
+    if (open) setAnswers(restoredAnswers('survey', definition.id))
   }, [open, definition.id])
-
-  // Escape dismisses without moving focus anywhere it was not already.
-  React.useEffect(() => {
-    if (!open) return
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onDismiss()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [open, onDismiss])
 
   const guard = useDraftGuard(onDismiss)
 
-  if (!open) return null
+  // Escape dismisses without moving focus anywhere it was not already, and it
+  // goes through the same dirty-draft guard as the close button: a dirty draft
+  // is confirmed before it is thrown away.
+  React.useEffect(() => {
+    if (!open) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') guard.requestClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [open, guard])
 
   return (
     <section

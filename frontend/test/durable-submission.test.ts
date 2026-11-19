@@ -22,7 +22,7 @@ const SURVEY = {
 }
 
 function receipt(overrides: Partial<FeedbackReceipt> = {}): FeedbackReceipt {
-  return {
+  const base = {
     success: true,
     duplicate: false,
     response_id: 'resp-1',
@@ -31,6 +31,9 @@ function receipt(overrides: Partial<FeedbackReceipt> = {}): FeedbackReceipt {
     received_at: '2026-11-19T10:00:00.000Z',
     ...overrides,
   }
+  // The backend derives the canonical event_id from the response_id, so a
+  // receipt always carries matching identifiers.
+  return { ...base, event_id: overrides.event_id ?? base.response_id } as FeedbackReceipt
 }
 
 test('success is only reachable through a durable receipt', async () => {

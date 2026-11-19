@@ -1,0 +1,182 @@
+{
+  "source": "origin/feat/noc-253-analytics-ingestion",
+  "commit": "a48ae78",
+  "file": "src/analytics/event-contract.ts",
+  "generatedAt": "2026-11-19T20:00:51.534Z",
+  "generator": "probes against the real validateAnalyticsEvent / validateFeedbackResponse exports",
+  "enums": {
+    "SURVEY_IDS": [
+      "welcome",
+      "microsurvey_monitor_created",
+      "microsurvey_alert_received",
+      "microsurvey_playbook_completed",
+      "microsurvey_team_invite",
+      "nps_day14",
+      "nps_day30",
+      "exit_account_delete",
+      "exit_inactivity"
+    ],
+    "FEEDBACK_TYPES": [
+      "bug_report",
+      "feature_request",
+      "general"
+    ],
+    "NPS_CATEGORIES": [
+      "detractor",
+      "passive",
+      "promoter"
+    ],
+    "PLAN_TIERS": [
+      "free",
+      "pro",
+      "team",
+      "enterprise"
+    ]
+  },
+  "events": {
+    "feedback_submitted": {
+      "required": [
+        "feedback_type"
+      ],
+      "optional": [
+        "response_id",
+        "response_time_ms"
+      ],
+      "forbidden": [
+        "sentiment",
+        "page_context",
+        "has_screenshot",
+        "has_annotation",
+        "title",
+        "description"
+      ]
+    },
+    "survey_completed": {
+      "required": [
+        "survey_id"
+      ],
+      "optional": [
+        "response_id",
+        "score",
+        "nps_category",
+        "completion_rate",
+        "time_spent_ms"
+      ],
+      "forbidden": [
+        "dismissed",
+        "answers",
+        "reason",
+        "reasons",
+        "would_stay",
+        "contact_consent",
+        "improvement"
+      ]
+    }
+  },
+  "superProperties": [
+    "user_id_hash",
+    "organization_id_hash",
+    "plan",
+    "signup_date",
+    "cohort_week",
+    "device_type",
+    "os",
+    "browser",
+    "app_version",
+    "is_beta",
+    "session_id",
+    "experiment",
+    "variant",
+    "route_template",
+    "response_id"
+  ],
+  "piiPropertyNames": [
+    "email",
+    "email_address",
+    "user_email",
+    "name",
+    "full_name",
+    "first_name",
+    "last_name",
+    "phone",
+    "ip",
+    "ip_address",
+    "title",
+    "description",
+    "body",
+    "text",
+    "comment",
+    "message",
+    "note",
+    "notes",
+    "detail",
+    "details",
+    "answer",
+    "answers",
+    "reason",
+    "reasons",
+    "improvement",
+    "would_stay",
+    "contact_consent",
+    "screenshot",
+    "screenshots",
+    "image",
+    "images",
+    "annotation",
+    "annotations",
+    "url",
+    "urls",
+    "uri",
+    "link",
+    "page_url",
+    "query",
+    "query_string",
+    "referrer",
+    "referer",
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
+    "root_cause",
+    "fix_applied",
+    "playbook_name",
+    "feature_title",
+    "steps_to_reproduce",
+    "last_action",
+    "context_page",
+    "page_context"
+  ],
+  "feedbackResponseContract": {
+    "allowedTopLevel": [
+      "response_id",
+      "kind",
+      "feedback_type",
+      "survey_id",
+      "score",
+      "response"
+    ],
+    "responseIdPattern": "^[A-Za-z0-9._:-]{1,200}$",
+    "scoreRange": [
+      0,
+      10
+    ],
+    "maxAnswerLength": 4000,
+    "scalarAnswerTypes": [
+      "string",
+      "number",
+      "boolean"
+    ]
+  },
+  "analyticsDerivationRules": {
+    "eventForKind": {
+      "feedback": "feedback_submitted",
+      "survey": "survey_completed"
+    },
+    "eventIdEqualsResponseId": true,
+    "surveyScoreProperty": "score",
+    "npsCategoryCut": {
+      "detractor": "0-6",
+      "passive": "7-8",
+      "promoter": "9-10"
+    }
+  }
+}

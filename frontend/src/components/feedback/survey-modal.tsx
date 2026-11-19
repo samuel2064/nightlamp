@@ -11,6 +11,7 @@ import {
 import { SurveyInterior } from './survey-surface'
 import { useDraftGuard } from './use-durable-submission'
 import { DraftDiscardConfirm } from './draft-confirm'
+import { restoredAnswers } from '@/lib/feedback/draft'
 import type { SurveyAnswers, SurveyDefinition } from '@/lib/feedback/survey-definitions'
 
 // Modal survey surface (welcome, NPS, exit). Radix Dialog supplies the
@@ -34,9 +35,11 @@ export function SurveyModal({ definition, open, onDismiss, onSent, idPrefix = 's
   const [answers, setAnswers] = React.useState<SurveyAnswers>({})
   const guard = useDraftGuard(onDismiss)
 
-  // A dismissed or completed survey must not reopen with the previous answers.
+  // A remount (authentication expiry, navigation back) resumes the session
+  // draft for this survey, including the response_id bound to it. A draft
+  // cleared on discard or confirmed success reopens empty.
   React.useEffect(() => {
-    if (!open) setAnswers({})
+    if (open) setAnswers(restoredAnswers('survey', definition.id))
   }, [open, definition.id])
 
   return (

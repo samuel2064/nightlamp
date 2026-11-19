@@ -12,14 +12,26 @@ export interface FeedbackDraft {
   surface: string
   answers: Record<string, FeedbackDraftValue>
   dirty: boolean
+  /** The response_id this draft's answers are bound to; reused on retry. */
+  responseId: string | null
+  /** Fingerprint of the payload the response_id is bound to. */
+  payloadFingerprint: string | null
 }
 
 export type DraftDiscardIntent = 'navigate' | 'close' | 'submit-success' | 'explicit-discard'
 
 export interface FeedbackDraftStore {
   get: () => FeedbackDraft | null
-  set: (draft: Omit<FeedbackDraft, 'dirty'> & { dirty?: boolean }) => void
+  set: (
+    draft: Omit<FeedbackDraft, 'dirty' | 'responseId' | 'payloadFingerprint'> & {
+      dirty?: boolean
+      responseId?: string | null
+      payloadFingerprint?: string | null
+    }
+  ) => void
   markDirty: () => void
+  /** Records the response_id and payload fingerprint the answers are bound to. */
+  setResponseId: (responseId: string | null, payloadFingerprint?: string | null) => void
   clear: (intent: DraftDiscardIntent) => boolean
   isDirty: () => boolean
 }
@@ -32,10 +44,28 @@ export function createFeedbackDraftStore(): FeedbackDraftStore {
   return {
     get: () => draft,
     set: (next) => {
-      draft = { ...next, dirty: next.dirty ?? true }
+      draft = {
+        kind: next.kind,
+        surface: next.surface,
+        answers: next.answers,
+        dirty: next.dirty ?? true,
+        // A fresh answers object must not silently drop a bound response_id:
+        // an absent value keeps whatever key the draft already holds.
+        responseId: next.responseId ?? draft?.responseId ?? null,
+        payloadFingerprint: next.payloadFingerprint ?? draft?.payloadFingerprint ?? null,
+      }
     },
     markDirty: () => {
       if (draft) draft = { ...draft, dirty: true }
+    },
+    setResponseId: (responseId, payloadFingerprint) => {
+      if (draft) {
+        draft = {
+          ...draft,
+          responseId,
+          payloadFingerprint: payloadFingerprint ?? (responseId === null ? null : draft.payloadFingerprint),
+        }
+      }
     },
     clear: (intent) => {
       if (intent === 'navigate' || intent === 'close') {
@@ -52,8 +82,44 @@ export function createFeedbackDraftStore(): FeedbackDraftStore {
 
 // One shared in-memory draft store for the browser session. It is deliberately
 // a singleton: draft persistence across timeout, offline and reauthentication
-// is a session-scoped behaviour, not a per-component one.
+// is a session-scoped behaviour, not a per-component one. Module scope survives
+// React remounts and client-side navigation (sign-in and back); it does not
+// survive a page reload, and no surface may claim otherwise.
+
 export const feedbackDraftStore = createFeedbackDraftStore()
+
+/**
+ * Restore path for a remounted or reauthenticated surface: only the draft for
+ * exactly this surface is offered back, so a survey never inherits a feedback
+ * draft (or another survey's) answers.
+ */
+export function restoredDraft(kind: FeedbackDraftKind, surface: string): FeedbackDraft | null {
+  const draft = feedbackDraftStore.get()
+  if (!draft || draft.kind !== kind || draft.surface !== surface) return null
+  return draft
+}
+
+/** Answers to hydrate a surface with on mount (empty when nothing to restore). */
+export function restoredAnswers(kind: FeedbackDraftKind, surface: string): Record<string, FeedbackDraftValue> {
+  return restoredDraft(kind, surface)?.answers ?? {}
+}
+
+/** The response_id the restored draft is bound to, if any. */
+export function restoredResponseId(kind: FeedbackDraftKind, surface: string): string | null {
+  return restoredDraft(kind, surface)?.responseId ?? null
+}
+
+/** The full id+fingerprint binding of a restored draft, for a resumed
+ * controller: a retry reuses the response_id only when the current payload
+ * still matches the bound fingerprint. */
+export function restoredBinding(
+  kind: FeedbackDraftKind,
+  surface: string
+): { responseId: string; payloadFingerprint: string | null } | null {
+  const draft = restoredDraft(kind, surface)
+  if (!draft || draft.responseId === null) return null
+  return { responseId: draft.responseId, payloadFingerprint: draft.payloadFingerprint }
+}
 
 export interface DiscardDecision {
   confirm: boolean

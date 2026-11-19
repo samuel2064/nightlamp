@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { radioGroupKeyAction, radioGroupTargetIndex } from '@/lib/feedback/radio-group-keys'
 import type { SurveyAnswers, SurveyDefinition } from '@/lib/feedback/survey-definitions'
 
 // Shared survey question renderers (NOC-161 addendum contract):
@@ -56,28 +57,11 @@ export function KeyboardRadioGroup({
   const onKeyDown = (event: React.KeyboardEvent, value: number) => {
     if (disabled) return
     const index = values.indexOf(value)
-    switch (event.key) {
-      case 'ArrowRight':
-      case 'ArrowDown':
-        event.preventDefault()
-        focusIndex(index + 1 < values.length ? index + 1 : 0)
-        break
-      case 'ArrowLeft':
-      case 'ArrowUp':
-        event.preventDefault()
-        focusIndex(index - 1 >= 0 ? index - 1 : values.length - 1)
-        break
-      case 'Home':
-        event.preventDefault()
-        focusIndex(0)
-        break
-      case 'End':
-        event.preventDefault()
-        focusIndex(values.length - 1)
-        break
-      default:
-        break
-    }
+    const action = radioGroupKeyAction(event.key)
+    if (!action) return
+    event.preventDefault()
+    const target = radioGroupTargetIndex(action, index, values.length)
+    if (target !== null) focusIndex(target)
   }
 
   return (
@@ -260,15 +244,17 @@ export function NpsField({
   const current = typeof value === 'number' ? value : undefined
   return (
     <div>
-      {/* Ascending order, wraps to at most five columns below 480px so the
-          eleven choices never form a single row. */}
+      {/* Ascending order. Container-safe wrapping: the number of columns
+          follows the panel's own width, never the viewport's, so the eleven
+          choices never overflow a narrow inline sheet or form one wide row.
+          Every item keeps its 44x44 hit area. */}
       <KeyboardRadioGroup
         label={label}
         values={Array.from({ length: 11 }, (_, index) => index)}
         current={current}
         disabled={disabled}
         onSelect={onChange}
-        className="grid grid-cols-5 gap-1 min-[480px]:grid-cols-11"
+        className="grid grid-cols-[repeat(auto-fit,minmax(44px,1fr))] gap-1"
         renderItem={(score, selected, tabIndex, ref) => (
           <button
             key={score}

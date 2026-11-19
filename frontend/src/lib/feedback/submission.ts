@@ -2,7 +2,12 @@
 //
 // Contract highlights (NOC-332 / NOC-161 addendum):
 // - one response_id per intended submission, reused on retry
-// - success only after a durable server receipt (a timeout is not success)
+// - the response_id is bound to the original payload: a retry of the same
+//   payload reuses the key; a changed payload is a new intended submission and
+//   gets a fresh key. An old key never travels with different content.
+// - success only after a complete, validated durable server receipt (a timeout
+//   is not success); an ambiguous timeout is reconciled through the receipt
+//   endpoint before "not sent" is claimed
 // - drafts survive timeout / offline / authentication expiry (caller owns the draft)
 // - a duplicate receipt is durable acceptance of the same response
 
@@ -37,9 +42,17 @@ export interface SubmissionState {
   receipt: FeedbackReceipt | null
   attempts: number
   responseId: string | null
+  /** The payload the current response_id is bound to (retry must not change it). */
+  payload: Omit<FeedbackSubmission, 'response_id'> | null
+  /** Fingerprint of that payload, restorable across a remount. */
+  payloadFingerprint: string | null
 }
 
 export type SubmitFn = (submission: FeedbackSubmission) => Promise<FeedbackReceipt>
+
+/** Resolves the durable outcome of an already-sent response_id, or null when
+ * the server has no record of it. Only called for an ambiguous failure. */
+export type ReconcileFn = (submission: FeedbackSubmission) => Promise<FeedbackReceipt | null>
 
 export interface SubmissionController {
   getState: () => SubmissionState
@@ -51,6 +64,48 @@ export interface SubmissionController {
 }
 
 export const NOT_SENT_MESSAGE = 'Not sent yet. Your feedback is still here.'
+
+// Canonical, order-independent serialization of an intended submission. Two
+// payloads with the same fingerprint are the same intended submission.
+export function submissionFingerprint(submission: Omit<FeedbackSubmission, 'response_id'>): string {
+  return JSON.stringify(sortValue(submission))
+}
+
+function sortValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortValue)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([key, entry]) => [key, sortValue(entry)])
+    )
+  }
+  return value
+}
+
+const CANONICAL_EVENTS = {
+  feedback: 'feedback_submitted',
+  survey: 'survey_completed',
+} as const
+
+// The complete-receipt rule: a 2xx body only counts as durable acceptance when
+// it agrees with what was actually sent. A mismatched, incomplete or
+// unparseable receipt is a server failure, never a success.
+export function validateFeedbackReceipt(
+  receipt: unknown,
+  expected: { response_id: string; kind: 'feedback' | 'survey' },
+): FeedbackReceipt | null {
+  if (!receipt || typeof receipt !== 'object') return null
+  const record = receipt as Record<string, unknown>
+  if (record.success !== true) return null
+  if (typeof record.response_id !== 'string' || record.response_id !== expected.response_id) return null
+  if (typeof record.event_id !== 'string' || record.event_id.length === 0) return null
+  if (record.event_id !== expected.response_id) return null
+  if (record.event !== CANONICAL_EVENTS[expected.kind]) return null
+  if (typeof record.duplicate !== 'boolean') return null
+  if (typeof record.received_at !== 'string' || Number.isNaN(Date.parse(record.received_at))) return null
+  return record as unknown as FeedbackReceipt
+}
 
 export function classifyBackendError(error: unknown): SubmissionError {
   if (error && typeof error === 'object' && 'kind' in error) {
@@ -125,7 +180,7 @@ function extractFieldErrors(error: unknown, message?: string): string[] {
 
 export function createSubmissionController(
   submit: SubmitFn,
-  options: { responseId?: string } = {},
+  options: { responseId?: string; payloadFingerprint?: string | null; reconcile?: ReconcileFn } = {},
 ): SubmissionController {
   let state: SubmissionState = {
     phase: 'editing',
@@ -135,6 +190,8 @@ export function createSubmissionController(
     receipt: null,
     attempts: 0,
     responseId: options.responseId ?? null,
+    payload: null,
+    payloadFingerprint: options.payloadFingerprint ?? null,
   }
   const listeners = new Set<(state: SubmissionState) => void>()
 
@@ -145,12 +202,31 @@ export function createSubmissionController(
 
   const send = async (submission: Omit<FeedbackSubmission, 'response_id'>): Promise<FeedbackReceipt | null> => {
     if (state.phase === 'sending') return null
-    // One response_id per intended submission; a retry reuses it.
-    const responseId = state.responseId ?? generateResponseId()
-    setState({ responseId, phase: 'sending', message: null, fieldErrors: [], attempts: state.attempts + 1 })
+    // One response_id per intended submission. A retry of the same payload
+    // reuses the key; a changed payload is a new intended submission with a
+    // fresh key, so an old key never travels with different content. The
+    // binding survives a remount through the restored fingerprint.
+    const fingerprint = submissionFingerprint(submission)
+    const boundFingerprint =
+      state.payload !== null ? submissionFingerprint(state.payload) : state.payloadFingerprint
+    const sameIntent = state.responseId !== null && boundFingerprint !== null && boundFingerprint === fingerprint
+    const responseId = sameIntent ? (state.responseId as string) : generateResponseId()
+    setState({
+      responseId,
+      payload: submission,
+      payloadFingerprint: fingerprint,
+      phase: 'sending',
+      message: null,
+      fieldErrors: [],
+      attempts: state.attempts + 1,
+    })
     const payload: FeedbackSubmission = { ...submission, response_id: responseId }
     try {
-      const receipt = await submit(payload)
+      const raw = await submit(payload)
+      const receipt = validateFeedbackReceipt(raw, { response_id: responseId, kind: submission.kind })
+      if (!receipt) {
+        throw submissionError('server', 'The server did not confirm the response. Your answers are still here.')
+      }
       setState({
         phase: 'sent',
         failureKind: null,
@@ -162,6 +238,44 @@ export function createSubmissionController(
       return receipt
     } catch (error) {
       const classified = classifyBackendError(error)
+      // A timeout or a lost response is ambiguous: the server may have
+      // committed the response. Reconcile through the receipt endpoint before
+      // claiming the draft was not sent.
+      if (
+        options.reconcile &&
+        (classified.kind === 'timeout' || classified.kind === 'network')
+      ) {
+        try {
+          const reconciled = await options.reconcile(payload)
+          const receipt = validateFeedbackReceipt(reconciled, { response_id: responseId, kind: submission.kind })
+          if (receipt) {
+            setState({
+              phase: 'sent',
+              failureKind: null,
+              message: null,
+              fieldErrors: [],
+              receipt,
+              responseId,
+            })
+            return receipt
+          }
+        } catch (reconcileError) {
+          // A stored-but-incomplete record is a server integrity failure and is
+          // reported as such, never as "not sent".
+          const reconciledError = classifyBackendError(reconcileError)
+          if (reconciledError.kind === 'server') {
+            setState({
+              phase: 'failed',
+              failureKind: 'server',
+              message: reconciledError.message,
+              fieldErrors: [],
+            })
+            return null
+          }
+          // Otherwise reconciliation itself failed: stay with the original
+          // ambiguous failure below.
+        }
+      }
       setState({
         phase: 'failed',
         failureKind: classified.kind,
@@ -181,10 +295,10 @@ export function createSubmissionController(
     submit: (submission) => send(submission),
     retry: (submission) => send(submission),
     discard: () => {
-      setState({ phase: 'editing', failureKind: null, message: null, fieldErrors: [], responseId: null })
+      setState({ phase: 'editing', failureKind: null, message: null, fieldErrors: [], responseId: null, payload: null, payloadFingerprint: null })
     },
     reset: () => {
-      setState({ phase: 'editing', failureKind: null, message: null, fieldErrors: [], receipt: null, responseId: null })
+      setState({ phase: 'editing', failureKind: null, message: null, fieldErrors: [], receipt: null, responseId: null, payload: null, payloadFingerprint: null })
     },
   }
 }
@@ -201,5 +315,7 @@ export function canonicalEventFor(receipt: FeedbackReceipt): 'survey_completed' 
 }
 
 export function isDurableReceipt(receipt: FeedbackReceipt | null): receipt is FeedbackReceipt {
-  return receipt !== null && receipt.success === true && typeof receipt.event_id === 'string'
+  if (receipt === null || receipt.success !== true) return false
+  return typeof receipt.response_id === 'string' && receipt.response_id.length > 0 &&
+    typeof receipt.event_id === 'string' && receipt.event_id.length > 0
 }

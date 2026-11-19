@@ -1,5 +1,26 @@
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'
 
+// Bounded request deadline. Without it a hung backend turns into an indefinite
+// pending request and the client can never tell the user the truth about
+// whether the response was accepted. A timeout is an ambiguous outcome: the
+// caller reconciles through the receipt endpoint before claiming "not sent".
+const DEFAULT_TIMEOUT_MS = 20_000
+
+function requestTimeoutMs(): number {
+  const raw = process.env.BACKEND_REQUEST_TIMEOUT_MS
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TIMEOUT_MS
+}
+
+/** Timeout error the feedback client classifies as an ambiguous failure. */
+export class BackendTimeoutError extends Error {
+  readonly kind = 'timeout'
+  constructor(message = 'The backend request timed out') {
+    super(message)
+    this.name = 'TimeoutError'
+  }
+}
+
 import type { DiagnosticEntry, PlaybookExecution } from '@/components/playbook/types'
 import type { FeedbackReceipt, FeedbackSubmission } from '@/lib/feedback/contract'
 
@@ -121,6 +142,8 @@ export interface RemediationRun {
 export interface BackendClient {
   events: {
     list: (params?: { limit?: number; offset?: number; type?: string; severity?: string }) => Promise<{ events: FailureEvent[]; count: number }>
+    /** Durable, tenant-scoped acknowledgement through the protected backend. */
+    acknowledge: (id: string) => Promise<{ success: boolean; id: string }>
   }
   checkResults: {
     list: (params?: { limit?: number; offset?: number; status?: string }) => Promise<{ results: CheckResult[]; count: number }>
@@ -151,10 +174,13 @@ export interface BackendClient {
   }
   feedback: {
     submit: (input: FeedbackSubmission) => Promise<FeedbackReceipt>
-    receipt: (responseId: string) => Promise<{ item: FeedbackResponseRecord }>
+    /** Raw stored record; reducible to the safe DTO by the router. */
+    receipt: (responseId: string) => Promise<unknown>
   }
 }
 
+/** Protected backend feedback record as stored (a48ae78 store.ts). Only the
+ * safe subset is ever returned to a caller; see receiptStatusFromRecord. */
 export interface FeedbackResponseRecord {
   response_id: string
   kind: 'feedback' | 'survey'
@@ -173,10 +199,25 @@ export function createBackendClient(token: string | null): BackendClient {
     if (token) {
       headers.Authorization = `Bearer ${token}`
     }
-    const res = await fetch(`${BACKEND_URL}${path}`, {
-      ...init,
-      headers,
-    })
+    // Bounded deadline: an aborted request is never silently treated as a
+    // definitive failure, the caller reconciles the outcome.
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), requestTimeoutMs())
+    let res: Response
+    try {
+      res = await fetch(`${BACKEND_URL}${path}`, {
+        ...init,
+        headers,
+        signal: controller.signal,
+      })
+    } catch (error) {
+      if ((error as Error)?.name === 'AbortError') {
+        throw new BackendTimeoutError()
+      }
+      throw error
+    } finally {
+      clearTimeout(timer)
+    }
     if (!res.ok) {
       const body = await res.text()
       throw new Error(`Backend API error ${res.status}: ${body}`)
@@ -193,6 +234,10 @@ export function createBackendClient(token: string | null): BackendClient {
         apiFetch<{ events: FailureEvent[]; count: number }>(
           `/api/events?${new URLSearchParams(params as Record<string, string>).toString()}`
         ),
+      // Durable acknowledgement: the backend persists acknowledged = 1 and
+      // refuses a cross-tenant id with 403 and an unknown id with 404.
+      acknowledge: (id: string) =>
+        apiFetchPost<{ success: boolean; id: string }>('/api/events/acknowledge', { id }),
     },
     checkResults: {
       list: (params?: { limit?: number; offset?: number; status?: string }) =>
@@ -270,10 +315,14 @@ export function createBackendClient(token: string | null): BackendClient {
     feedback: {
       submit: (input: FeedbackSubmission) =>
         apiFetchPost<FeedbackReceipt>('/api/feedback/responses', input),
-      receipt: (responseId: string) =>
-        apiFetch<{ item: FeedbackResponseRecord }>(
+      // The backend answers { item: record } with the raw stored record; the
+      // router reduces it to the safe metadata-only DTO.
+      receipt: async (responseId: string): Promise<unknown> => {
+        const body = await apiFetch<{ item: unknown }>(
           `/api/feedback/responses/${encodeURIComponent(responseId)}`
-        ),
+        )
+        return body.item
+      },
     },
   }
 }

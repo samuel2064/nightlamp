@@ -43,7 +43,9 @@ export function submissionView(
   } else if (isFailed) {
     if (state.failureKind === 'auth') {
       headline = 'Sign in to finish sending'
-      detail = 'Your answers are saved on this device until you sign in.'
+      // Truthful persistence claim: the draft lives in this browser session's
+      // memory only - never in storage, a URL or a cookie.
+      detail = 'Your answers are held in this browser session until you sign in.'
       offerSignIn = true
     } else {
       headline = state.failureKind === 'validation' ? 'Please fix and try again' : 'Not sent yet'

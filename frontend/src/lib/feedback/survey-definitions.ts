@@ -5,16 +5,17 @@
 import { isSurveyId, type SurveyId } from './contract'
 
 export type SurveyQuestion =
-  | { kind: 'single'; id: string; label: string; options: { value: string; label: string }[] }
+  | { kind: 'single'; id: string; label: string; options: { value: string; label: string }[]; required?: boolean }
   | {
       kind: 'multi'
       id: string
       label: string
       options: { value: string; label: string }[]
       otherId?: string
+      required?: boolean
     }
-  | { kind: 'stars'; id: string; label: string; max: number; anchors: [string, string] }
-  | { kind: 'nps'; id: string; label: string }
+  | { kind: 'stars'; id: string; label: string; max: number; anchors: [string, string]; required?: boolean }
+  | { kind: 'nps'; id: string; label: string; required?: boolean }
   | { kind: 'text'; id: string; label: string; required?: boolean; placeholder?: string }
 
 export interface SurveyDefinition {
@@ -69,8 +70,8 @@ export const SURVEY_DEFINITIONS: Record<SurveyId, SurveyDefinition> = {
     title: 'Welcome to Nightlamp Beta',
     description: 'Help us build for you. Three quick questions, under a minute.',
     questions: [
-      { kind: 'multi', id: 'primary_goal', label: "What's your primary goal?", options: OPTION_GOALS, otherId: 'primary_goal_other' },
-      { kind: 'single', id: 'apps_to_monitor', label: 'How many apps do you want to monitor?', options: OPTION_APP_COUNTS },
+      { kind: 'multi', id: 'primary_goal', label: "What's your primary goal?", options: OPTION_GOALS, otherId: 'primary_goal_other', required: true },
+      { kind: 'single', id: 'apps_to_monitor', label: 'How many apps do you want to monitor?', options: OPTION_APP_COUNTS, required: true },
       { kind: 'multi', id: 'current_setup', label: 'Current monitoring setup?', options: OPTION_SETUP, otherId: 'current_setup_other' },
     ],
     submitLabel: 'Continue',
@@ -78,25 +79,25 @@ export const SURVEY_DEFINITIONS: Record<SurveyId, SurveyDefinition> = {
   microsurvey_monitor_created: {
     id: 'microsurvey_monitor_created',
     title: 'How easy was setup?',
-    questions: [{ kind: 'stars', id: 'ease', label: 'How easy was setup?', max: 5, anchors: ['Hard', 'Easy'] }],
+    questions: [{ kind: 'stars', id: 'ease', label: 'How easy was setup?', max: 5, anchors: ['Hard', 'Easy'], required: true }],
   },
   microsurvey_alert_received: {
     id: 'microsurvey_alert_received',
     title: 'How useful was this alert?',
-    questions: [{ kind: 'stars', id: 'usefulness', label: 'How useful was this alert?', max: 5, anchors: ['Useless', 'Essential'] }],
+    questions: [{ kind: 'stars', id: 'usefulness', label: 'How useful was this alert?', max: 5, anchors: ['Useless', 'Essential'], required: true }],
   },
   microsurvey_playbook_completed: {
     id: 'microsurvey_playbook_completed',
     title: 'Did the playbook resolve it?',
     questions: [
-      { kind: 'single', id: 'outcome', label: 'Did the playbook resolve it?', options: OPTION_PLAYBOOK_OUTCOME },
+      { kind: 'single', id: 'outcome', label: 'Did the playbook resolve it?', options: OPTION_PLAYBOOK_OUTCOME, required: true },
       { kind: 'text', id: 'details', label: 'Details (optional)', required: false },
     ],
   },
   microsurvey_team_invite: {
     id: 'microsurvey_team_invite',
     title: 'How clear were role permissions?',
-    questions: [{ kind: 'stars', id: 'clarity', label: 'How clear were role permissions?', max: 5, anchors: ['Confusing', 'Crystal clear'] }],
+    questions: [{ kind: 'stars', id: 'clarity', label: 'How clear were role permissions?', max: 5, anchors: ['Confusing', 'Crystal clear'], required: true }],
   },
   nps_day14: {
     id: 'nps_day14',
@@ -122,9 +123,9 @@ export const SURVEY_DEFINITIONS: Record<SurveyId, SurveyDefinition> = {
     id: 'exit_account_delete',
     title: 'Before you go',
     questions: [
-      { kind: 'multi', id: 'reasons', label: 'Why are you leaving?', options: OPTION_EXIT_REASONS, otherId: 'reasons_other' },
+      { kind: 'multi', id: 'reasons', label: 'Why are you leaving?', options: OPTION_EXIT_REASONS, otherId: 'reasons_other', required: true },
       { kind: 'text', id: 'would_stay', label: 'What would have made you stay?', required: false },
-      { kind: 'stars', id: 'experience', label: 'Overall experience', max: 5, anchors: ['Poor', 'Excellent'] },
+      { kind: 'stars', id: 'experience', label: 'Overall experience', max: 5, anchors: ['Poor', 'Excellent'], required: true },
     ],
     submitLabel: 'Submit',
   },
@@ -133,7 +134,7 @@ export const SURVEY_DEFINITIONS: Record<SurveyId, SurveyDefinition> = {
     title: "Haven't seen you in a while",
     description: 'Everything OK? One minute of feedback helps.',
     questions: [
-      { kind: 'multi', id: 'reasons', label: "What's been going on?", options: OPTION_EXIT_REASONS, otherId: 'reasons_other' },
+      { kind: 'multi', id: 'reasons', label: "What's been going on?", options: OPTION_EXIT_REASONS, otherId: 'reasons_other', required: true },
       { kind: 'text', id: 'would_stay', label: 'What would bring you back?', required: false },
     ],
     submitLabel: 'Submit',
@@ -188,16 +189,42 @@ export function surveyValidationIssues(
 ): { questionId: string; message: string }[] {
   const issues: { questionId: string; message: string }[] = []
   for (const question of definition.questions) {
-    if (question.kind === 'text' && question.required) {
-      const value = answers[question.id]
+    const required = 'required' in question ? question.required === true : false
+    const value = answers[question.id]
+
+    if (question.kind === 'text' && required) {
       if (typeof value !== 'string' || value.trim().length === 0) {
         issues.push({ questionId: question.id, message: `${question.label} is required` })
       }
     }
+
+    if (question.kind === 'single' && required) {
+      if (!question.options.some((option) => option.value === value)) {
+        issues.push({ questionId: question.id, message: `Choose one option for ${question.label.toLowerCase()}.` })
+      }
+    }
+
+    if (question.kind === 'multi' && required) {
+      const selected = Array.isArray(value) ? value : []
+      if (selected.length === 0) {
+        issues.push({ questionId: question.id, message: `Choose at least one option for ${question.label.toLowerCase()}.` })
+      }
+    }
+
+    if (question.kind === 'stars' && required) {
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > question.max) {
+        issues.push({ questionId: question.id, message: `Choose a rating from 1 to ${question.max}.` })
+      }
+    }
+
     // The NPS scale carries the canonical `score` on the survey response, so a
-    // submission without it is incomplete rather than merely unscored.
-    if (question.kind === 'nps' && typeof answers[question.id] !== 'number') {
-      issues.push({ questionId: question.id, message: 'Choose a score from 0 to 10.' })
+    // submission without it is incomplete rather than merely unscored. The
+    // range check here is the one applied to the final payload: a score outside
+    // 0-10 is a validation failure, not a silently dropped property.
+    if (question.kind === 'nps') {
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 10) {
+        issues.push({ questionId: question.id, message: 'Choose a score from 0 to 10.' })
+      }
     }
   }
   const mapped = toScalarResponse(answers)
@@ -209,7 +236,9 @@ export function surveyValidationIssues(
 
 // The NPS question is the only scale mapped to the response `score` field
 // (0-10, allowlisted on survey_completed). Star ratings stay in the response
-// object so analytics never receives a scale it cannot interpret.
+// object so analytics never receives a scale it cannot interpret. The same
+// range rule the validator enforces is applied here, so a validated payload
+// can never carry a score the contract would reject.
 export function npsScoreFor(
   definition: SurveyDefinition,
   answers: SurveyAnswers,
@@ -217,5 +246,7 @@ export function npsScoreFor(
   const question = definition.questions.find((entry) => entry.kind === 'nps')
   if (!question) return undefined
   const value = answers[question.id]
-  return typeof value === 'number' && value >= 0 && value <= 10 ? value : undefined
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 10
+    ? value
+    : undefined
 }

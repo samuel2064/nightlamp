@@ -4,9 +4,12 @@
 // - eligibility is rechecked after the idle delay; suppressed prompts are
 //   discarded, never queued
 // - user-initiated surfaces bypass this engine entirely
+// - a completion is never counted as a dismissal, and a suppression discards a
+//   prompt that is already visible, not only one still waiting
 //
-// Purity note: the scheduler is framework-free so the trigger, cap and
-// suppression rules can be exercised directly in tests.
+// Purity note: the scheduler is framework-free so the trigger, cap,
+// suppression, completion-vs-dismissal and discard rules can be exercised
+// directly in tests. SurveyProvider is a thin wiring layer over this engine.
 
 import type { SurveyId } from './contract'
 
@@ -17,6 +20,34 @@ export const SUPPRESSION_REASONS: readonly SuppressionReason[] = [
   'critical_alert',
   'unsaved_work',
   'route_change',
+]
+
+// The automatic surface, kept framework-free so "which flows are actually
+// claimed" is testable. A trigger exists only when a durable server acceptance
+// backs it in this release: monitor creation, team invitation and the
+// day-14/day-30 and exit surveys have no such action, so nothing schedules
+// them automatically.
+export type SurveyTriggerAction = 'alert_received' | 'playbook_completed'
+
+export const MICROSURVEY_FOR_ACTION: Record<SurveyTriggerAction, SurveyId> = {
+  alert_received: 'microsurvey_alert_received',
+  playbook_completed: 'microsurvey_playbook_completed',
+}
+
+/** Surveys the user opens themselves: modal, focus-contained surfaces. */
+export const USER_INITIATED_SURVEYS: readonly SurveyId[] = [
+  'welcome',
+  'nps_day14',
+  'nps_day30',
+  'exit_account_delete',
+  'exit_inactivity',
+]
+
+/** Surveys the scheduler may open after a successful action: inline prompts. */
+export const AUTOMATIC_SURVEYS: readonly SurveyId[] = [
+  'microsurvey_monitor_created',
+  'microsurvey_alert_received',
+  'microsurvey_playbook_completed',
 ]
 
 export type ScheduleOutcome =
@@ -35,14 +66,21 @@ export interface SurveySchedulerOptions {
   maxDismissals?: number
   schedule?: (fn: () => void, ms: number) => void
   clearScheduled?: (handle: unknown) => void
+  /** Whether an automatic prompt is currently visible. */
+  hasActivePrompt?: () => boolean
+  /** Called when a visible automatic prompt must be discarded by suppression. */
+  onDiscardActivePrompt?: (reason: SuppressionReason) => void
 }
 
 export interface SurveyScheduler {
   request: (surveyId: SurveyId) => ScheduleOutcome
   cancel: (reason: SuppressionReason) => void
   dismiss: () => void
+  /** A completion: records the completion, never a dismissal. */
+  complete: () => void
   isShownThisSession: () => boolean
   dismissalCount: () => number
+  completionCount: () => number
   isPending: () => SurveyId | null
   pendingSuppression: () => SuppressionReason | null
 }
@@ -90,6 +128,7 @@ export function createSurveyScheduler(options: SurveySchedulerOptions = {}): Sur
 
   let shownThisSession = false
   let localDismissals = 0
+  let localCompletions = 0
   let pending: PendingPrompt | null = null
   let pendingSuppression: SuppressionReason | null = null
 
@@ -133,13 +172,26 @@ export function createSurveyScheduler(options: SurveySchedulerOptions = {}): Sur
     cancel: (reason) => {
       clearPending()
       pendingSuppression = reason
+      // Suppression discards a prompt that is already visible, not only one
+      // still waiting for the idle delay: an incident, a critical alert,
+      // unsaved work or a route change never leaves a prompt on screen.
+      if (options.hasActivePrompt?.() && options.onDiscardActivePrompt) {
+        options.onDiscardActivePrompt(reason)
+      }
     },
     dismiss: () => {
       localDismissals += 1
       clearPending()
     },
+    complete: () => {
+      // A completed survey is not a dismissal and does not count toward the
+      // dismissal cap; the one-per-session cap still applies.
+      localCompletions += 1
+      clearPending()
+    },
     isShownThisSession: () => shownThisSession,
     dismissalCount: () => localDismissals,
+    completionCount: () => localCompletions,
     isPending: () => pending?.surveyId ?? null,
     pendingSuppression: () => pendingSuppression,
   }
