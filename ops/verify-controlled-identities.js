@@ -1362,11 +1362,11 @@ async function run() {
     await revokeSession(controlledOwnerId);
     await deleteControlledOwner(controlledOwnerId);
   }
-}
 
-finalHealth = await fetchHealth();
-const finalUptimeInfo = extractUptimeAndBootId(finalHealth);
-log(`Final health check: HTTP ${finalHealth.status} ${finalHealth.body ? `(uptimeSeconds: ${finalUptimeInfo.uptime}s, bootId: ${finalUptimeInfo.bootId})` : 'no body'}`);
+  finalHealth = await fetchHealth();
+  const finalUptimeInfo = extractUptimeAndBootId(finalHealth);
+  log(`Final health check: HTTP ${finalHealth.status} ${finalHealth.body ? `(uptimeSeconds: ${finalUptimeInfo.uptime}s, bootId: ${finalUptimeInfo.bootId})` : 'no body'}`);
+}
 
 function filterReportForPublish(report) {
   const allowedIdentityKeys = new Set([
@@ -1457,6 +1457,8 @@ async function cleanup() {
   const passed = report.probes.filter((entry) => entry.ok).length;
   const contractMismatches = report.probes.filter((entry) => entry.contractMismatch).length;
   const total = report.probes.length;
+  const noc337ProbesRun = report.identity.noc337ProbesRun || 0;
+  const noc337ProbesPassed = report.identity.noc337ProbesPassed || 0;
   
   report.probesPassed = passed;
   report.probesTotal = total;
