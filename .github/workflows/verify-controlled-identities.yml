@@ -5,6 +5,12 @@ on:
   push:
     branches:
       - ops/controlled-identity-verification
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ops/verify-controlled-identities.js'
+      - 'ops/guard-harness.js'
+      - 'ops/fixtures/**'
 
 permissions:
   contents: write
@@ -17,10 +23,42 @@ env:
   NIGHTLAMP_API: https://nightlamp-api.onrender.com
   REPORT_BRANCH: ops/render-auth-report
   RESULT_FILE: /tmp/controlled-identity-result.json
+  FIXTURE_FILE: ops/fixtures/stale-harness.js
 
 jobs:
+  guard-checks:
+    name: Guard Checks (ownership claim + identifier redaction)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Run ownership claim guard on current harness
+        run: |
+          node ops/guard-harness.js ops/verify-controlled-identities.js
+      
+      - name: Run ownership claim guard on stale fixture (must FAIL)
+        run: |
+          if node ops/guard-harness.js ops/fixtures/stale-harness.js; then
+            echo "::error::Stale harness fixture should FAIL the guard but passed"
+            exit 1
+          else
+            echo "PASS: Stale harness fixture correctly FAILS the guard"
+          fi
+      
+      - name: Run identifier redaction guard (requires report file)
+        if: always()
+        run: |
+          if [ -f "$RESULT_FILE" ]; then
+            node ops/guard-harness.js ops/verify-controlled-identities.js "$RESULT_FILE"
+          else
+            echo "No report file found, skipping identifier redaction check"
+          fi
+
   verify:
     name: Verify controlled identities and run NOC-280/NOC-274 production matrix
+    needs: guard-checks
     runs-on: ubuntu-latest
     env:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
@@ -66,6 +104,11 @@ jobs:
             jq -r '"- member identified: \(.identity.memberIdentified // false)"' /tmp/report.json
             jq -r '"- test team created: \(.identity.testTeamCreated // false)"' /tmp/report.json
             jq -r '"- test team removed: \(.identity.testTeamRemoved // false)"' /tmp/report.json
+            jq -r '"- full matrix run: \(.identity.fullMatrixRun // false)"' /tmp/report.json
+            jq -r '"- run invalid: \(.identity.runInvalid // false)"' /tmp/report.json
+            if [ "$(jq -r '.identity.runInvalidReason // ""' /tmp/report.json)" != "" ]; then
+              jq -r '"- run invalid reason: \(.identity.runInvalidReason)"' /tmp/report.json
+            fi
             jq -r '"- no token, secret or response body is included in this report"' /tmp/report.json
           } >> "$GITHUB_STEP_SUMMARY"
           git config user.name "nightlamp-ci"
@@ -79,3 +122,10 @@ jobs:
           git add reports/controlled-identity-verification.json
           git commit -m "controlled identity verification report $GITHUB_RUN_ID" || true
           git push origin "HEAD:$REPORT_BRANCH"
+
+      - name: Run identifier redaction guard on report
+        if: always()
+        run: |
+          if [ -f "$RESULT_FILE" ]; then
+            node ops/guard-harness.js ops/verify-controlled-identities.js "$RESULT_FILE"
+          fi
