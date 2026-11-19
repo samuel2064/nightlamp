@@ -10,6 +10,7 @@ import { SentryConfig, SentryIssue, UptimeRobotConfig, UptimeRobotMonitor, XConf
 import { runSentryCheck, runUptimeRobotCheck, sanitizeChecks } from './engine';
 import { createStripeClient } from './billing';
 import { startApiServer } from './api';
+import { warnIfClerkJwtAudienceConfigured } from './api/auth';
 import { initEngine, setDb } from './remediation/engine';
 
 process.on('uncaughtException', (err) => {
@@ -32,6 +33,7 @@ let sentryIssueCache: SentryIssue[] = [];
 let uptimeRobotMonitorCache: UptimeRobotMonitor[] = [];
 
 async function init(): Promise<void> {
+  warnIfClerkJwtAudienceConfigured();
   console.log('[Nightlamp] Initializing health check engine...');
   db = await createDatabase(DB_PATH);
   setDb(db);
