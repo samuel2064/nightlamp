@@ -1,3 +1,7 @@
+// NOC-324: Updated for controlled identity workflow gate
+// - Exits non-zero on probe failures, contract mismatches, or server restart
+// - Report derived from observed results (testTeamRemoved, fullMatrixRun)
+// - Server restart detection via /api/health uptime/bootId comparison
 const fs = require('fs');
 const { execFileSync } = require('child_process');
 
@@ -25,6 +29,8 @@ const report = {
 let secretKey = null;
 const userSessions = new Map();
 const runStartedAt = Date.now();
+let initialHealth = null;
+let finalHealth = null;
 
 function redact(text) {
   return String(text)
@@ -415,6 +421,32 @@ function getUserTeamIds(userRole) {
   return userRole.teams.map(t => t.id).filter(Boolean);
 }
 
+async function fetchHealth() {
+  try {
+    const response = await fetch(`${nightlampApi}/api/health`);
+    const text = await response.text();
+    let parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch (error) {
+      parsed = null;
+    }
+    return { status: response.status, body: parsed };
+  } catch (error) {
+    return { status: 0, body: null, error: error.message };
+  }
+}
+
+function extractUptimeAndBootId(health) {
+  if (!health || !health.body || typeof health.body !== 'object') {
+    return { uptime: undefined, bootId: undefined };
+  }
+  const body = health.body;
+  const uptime = body.uptimeSeconds !== undefined ? body.uptimeSeconds : (body.uptime !== undefined ? body.uptime : undefined);
+  const bootId = body.bootId;
+  return { uptime, bootId };
+}
+
 async function probeWithForeignRowCheck(label, url, options, expected, userId, userRole) {
   const response = await fetch(url, options);
   const text = await response.text();
@@ -693,8 +725,8 @@ async function runNoc280Matrix(memberToken, teamId, memberId, ownerToken) {
         test: 'member-role-persists',
         expected: ['member'],
         status: 200,
-        code: memberEntry.role,
-        ok: memberEntry.role === 'member'
+    code: memberEntry.role,
+    ok: memberEntry.role === 'member'
       });
       log(`Member role persists as: ${memberEntry.role} ${memberEntry.role === 'member' ? 'PASS' : 'FAIL'}`);
     }
@@ -811,7 +843,53 @@ async function revokeAllSessions() {
   }
 }
 
+async function checkServerRestart() {
+  if (!initialHealth || !finalHealth) {
+    return { valid: false, reason: 'health check missing: initial or final health not captured' };
+  }
+  
+  const initial = extractUptimeAndBootId(initialHealth);
+  const final = extractUptimeAndBootId(finalHealth);
+  
+  const initialUptime = initial.uptime;
+  const finalUptime = final.uptime;
+  const initialBootId = initial.bootId;
+  const finalBootId = final.bootId;
+  
+  const hasUptimeSignal = initialUptime !== undefined && finalUptime !== undefined;
+  const hasBootIdSignal = initialBootId !== undefined && finalBootId !== undefined;
+  
+  if (!hasUptimeSignal && !hasBootIdSignal) {
+    return { 
+      valid: false, 
+      reason: 'health payload exposed no usable uptime or boot id signal; run invalidated' 
+    };
+  }
+  
+  if (hasUptimeSignal) {
+    if (finalUptime < initialUptime) {
+      return { 
+        valid: false, 
+        reason: `server restart detected: uptime went backwards (initial: ${initialUptime}s, final: ${finalUptime}s)` 
+      };
+    }
+  }
+  
+  if (hasBootIdSignal && initialBootId !== finalBootId) {
+    return { 
+      valid: false, 
+      reason: `server restart detected: boot id changed (initial: ${initialBootId}, final: ${finalBootId})` 
+    };
+  }
+  
+  return { valid: true, reason: 'no restart detected' };
+}
+
 async function run() {
+  initialHealth = await fetchHealth();
+  const initialUptimeInfo = extractUptimeAndBootId(initialHealth);
+  log(`Initial health check: HTTP ${initialHealth.status} ${initialHealth.body ? `(uptimeSeconds: ${initialUptimeInfo.uptime}s, bootId: ${initialUptimeInfo.bootId})` : 'no body'}`);
+  
   if (!await fetchFrontendEnv()) return;
   
   const existingUsers = await enumerateClerkUsers();
@@ -899,7 +977,7 @@ async function run() {
   }
   
   let privilegeProbesRun = 0;
-let privilegeProbesPassed = 0;
+  let privilegeProbesPassed = 0;
 
   if (ownerEntry && memberEntry) {
     const creation = await createTestTeam(ownerEntry.token);
@@ -948,8 +1026,11 @@ let privilegeProbesPassed = 0;
         privilegeProbesPassed += noc274Results.filter(r => r.ok).length;
         report.probes.push(...noc274Results);
         
-        await cleanupTestTeam(ownerEntry.token, testTeamId);
-        report.identity.testTeamRemoved = true;
+        const cleanupSuccess = await cleanupTestTeam(ownerEntry.token, testTeamId);
+        report.identity.testTeamRemoved = cleanupSuccess;
+        if (!cleanupSuccess) {
+          log('WARNING: test team cleanup failed');
+        }
       } else {
         report.identity.memberAddedToTestTeam = false;
         log('The member identity could not be added to the test team, the privilege matrix did not run.');
@@ -960,7 +1041,10 @@ let privilegeProbesPassed = 0;
       log(`Team creation failed with HTTP ${creation.status}; the privilege matrix cannot run.`);
       report.identity.matrixBlockedBy = `team creation failed (HTTP ${creation.status})`;
     }
-    report.identity.fullMatrixRun = report.identity.testTeamCreated && report.identity.memberAddedToTestTeam && privilegeProbesRun > 0;
+    report.identity.fullMatrixRun = report.identity.testTeamCreated && 
+      report.identity.memberAddedToTestTeam && 
+      privilegeProbesRun > 0 && 
+      privilegeProbesPassed === privilegeProbesRun;
   } else {
     log('Cannot run full matrix: missing owner or second identity');
     report.identity.fullMatrixRun = false;
@@ -1006,6 +1090,10 @@ let privilegeProbesPassed = 0;
     await revokeSession(controlledOwnerId);
     await deleteControlledOwner(controlledOwnerId);
   }
+  
+  finalHealth = await fetchHealth();
+  const finalUptimeInfo = extractUptimeAndBootId(finalHealth);
+  log(`Final health check: HTTP ${finalHealth.status} ${finalHealth.body ? `(uptimeSeconds: ${finalUptimeInfo.uptime}s, bootId: ${finalUptimeInfo.bootId})` : 'no body'}`);
 }
 
 function filterReportForPublish(report) {
@@ -1031,6 +1119,8 @@ function filterReportForPublish(report) {
     'memberJoinedViaInvitation',
     'teamOwnerBoundToToken',
     'matrixBlockedBy',
+    'runInvalid',
+    'runInvalidReason',
   ]);
   
   const filteredIdentity = {};
@@ -1088,31 +1178,52 @@ async function cleanup() {
   
   const passed = report.probes.filter((entry) => entry.ok).length;
   const contractMismatches = report.probes.filter((entry) => entry.contractMismatch).length;
+  const total = report.probes.length;
+  
   report.probesPassed = passed;
-  report.probesTotal = report.probes.length;
+  report.probesTotal = total;
   report.identity.noTeamExpectedStatus = noTeamExpectedStatus;
   report.identity.contractMismatches = contractMismatches;
   
+  const restartCheck = await checkServerRestart();
+  if (!restartCheck.valid) {
+    report.identity.runInvalid = true;
+    report.identity.runInvalidReason = restartCheck.reason;
+    log(`RUN INVALID: ${restartCheck.reason}`);
+  } else {
+    report.identity.runInvalid = false;
+    report.identity.runInvalidReason = restartCheck.reason;
+    log(`Run validity: ${restartCheck.reason}`);
+  }
+  
   const publishReport = filterReportForPublish(report);
   fs.writeFileSync(resultFile, JSON.stringify(publishReport, null, 2));
-  log(`probes as expected: ${passed}/${report.probes.length}`);
+  log(`probes as expected: ${passed}/${total}`);
   if (contractMismatches > 0) {
     log(`CONTRACT MISMATCHES: ${contractMismatches} probes returned 200 when decided contract (NOC-294) requires 403`);
+  }
+  
+  const hasFailures = passed < total || contractMismatches > 0 || restartCheck.valid === false;
+  if (hasFailures) {
+    throw new Error(`Verification failed: ${total - passed} probes failed, ${contractMismatches} contract mismatches${!restartCheck.valid ? ', run invalid' : ''}`);
   }
 }
 
 async function main() {
   try {
     await run();
+    await cleanup();
+    log('=== VERIFICATION SUCCESSFUL ===');
+    process.exit(0);
   } catch (error) {
     report.error = `the verification script failed: ${(error && error.message) || 'unknown error'}`;
     log(report.error);
-  } finally {
     try {
       await cleanup();
-    } catch (error) {
-      log(`the cleanup failed: ${(error && error.message) || 'unknown error'}`);
+    } catch (cleanupError) {
+      log(`the cleanup failed: ${(cleanupError && cleanupError.message) || 'unknown error'}`);
     }
+    process.exit(1);
   }
 }
 
