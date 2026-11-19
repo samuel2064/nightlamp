@@ -26,4 +26,25 @@ export const monitorsRouter = router({
       if (!result) throw new Error(`Monitor ${input.id} not found`)
       return result
     }),
+
+  create: protectedProcedure
+    .input(z.object({
+      source: z.string(),
+      name: z.string(),
+      config: z.record(z.any()),
+      enabled: z.boolean().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      return createBackendClient(ctx.token).checks.create(input)
+    }),
+
+  testCheck: protectedProcedure
+    .input(z.object({
+      url: z.string().url(),
+      type: z.string(),
+      checkType: z.string().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      return createBackendClient(ctx.token).checks.testCheck(input)
+    }),
 })
