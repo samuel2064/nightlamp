@@ -177,3 +177,19 @@ export function getDatabaseConfig(): DatabaseConfig {
   }
   return { mode: 'sqlite', sqlitePath: dbPath };
 }
+
+export function getPersistentMountPath(): string {
+  return process.env.PERSISTENT_MOUNT_PATH || '/var/data/nightlamp';
+}
+
+export function shouldWarnAboutEphemeralStorage(config: DatabaseConfig): string | null {
+  if (!isProduction() || config.mode !== 'sqlite') {
+    return null;
+  }
+  const persistentMountPath = getPersistentMountPath();
+  const isOnPersistentVolume = config.sqlitePath && config.sqlitePath.startsWith(persistentMountPath);
+  if (isOnPersistentVolume) {
+    return null;
+  }
+  return `WARNING: Running in production with SQLite file storage on local container filesystem. Data will be lost on restart/deploy! DB_PATH must point at the mounted disk at ${persistentMountPath}/nightlamp.db.`;
+}

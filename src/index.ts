@@ -5,7 +5,7 @@ import * as cron from 'node-cron';
 import { Database } from 'sql.js';
 import * as dotenv from 'dotenv';
 import { v4 as uuidv4 } from 'uuid';
-import { createDatabase, saveDatabase, getDatabaseConfig, isProduction, getBootId } from './db';
+import { createDatabase, saveDatabase, getDatabaseConfig, isProduction, getBootId, shouldWarnAboutEphemeralStorage } from './db';
 import { SentryConfig, SentryIssue, UptimeRobotConfig, UptimeRobotMonitor, XConfig, buildAuthorizeUrl, postThread, verifyCredentials, refreshAccessToken, exchangeCodeForToken, parseLaunchThread, isSentryConfigPlaceholder, isUptimeRobotConfigPlaceholder } from './connectors';
 import { runSentryCheck, runUptimeRobotCheck, sanitizeChecks } from './engine';
 import { createStripeClient } from './billing';
@@ -41,12 +41,9 @@ async function init(): Promise<void> {
   // Warn only when the database path is on the local container filesystem (not persistent volume)
   // and we're in production. The CEO chose Option 1 (Render disk) with DB_PATH on the mount,
   // so warn when the path is NOT under the persistent disk mount point.
-  if (isProduction() && dbConfig.mode === 'sqlite') {
-    const persistentMountPath = process.env.PERSISTENT_MOUNT_PATH || '/mnt/data/';
-    const isOnPersistentVolume = dbConfig.sqlitePath && dbConfig.sqlitePath.startsWith(persistentMountPath);
-    if (!isOnPersistentVolume) {
-      console.warn(`⚠️  [Nightlamp] WARNING: Running in production with SQLite file storage on local container filesystem. Data will be lost on restart/deploy! DB_PATH must point at the mounted disk at ${persistentMountPath}nightlamp.db.`);
-    }
+const warning = shouldWarnAboutEphemeralStorage(dbConfig);
+  if (warning) {
+    console.warn(`\u26a0\ufe0f  [Nightlamp] ${warning}`);
   }
 
   console.log('[Nightlamp] Initializing health check engine...');
