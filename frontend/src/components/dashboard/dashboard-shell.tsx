@@ -6,6 +6,8 @@ import { Menu, ChevronRight } from 'lucide-react'
 import { Sidebar, navItems } from '@/components/dashboard/sidebar'
 import { ConnectionIndicator } from '@/components/dashboard/connection-indicator'
 import { Button } from '@/components/ui/button'
+import { FeedbackWidget } from '@/components/feedback/feedback-widget'
+import { SurveyProvider } from '@/components/feedback/survey-provider'
 
 function currentLabel(pathname: string): string {
   const match = [...navItems]
@@ -32,58 +34,63 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   }, [navOpen])
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-background">
-      <Sidebar className="hidden md:flex" />
+    <SurveyProvider>
+      <div className="flex h-dvh overflow-hidden bg-background">
+        <Sidebar className="hidden md:flex" />
 
-      {navOpen && (
-        <div className="fixed inset-0 z-40 md:hidden">
-          <div
-            className="absolute inset-0 bg-black/60"
-            onClick={() => setNavOpen(false)}
-            aria-hidden
-          />
-          <div className="absolute inset-y-0 left-0 z-50 shadow-elevation-3">
-            <Sidebar
-              onClose={() => setNavOpen(false)}
-              onNavigate={() => setNavOpen(false)}
+        {navOpen && (
+          <div className="fixed inset-0 z-40 md:hidden">
+            <div
+              className="absolute inset-0 bg-black/60"
+              onClick={() => setNavOpen(false)}
+              aria-hidden
             />
+            <div className="absolute inset-y-0 left-0 z-50 shadow-elevation-3">
+              <Sidebar
+                onClose={() => setNavOpen(false)}
+                onNavigate={() => setNavOpen(false)}
+              />
+            </div>
           </div>
+        )}
+
+        <div className="flex min-w-0 flex-1 flex-col">
+          <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-surface-primary/80 px-4 backdrop-blur md:px-6">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-9 md:hidden"
+              onClick={() => setNavOpen(true)}
+              aria-label="Open navigation"
+              aria-expanded={navOpen}
+            >
+              <Menu className="size-5" />
+            </Button>
+
+            <div className="flex min-w-0 items-baseline gap-2">
+              <span className="truncate text-sm font-semibold md:hidden">
+                {currentLabel(pathname)}
+              </span>
+              <span className="hidden items-center gap-1.5 text-xs text-muted-foreground md:inline-flex">
+                <span>Dashboard</span>
+                <ChevronRight className="size-3 text-muted-foreground/60" aria-hidden />
+                <span className="text-foreground">{currentLabel(pathname)}</span>
+              </span>
+            </div>
+
+            <div className="ml-auto flex items-center gap-2">
+              <ConnectionIndicator />
+              {/* Desktop dropdown lives in the header; the mobile floating action
+                  button inside is intentionally position-fixed. */}
+              <FeedbackWidget />
+            </div>
+          </header>
+
+          <main className="flex-1 overflow-y-auto">
+            <div className="mx-auto w-full max-w-7xl p-4 md:p-6">{children}</div>
+          </main>
         </div>
-      )}
-
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-surface-primary/80 px-4 backdrop-blur md:px-6">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-9 md:hidden"
-            onClick={() => setNavOpen(true)}
-            aria-label="Open navigation"
-            aria-expanded={navOpen}
-          >
-            <Menu className="size-5" />
-          </Button>
-
-          <div className="flex min-w-0 items-baseline gap-2">
-            <span className="truncate text-sm font-semibold md:hidden">
-              {currentLabel(pathname)}
-            </span>
-            <span className="hidden items-center gap-1.5 text-xs text-muted-foreground md:inline-flex">
-              <span>Dashboard</span>
-              <ChevronRight className="size-3 text-muted-foreground/60" aria-hidden />
-              <span className="text-foreground">{currentLabel(pathname)}</span>
-            </span>
-          </div>
-
-          <div className="ml-auto flex items-center gap-2">
-            <ConnectionIndicator />
-          </div>
-        </header>
-
-        <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-7xl p-4 md:p-6">{children}</div>
-        </main>
       </div>
-    </div>
+    </SurveyProvider>
   )
 }

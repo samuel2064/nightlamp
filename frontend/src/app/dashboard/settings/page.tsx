@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import { trpc } from '@/lib/trpc'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -235,6 +236,12 @@ interface MonitorRow {
 
 function AppsTab({ rows }: { rows: MonitorRow[] }) {
   const [showWizard, setShowWizard] = useState(false)
+  // Deep link from the optional welcome survey: Skip starts setup immediately.
+  const wizardRequested = useSearchParams().get('wizard') === 'add-app'
+
+  useEffect(() => {
+    if (wizardRequested) setShowWizard(true)
+  }, [wizardRequested])
 
   return (
     <div id="settings-panel-apps" role="tabpanel">
