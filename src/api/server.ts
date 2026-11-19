@@ -427,6 +427,9 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       }
 
       if (path === '/api/playbook/match' || path === '/api/playbook/match/') {
+          if (!requireTenantScope(res, teamId)) {
+            return;
+          }
         const symptoms = parsedUrl.searchParams.get('symptoms') || '';
         if (!symptoms) {
           res.end(JSON.stringify({ matches: [], count: 0 }));
@@ -439,6 +442,9 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       }
 
       if (path === '/api/playbook/correlations' || path === '/api/playbook/correlations/') {
+          if (!requireTenantScope(res, teamId)) {
+            return;
+          }
         const failureType = parsedUrl.searchParams.get('failureType') || '';
         if (!failureType) {
           res.end(JSON.stringify({ correlations: [], count: 0 }));
@@ -662,6 +668,20 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
       if (notificationApi.handle(req, res, auth)) {
         return;
+      }
+
+      const reportsPath = normalizePath(path);
+      if (reportsPath === '/api/reports' || reportsPath.startsWith('/api/reports/')) {
+        if (!requireTenantScope(res, teamId)) {
+          return;
+        }
+      }
+
+      const customPlaybookPath = normalizePath(path);
+      if (customPlaybookPath === '/api/playbooks/custom' || customPlaybookPath.startsWith('/api/playbooks/custom/')) {
+        if (!requireTenantScope(res, teamId)) {
+          return;
+        }
       }
 
       if (reportsApi.handle(req, res, auth)) {

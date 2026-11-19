@@ -278,6 +278,57 @@ describe('NOC-319 team membership binding and fail-closed scoping', () => {
       const row = db.exec('SELECT acknowledged FROM failure_events WHERE id = ?', [eventId]);
       assert.strictEqual(row[0].values[0][0], 0);
     });
+
+  it('answers 403 on /api/playbook/match for a caller with no membership', async () => {
+      assert.ok(teamId, 'a tenant exists to plant owned rows against');
+      const ownedPlaybookId = uuidv4();
+      const sharedPlaybookId = uuidv4();
+      db.run(`INSERT INTO playbook_entries (id, failure_type, title, body, first_seen_at, last_occurrence_at, occurrence_count, team_id)
+              VALUES (?, 'expired_token', 'Owned token playbook', 'token symptoms', datetime('now'), datetime('now'), 1, ?)`,
+        [ownedPlaybookId, teamId]);
+      db.run(`INSERT INTO playbook_entries (id, failure_type, title, body, first_seen_at, last_occurrence_at, occurrence_count, team_id)
+              VALUES (?, 'expired_token', 'Shared token playbook', 'token symptoms', datetime('now'), datetime('now'), 1, NULL)`,
+        [sharedPlaybookId]);
+
+      const res = await call(LONELY_CLERK, '/api/playbook/match?symptoms=token');
+      assert.strictEqual(res.status, 403, JSON.stringify(res.body));
+      assert.strictEqual(res.body.code, 'FORBIDDEN');
+      const serialized = JSON.stringify(res.body);
+      assert.ok(!serialized.includes(ownedPlaybookId), 'the body must carry no owned row');
+      assert.ok(!serialized.includes(sharedPlaybookId), 'the body must carry no unscoped row');
+    });
+
+    it('answers 403 on /api/playbook/correlations for a caller with no membership', async () => {
+      const ownedEventId = uuidv4();
+      const sharedEventId = uuidv4();
+      db.run(`INSERT INTO failure_events (id, check_id, failure_type, severity, title, team_id)
+              VALUES (?, 'check-1', 'expired_token', 'critical', 'Owned token failure', ?)`, [ownedEventId, teamId]);
+      db.run(`INSERT INTO failure_events (id, check_id, failure_type, severity, title, team_id)
+              VALUES (?, 'check-1', 'expired_token', 'critical', 'Shared token failure', NULL)`, [sharedEventId]);
+
+      const res = await call(LONELY_CLERK, '/api/playbook/correlations?failureType=expired_token');
+      assert.strictEqual(res.status, 403, JSON.stringify(res.body));
+      assert.strictEqual(res.body.code, 'FORBIDDEN');
+      const serialized = JSON.stringify(res.body);
+      assert.ok(!serialized.includes(ownedEventId), 'the body must carry no owned row');
+      assert.ok(!serialized.includes(sharedEventId), 'the body must carry no unscoped row');
+    });
+
+    it('answers 403 on /api/reports/incident-trends for a caller with no membership', async () => {
+      const ownedEventId = uuidv4();
+      const sharedEventId = uuidv4();
+      db.run(`INSERT INTO failure_events (id, check_id, failure_type, severity, title, team_id)
+              VALUES (?, 'check-1', 'expired_token', 'critical', 'Owned report failure', ?)`, [ownedEventId, teamId]);
+      db.run(`INSERT INTO failure_events (id, check_id, failure_type, severity, title, team_id)
+              VALUES (?, 'check-1', 'expired_token', 'critical', 'Shared report failure', NULL)`, [sharedEventId]);
+
+      const res = await call(LONELY_CLERK, '/api/reports/incident-trends');
+      assert.strictEqual(res.status, 403, JSON.stringify(res.body));
+      assert.strictEqual(res.body.code, 'FORBIDDEN');
+      const serialized = JSON.stringify(res.body);
+      assert.ok(!serialized.includes(ownedEventId), 'the body must carry no owned row');
+      assert.ok(!serialized.includes(sharedEventId), 'the body must carry no unscoped row');
+    });
   });
 
   describe('invitation accept requires authentication', () => {

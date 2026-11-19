@@ -1,5 +1,5 @@
 import { Database } from 'sql.js';
-import { tenantFilter } from '../api/tenant';
+import { tenantOwnedFilter } from '../api/tenant';
 
 export interface MatchResult {
   id: string;
@@ -36,9 +36,9 @@ export function matchPlaybookEntries(
     likeParams.push(pattern, pattern, pattern);
   }
 
-  const playbookScope = tenantFilter('f.team_id', teamId);
-  const latestScope = tenantFilter('team_id', teamId);
-  const eventScope = tenantFilter('e.team_id', teamId);
+  const playbookScope = tenantOwnedFilter('f.team_id', teamId);
+  const latestScope = tenantOwnedFilter('team_id', teamId);
+  const eventScope = tenantOwnedFilter('e.team_id', teamId);
 
   const sql = `
     SELECT f.id, f.failure_type, f.title, f.body, f.first_seen_at, f.last_occurrence_at, f.occurrence_count,
@@ -144,8 +144,8 @@ export function getCorrelatedPatterns(
   limit: number = 5,
   teamId: string | null = null,
 ): { failureType: string; coOccurrenceCount: number }[] {
-  const firstScope = tenantFilter('e1.team_id', teamId);
-  const secondScope = tenantFilter('e2.team_id', teamId);
+  const firstScope = tenantOwnedFilter('e1.team_id', teamId);
+  const secondScope = tenantOwnedFilter('e2.team_id', teamId);
   const result = db.exec(
     `SELECT e2.failure_type, COUNT(*) as co_count
      FROM failure_events e1
