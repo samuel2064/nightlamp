@@ -26,9 +26,19 @@ let secretKey = null;
 const userSessions = new Map();
 const runStartedAt = Date.now();
 
+function redact(text) {
+  return String(text)
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '<email>')
+    .replace(/user_[A-Za-z0-9]+/g, '<clerk-user>')
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '<id>')
+    .replace(/controlled-test-\d+/g, '<team>')
+    .replace(/controlled-owner-\d+/g, '<controlled-owner>');
+}
+
 function log(line) {
-  console.log(line);
-  report.diagnostics.push(line);
+  const safe = redact(line);
+  console.log(safe);
+  report.diagnostics.push(safe);
 }
 
 function clerkInstance(keyValue) {
@@ -278,21 +288,21 @@ async function queryTeamMembership(token, userId) {
   }
   
   const teams = parsed.teams || [];
-  log(`  User ${userId} has access to ${teams.length} team(s)`);
+  log(`  the identity has access to ${teams.length} team(s)`);
   
   for (const team of teams) {
-    log(`    Team: ${team.id} (${team.name}) - owner: ${team.ownerId}`);
+    log(`    a team the identity can reach: ${team.id} (${team.name})`);
   }
   
-  const ownedTeam = teams.find(t => t.ownerId === userId);
-  const memberTeam = teams.find(t => t.ownerId !== userId);
+  const hasTeam = teams.length > 0;
   
   return {
     teams,
-    ownedTeam,
-    memberTeam,
-    isOwner: !!ownedTeam,
-    isMember: !!memberTeam
+    hasTeam,
+    ownedTeam: hasTeam ? teams[0] : null,
+    memberTeam: hasTeam ? teams[0] : null,
+    isOwner: hasTeam,
+    isMember: hasTeam
   };
 }
 
@@ -303,13 +313,13 @@ async function ensureUserInNightlamp(token, userId) {
   return response.status === 200 || response.status === 401;
 }
 
-async function createTestTeam(ownerToken, ownerId, memberId) {
+async function createTestTeam(ownerToken) {
   const teamName = `controlled-test-${Date.now()}`;
   const teamSlug = `controlled-test-${Date.now()}`;
   const response = await fetch(`${nightlampApi}/api/teams`, {
     method: 'POST',
     headers: bearer(ownerToken, { 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ name: teamName, slug: teamSlug, ownerId, plan: 'free' })
+    body: JSON.stringify({ name: teamName, slug: teamSlug, plan: 'free' })
   });
   const text = await response.text();
   let parsed = null;
@@ -321,18 +331,19 @@ async function createTestTeam(ownerToken, ownerId, memberId) {
   
   if (response.status >= 200 && response.status < 300 && parsed && parsed.id) {
     log(`Created test team: ${parsed.id} (${teamName})`);
-    return parsed.id;
+    log(`The server bound the team owner to the authenticated token: ${parsed.ownerId ? 'yes' : 'no'}`);
+    return { teamId: parsed.id, status: response.status, ownerBoundToToken: Boolean(parsed.ownerId) };
   } else {
     log(`Failed to create test team: HTTP ${response.status}`);
-    return null;
+    return { teamId: null, status: response.status, ownerBoundToToken: false };
   }
 }
 
-async function addMemberToTeam(ownerToken, teamId, memberId, role = 'member') {
+async function addMemberToTeam(ownerToken, teamId, memberEmail, role = 'member') {
   const response = await fetch(`${nightlampApi}/api/teams/${teamId}/members`, {
     method: 'POST',
     headers: bearer(ownerToken, { 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ userId: memberId, role })
+    body: JSON.stringify({ email: memberEmail, role })
   });
   const text = await response.text();
   let parsed = null;
@@ -343,11 +354,11 @@ async function addMemberToTeam(ownerToken, teamId, memberId, role = 'member') {
   }
   
   if (response.status >= 200 && response.status < 300) {
-    log(`Added ${memberId} as ${role} to team ${teamId}`);
-    return true;
+    log(`Added the member identity as ${role} to the test team`);
+    return { added: true, userId: parsed && parsed.userId ? parsed.userId : null };
   } else {
     log(`Failed to add member: HTTP ${response.status}`);
-    return false;
+    return { added: false, userId: null };
   }
 }
 
@@ -755,7 +766,8 @@ async function run() {
     const sessionData = await mintAndRevokeSession(user.id, user.id);
     if (sessionData) {
       const membership = await queryTeamMembership(sessionData.token, user.id);
-      userRoles.set(user.id, { ...membership, token: sessionData.token, userId: user.id });
+      const email = user.email_addresses && user.email_addresses[0] ? user.email_addresses[0].email_address : null;
+      userRoles.set(user.id, { ...membership, token: sessionData.token, userId: user.id, email });
     }
   }
   
@@ -765,14 +777,14 @@ async function run() {
   for (const [userId, data] of userRoles.entries()) {
     if (data.isOwner && !ownerEntry) {
       ownerEntry = { userId, ...data };
-    } else if (data.isMember && !memberEntry) {
+    } else if (data.isMember && !memberEntry && data.email) {
       memberEntry = { userId, ...data };
     }
   }
   
   if (!memberEntry) {
     for (const [userId, data] of userRoles.entries()) {
-      if (userId !== ownerEntry?.userId && !data.isOwner && !data.isMember) {
+      if (userId !== ownerEntry?.userId && !data.isOwner && !data.isMember && data.email) {
         memberEntry = { userId, ...data };
         break;
       }
@@ -829,24 +841,34 @@ async function run() {
 let privilegeProbesPassed = 0;
 
   if (ownerEntry && memberEntry) {
-    const testTeamId = await createTestTeam(ownerEntry.token, ownerEntry.userId, memberEntry.userId);
+    const creation = await createTestTeam(ownerEntry.token);
     report.probes.push({
       label: 'controlled owner creates test team',
       expected: [200, 201],
-      status: testTeamId ? 200 : 403,
-      code: testTeamId ? null : 'TEAM_CREATE_FAILED',
-      ok: !!testTeamId,
+      status: creation.status,
+      code: creation.teamId ? null : 'TEAM_CREATE_FAILED',
+      ok: !!creation.teamId,
+    });
+    report.probes.push({
+      label: 'the created team owner is bound to the authenticated token',
+      expected: [200, 201],
+      status: creation.status,
+      code: creation.ownerBoundToToken ? null : 'OWNER_NOT_BOUND',
+      ok: creation.ownerBoundToToken,
     });
     
-    if (testTeamId) {
+    if (creation.teamId) {
+      const testTeamId = creation.teamId;
       report.identity.testTeamCreated = true;
       report.identity.testTeamId = testTeamId;
+      report.identity.teamOwnerBoundToToken = creation.ownerBoundToToken;
       
-      const added = await addMemberToTeam(ownerEntry.token, testTeamId, memberEntry.userId, 'member');
-      if (added) {
+      const addition = await addMemberToTeam(ownerEntry.token, testTeamId, memberEntry.email, 'member');
+      const memberInternalId = addition.userId;
+      if (addition.added && memberInternalId) {
         report.identity.memberAddedToTestTeam = true;
         
-        const noc280Results = await runNoc280Matrix(memberEntry.token, testTeamId, memberEntry.userId, ownerEntry.token);
+        const noc280Results = await runNoc280Matrix(memberEntry.token, testTeamId, memberInternalId, ownerEntry.token);
         privilegeProbesRun += noc280Results.length;
         privilegeProbesPassed += noc280Results.filter(r => r.ok).length;
         report.probes.push(...noc280Results);
@@ -860,12 +882,13 @@ let privilegeProbesPassed = 0;
         report.identity.testTeamRemoved = true;
       } else {
         report.identity.memberAddedToTestTeam = false;
+        log('The member identity could not be added to the test team, the privilege matrix did not run.');
         await cleanupTestTeam(ownerEntry.token, testTeamId);
       }
     } else {
       report.identity.testTeamCreated = false;
-      log('Team creation failed with 403 - this is expected per NOC-294 decision (fail closed for users with no membership). Full privilege matrix cannot run until NOC-294 membership binding is fixed.');
-      report.identity.matrixBlockedBy = 'NOC-294: membership binding required for team creation';
+      log(`Team creation failed with HTTP ${creation.status}; the privilege matrix cannot run.`);
+      report.identity.matrixBlockedBy = `team creation failed (HTTP ${creation.status})`;
     }
     report.identity.fullMatrixRun = report.identity.testTeamCreated && report.identity.memberAddedToTestTeam && privilegeProbesRun > 0;
   } else {
@@ -876,11 +899,11 @@ let privilegeProbesPassed = 0;
   report.identity.privilegeProbesPassed = privilegeProbesPassed;
   
   for (const [userId, sessionData] of userSessions.entries()) {
-    const userRole = userRoles.get(userId) || (userId === controlledOwnerSessionUserId ? { isOwner: false, isMember: false } : null);
+    const userRole = userRoles.get(userId) || (userId === controlledOwnerSessionUserId ? { teams: [], hasTeam: false, isOwner: false, isMember: false } : null);
     if (!userRole) continue;
     
-    const label = userRole.isOwner ? 'owner' : (userRole.isMember ? 'member' : 'no-team');
-    const expectedStatus = userRole.isOwner || userRole.isMember ? [200] : [noTeamExpectedStatus];
+    const label = userRole.hasTeam ? 'team-member' : 'no-team';
+    const expectedStatus = userRole.hasTeam ? [200] : [noTeamExpectedStatus];
     
     await probeWithForeignRowCheck(
       `a signed-in ${label} can list the events`,
@@ -935,6 +958,7 @@ function filterReportForPublish(report) {
     'noTeamExpectedStatus',
     'contractMismatches',
     'memberAddedToTestTeam',
+    'teamOwnerBoundToToken',
     'matrixBlockedBy',
   ]);
   
