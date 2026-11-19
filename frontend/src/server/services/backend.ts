@@ -1,6 +1,7 @@
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'
 
 import type { DiagnosticEntry, PlaybookExecution } from '@/components/playbook/types'
+import type { FeedbackReceipt, FeedbackSubmission } from '@/lib/feedback/contract'
 
 export interface FailureEvent {
   id: string
@@ -148,6 +149,19 @@ export interface BackendClient {
     listPolicies: () => Promise<{ policies: unknown[] }>
     updatePolicy: (id: string, data: Record<string, unknown>) => Promise<{ success: boolean }>
   }
+  feedback: {
+    submit: (input: FeedbackSubmission) => Promise<FeedbackReceipt>
+    receipt: (responseId: string) => Promise<{ item: FeedbackResponseRecord }>
+  }
+}
+
+export interface FeedbackResponseRecord {
+  response_id: string
+  kind: 'feedback' | 'survey'
+  feedback_type: string | null
+  survey_id: string | null
+  score: number | null
+  received_at: string
 }
 
 export function createBackendClient(token: string | null): BackendClient {
@@ -252,6 +266,14 @@ export function createBackendClient(token: string | null): BackendClient {
         apiFetch<{ policies: unknown[] }>('/api/remediation/policies'),
       updatePolicy: (id: string, data: Record<string, unknown>) =>
         apiFetchPost<{ success: boolean }>('/api/remediation/policies', { id, ...data }),
+    },
+    feedback: {
+      submit: (input: FeedbackSubmission) =>
+        apiFetchPost<FeedbackReceipt>('/api/feedback/responses', input),
+      receipt: (responseId: string) =>
+        apiFetch<{ item: FeedbackResponseRecord }>(
+          `/api/feedback/responses/${encodeURIComponent(responseId)}`
+        ),
     },
   }
 }
