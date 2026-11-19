@@ -438,7 +438,7 @@
     "runInvalidReason": "no restart detected"
   },
   "diagnostics": [
-    "Initial health check: HTTP 200 (uptimeSeconds: 883s, bootId: undefined)",
+    "Initial health check: HTTP 200 (uptimeSeconds: 507s, bootId: undefined)",
     "GET the frontend environment variables -> HTTP 200",
     "the frontend publishable key belongs to the Clerk instance: capable-goldfish-98.clerk.accounts.dev",
     "GET the Clerk users -> HTTP 200",
@@ -535,7 +535,7 @@
     "POST revoke session for <clerk-user> -> HTTP 200",
     "DELETE controlled owner user <clerk-user> -> HTTP 200",
     "Controlled owner <clerk-user> deleted successfully",
-    "Final health check: HTTP 200 (uptimeSeconds: 890s, bootId: undefined)",
+    "Final health check: HTTP 200 (uptimeSeconds: 514s, bootId: undefined)",
     "--- Cleanup: Revoking all sessions ---",
     "POST revoke session for <clerk-user> -> HTTP 200",
     "POST revoke session for <clerk-user> -> HTTP 200",
