@@ -339,6 +339,45 @@ async function createTestTeam(ownerToken) {
   }
 }
 
+async function inviteAndAcceptMember(ownerToken, memberToken, teamId, memberEmail, memberClerkId) {
+  const candidates = [];
+  if (memberEmail) candidates.push(memberEmail);
+  if (memberClerkId) candidates.push(`${memberClerkId}@clerk.local`);
+  
+  for (const email of candidates) {
+    const invite = await fetch(`${nightlampApi}/api/teams/${teamId}/invitations`, {
+      method: 'POST',
+      headers: bearer(ownerToken, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ email, role: 'member' })
+    });
+    const inviteText = await invite.text();
+    let inviteJson = null;
+    try { inviteJson = JSON.parse(inviteText); } catch (error) { inviteJson = null; }
+    
+    if (invite.status < 200 || invite.status >= 300 || !inviteJson || !inviteJson.token) {
+      log(`Failed to create an invitation: HTTP ${invite.status}`);
+      continue;
+    }
+    
+    const accept = await fetch(`${nightlampApi}/api/invitations/${inviteJson.token}`, {
+      method: 'POST',
+      headers: bearer(memberToken, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({})
+    });
+    const acceptText = await accept.text();
+    let acceptJson = null;
+    try { acceptJson = JSON.parse(acceptText); } catch (error) { acceptJson = null; }
+    
+    if (accept.status >= 200 && accept.status < 300) {
+      log('The member identity accepted the invitation and was bound to its own token');
+      return { joined: true, userId: acceptJson && acceptJson.userId ? acceptJson.userId : null };
+    }
+    log(`The invitation was not accepted: HTTP ${accept.status}`);
+  }
+  
+  return { joined: false, userId: null };
+}
+
 async function addMemberToTeam(ownerToken, teamId, memberEmail, role = 'member') {
   const response = await fetch(`${nightlampApi}/api/teams/${teamId}/members`, {
     method: 'POST',
@@ -864,9 +903,18 @@ let privilegeProbesPassed = 0;
       report.identity.teamOwnerBoundToToken = creation.ownerBoundToToken;
       
       const addition = await addMemberToTeam(ownerEntry.token, testTeamId, memberEntry.email, 'member');
-      const memberInternalId = addition.userId;
-      if (addition.added && memberInternalId) {
+      let memberInternalId = addition.userId;
+      let joinedViaInvitation = false;
+      
+      if (!addition.added || !memberInternalId) {
+        const invitation = await inviteAndAcceptMember(ownerEntry.token, memberEntry.token, testTeamId, memberEntry.email, memberEntry.userId);
+        memberInternalId = invitation.userId;
+        joinedViaInvitation = invitation.joined;
+      }
+      
+      if (memberInternalId) {
         report.identity.memberAddedToTestTeam = true;
+        report.identity.memberJoinedViaInvitation = joinedViaInvitation;
         
         const noc280Results = await runNoc280Matrix(memberEntry.token, testTeamId, memberInternalId, ownerEntry.token);
         privilegeProbesRun += noc280Results.length;
@@ -958,6 +1006,7 @@ function filterReportForPublish(report) {
     'noTeamExpectedStatus',
     'contractMismatches',
     'memberAddedToTestTeam',
+    'memberJoinedViaInvitation',
     'teamOwnerBoundToToken',
     'matrixBlockedBy',
   ]);
