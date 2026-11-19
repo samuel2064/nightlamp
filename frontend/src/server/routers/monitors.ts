@@ -62,6 +62,15 @@ export const monitorsRouter = router({
       return result
     }),
 
+  testCheckPersisted: protectedProcedure
+    .input(z.object({
+      appId: z.string().min(1),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const { result } = await createBackendClient(ctx.token).apps.testCheck(input.appId)
+      return result
+    }),
+
   channels: protectedProcedure
     .query(async ({ ctx }) => {
       const { channels } = await createBackendClient(ctx.token).channels.list()

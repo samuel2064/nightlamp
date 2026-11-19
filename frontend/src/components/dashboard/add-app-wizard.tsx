@@ -84,17 +84,55 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [testResult, setTestResult] = useState<'idle' | 'running' | 'success' | 'error'>('idle')
   const [testDetails, setTestDetails] = useState<{ statusCode?: number; latencyMs?: number; error?: string } | null>(null)
+  const [createdAppId, setCreatedAppId] = useState<string | null>(null)
+  const [isPersistedCheckRunning, setIsPersistedCheckRunning] = useState(false)
 
   const createMonitor = trpc.monitors.create.useMutation({
-    onSuccess: () => {
-      showToast('App added successfully', `${data.appName} is now being monitored`)
-      onSuccess?.()
-      resetWizard()
+    onMutate: async (variables) => {
+      setIsSubmitting(true)
+      setErrors({})
+    },
+    onSuccess: async (app) => {
+      setCreatedAppId(app.id)
+      setIsSubmitting(false)
+      setIsPersistedCheckRunning(true)
+      setTestResult('running')
+      setTestDetails(null)
+      try {
+        const result = await testCheckPersisted.mutateAsync({ appId: app.id })
+        const passed = result.status === 'pass'
+        setTestResult(passed ? 'success' : 'error')
+        setTestDetails({
+          statusCode: result.statusCode ?? undefined,
+          latencyMs: result.latencyMs,
+          error: result.errorDetail ?? undefined,
+        })
+        if (passed) {
+          showToast('App added successfully', `${data.appName} is now being monitored`)
+          onSuccess?.()
+          setTimeout(() => resetWizard(), 2000)
+        } else {
+          const message = result.errorDetail || result.errorType || 'Persisted check failed. The app was created but the test check failed.'
+          showToast('Persisted check failed', message, 'destructive')
+          setErrors({ checkUrl: message })
+        }
+      } catch (err) {
+        setTestResult('error')
+        const message = err instanceof Error ? err.message : 'Persisted check failed'
+        setTestDetails({ error: message })
+        showToast('Persisted check failed', message, 'destructive')
+        setErrors({ checkUrl: message })
+      } finally {
+        setIsPersistedCheckRunning(false)
+      }
     },
     onError: (err) => {
+      setIsSubmitting(false)
       showToast('Failed to add app', err.message, 'destructive')
     },
   })
+
+  const testCheckPersisted = trpc.monitors.testCheckPersisted.useMutation()
 
   const testCheckMutation = trpc.monitors.testCheck.useMutation({
     onSuccess: (result) => {
@@ -106,17 +144,17 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
         error: result.errorDetail ?? undefined,
       })
       if (passed) {
-        showToast('Test check passed', `Status: ${result.statusCode ?? 'n/a'}, Latency: ${result.latencyMs}ms`)
+        showToast('Preview check passed', `Status: ${result.statusCode ?? 'n/a'}, Latency: ${result.latencyMs}ms`)
       } else {
         const message = result.errorDetail || result.errorType || 'Check failed. Verify the target and try again.'
-        showToast('Test check failed', message, 'destructive')
+        showToast('Preview check failed', message, 'destructive')
         setErrors({ checkUrl: message })
       }
     },
     onError: (err) => {
       setTestResult('error')
       setTestDetails({ error: err.message })
-      showToast('Test check failed', err.message, 'destructive')
+      showToast('Preview check failed', err.message, 'destructive')
       setErrors({ checkUrl: err.message })
     },
   })
@@ -201,6 +239,41 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
     })
   }
 
+  const handleRetryPersistedCheck = async () => {
+    if (!createdAppId) return
+    setIsPersistedCheckRunning(true)
+    setTestResult('running')
+    setTestDetails(null)
+    setErrors({})
+    try {
+      const result = await testCheckPersisted.mutateAsync({ appId: createdAppId })
+      const passed = result.status === 'pass'
+      setTestResult(passed ? 'success' : 'error')
+      setTestDetails({
+        statusCode: result.statusCode ?? undefined,
+        latencyMs: result.latencyMs,
+        error: result.errorDetail ?? undefined,
+      })
+      if (passed) {
+        showToast('App added successfully', `${data.appName} is now being monitored`)
+        onSuccess?.()
+        setTimeout(() => resetWizard(), 2000)
+      } else {
+        const message = result.errorDetail || result.errorType || 'Persisted check failed. The app was created but the test check failed.'
+        showToast('Persisted check failed', message, 'destructive')
+        setErrors({ checkUrl: message })
+      }
+    } catch (err) {
+      setTestResult('error')
+      const message = err instanceof Error ? err.message : 'Persisted check failed'
+      setTestDetails({ error: message })
+      showToast('Persisted check failed', message, 'destructive')
+      setErrors({ checkUrl: message })
+    } finally {
+      setIsPersistedCheckRunning(false)
+    }
+  }
+
   const handleSubmit = async () => {
     if (!validateStep(step)) return
 
@@ -225,6 +298,8 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
     setData(INITIAL_DATA)
     setErrors({})
     setTestResult('idle')
+    setCreatedAppId(null)
+    setIsPersistedCheckRunning(false)
   }
 
   const steps: { key: WizardStep; label: string }[] = [
@@ -340,6 +415,9 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
               testDetails={testDetails}
               isTesting={testCheckMutation.isPending}
               channels={channelsQuery.data?.channels ?? []}
+              isPersistedCheck={createdAppId !== null}
+              isPersistedCheckRunning={isPersistedCheckRunning}
+              onRetryPersistedCheck={handleRetryPersistedCheck}
             />
           )}
           {step === 'complete' && (
@@ -697,13 +775,15 @@ function AlertsStep({
   )
 }
 
-function TestStep({ data, testResult, onTest, errors, testDetails, isTesting, channels }: { data: WizardData; testResult: 'idle' | 'running' | 'success' | 'error'; onTest: () => void; errors: Partial<Record<keyof WizardData, string>>; testDetails: { statusCode?: number; latencyMs?: number; error?: string } | null; isTesting: boolean; channels: Channel[] }) {
-  return (
+function TestStep({ data, testResult, onTest, errors, testDetails, isTesting, channels, isPersistedCheck, isPersistedCheckRunning, onRetryPersistedCheck }: { data: WizardData; testResult: 'idle' | 'running' | 'success' | 'error'; onTest: () => void; errors: Partial<Record<keyof WizardData, string>>; testDetails: { statusCode?: number; latencyMs?: number; error?: string } | null; isTesting: boolean; channels: Channel[]; isPersistedCheck: boolean; isPersistedCheckRunning: boolean; onRetryPersistedCheck: () => void }) {
+return (
     <div className="space-y-6">
       <div>
         <h3 className="text-lg font-medium">Test & Confirm</h3>
         <p className="text-sm text-muted-foreground mt-1">
-          Run a test check to verify your configuration works before adding the app.
+          {isPersistedCheck
+            ? 'The app has been created. Running the persisted test check...'
+            : 'Run a test check to verify your configuration works before adding the app.'}
         </p>
       </div>
 
@@ -743,67 +823,137 @@ function TestStep({ data, testResult, onTest, errors, testDetails, isTesting, ch
       </Card>
 
       <div className="space-y-4">
-        <Button
-          onClick={onTest}
-          disabled={testResult === 'running' || isTesting}
-          className="w-full sm:w-auto"
-          size="lg"
-        >
-          {testResult === 'running' || isTesting ? (
-            <>
-              <Loader2 className="size-4 mr-2 animate-spin" />
-              Running test check...
-            </>
-          ) : testResult === 'success' ? (
-            <>
-              <Check className="size-4 mr-2 text-success" />
-              Test passed — ready to add
-            </>
-          ) : testResult === 'error' ? (
-            <>
-              <AlertCircle className="size-4 mr-2 text-destructive" />
-              Test failed — retry or adjust
-            </>
-          ) : (
-            <>
-              <Wifi className="size-4 mr-2" />
-              Run Test Check
-            </>
-          )}
-        </Button>
+        {!isPersistedCheck ? (
+          <>
+            <Button
+              onClick={onTest}
+              disabled={testResult === 'running' || isTesting}
+              className="w-full sm:w-auto"
+              size="lg"
+            >
+              {testResult === 'running' || isTesting ? (
+                <>
+                  <Loader2 className="size-4 mr-2 animate-spin" />
+                  Running test check...
+                </>
+              ) : testResult === 'success' ? (
+                <>
+                  <Check className="size-4 mr-2 text-success" />
+                  Test passed �?" ready to add
+                </>
+              ) : testResult === 'error' ? (
+                <>
+                  <AlertCircle className="size-4 mr-2 text-destructive" />
+                  Test failed �?" retry or adjust
+                </>
+              ) : (
+                <>
+                  <Wifi className="size-4 mr-2" />
+                  Run Test Check
+                </>
+              )}
+            </Button>
 
-        {testResult === 'error' && errors.checkUrl && (
-          <p className="text-sm text-destructive" role="alert">{errors.checkUrl}</p>
-        )}
+            {testResult === 'error' && errors.checkUrl && (
+              <p className="text-sm text-destructive" role="alert">{errors.checkUrl}</p>
+            )}
 
-        {testDetails && (
-          <Card className="border-border bg-surface-secondary/50">
-            <CardContent className="pt-4 pb-2 space-y-2">
-              <p className="text-sm font-medium">Test Result Details</p>
-              <div className="grid gap-2 sm:grid-cols-3 text-sm">
-                <div>
-                  <p className="text-muted-foreground">Status Code</p>
-                  <p className="font-medium">{testDetails.statusCode ?? 'N/A'}</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">Latency</p>
-                  <p className="font-medium">{testDetails.latencyMs !== undefined ? `${testDetails.latencyMs}ms` : 'N/A'}</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">Error</p>
-                  <p className="font-medium text-destructive">{testDetails.error ?? 'None'}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+            {testDetails && (
+              <Card className="border-border bg-surface-secondary/50">
+                <CardContent className="pt-4 pb-2 space-y-2">
+                  <p className="text-sm font-medium">Test Result Details</p>
+                  <div className="grid gap-2 sm:grid-cols-3 text-sm">
+                    <div>
+                      <p className="text-muted-foreground">Status Code</p>
+                      <p className="font-medium">{testDetails.statusCode ?? 'N/A'}</p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground">Latency</p>
+                      <p className="font-medium">{testDetails.latencyMs !== undefined ? `${testDetails.latencyMs}ms` : 'N/A'}</p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground">Error</p>
+                      <p className="font-medium text-destructive">{testDetails.error ?? 'None'}</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
-        {testResult !== 'idle' && testResult !== 'running' && (
-          <p className="text-sm text-muted-foreground">
-            {testResult === 'success'
-              ? 'Your check is working correctly. Click "Add App" to start monitoring.'
-              : 'Please verify the URL and network access, then try again.'}
-          </p>
+            {testResult !== 'idle' && testResult !== 'running' && (
+              <p className="text-sm text-muted-foreground">
+                {testResult === 'success'
+                  ? 'Your check is working correctly. Click "Add App" to start monitoring.'
+                  : 'Please verify the URL and network access, then try again.'}
+              </p>
+            )}
+          </>
+        ) : (
+          <>
+            <Button
+              onClick={onRetryPersistedCheck}
+              disabled={testResult === 'running' || isPersistedCheckRunning}
+              className="w-full sm:w-auto"
+              size="lg"
+              variant={testResult === 'success' ? 'default' : 'outline'}
+            >
+              {testResult === 'running' || isPersistedCheckRunning ? (
+                <>
+                  <Loader2 className="size-4 mr-2 animate-spin" />
+                  Running persisted check...
+                </>
+              ) : testResult === 'success' ? (
+                <>
+                  <Check className="size-4 mr-2 text-success" />
+                  Persisted check passed
+                </>
+              ) : testResult === 'error' ? (
+                <>
+                  <AlertCircle className="size-4 mr-2 text-destructive" />
+                  Persisted check failed �?" retry
+                </>
+              ) : (
+                <>
+                  <Wifi className="size-4 mr-2" />
+                  Run Persisted Check
+                </>
+              )}
+            </Button>
+
+            {testResult === 'error' && errors.checkUrl && (
+              <p className="text-sm text-destructive" role="alert">{errors.checkUrl}</p>
+            )}
+
+            {testDetails && (
+              <Card className="border-border bg-surface-secondary/50">
+                <CardContent className="pt-4 pb-2 space-y-2">
+                  <p className="text-sm font-medium">Persisted Test Result Details</p>
+                  <div className="grid gap-2 sm:grid-cols-3 text-sm">
+                    <div>
+                      <p className="text-muted-foreground">Status Code</p>
+                      <p className="font-medium">{testDetails.statusCode ?? 'N/A'}</p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground">Latency</p>
+                      <p className="font-medium">{testDetails.latencyMs !== undefined ? `${testDetails.latencyMs}ms` : 'N/A'}</p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground">Error</p>
+                      <p className="font-medium text-destructive">{testDetails.error ?? 'None'}</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {testResult !== 'idle' && testResult !== 'running' && (
+              <p className="text-sm text-muted-foreground">
+                {testResult === 'success'
+                  ? 'The app is created and the persisted check passed. Monitoring is active.'
+                  : 'The app was created but the persisted check failed. The app configuration is saved. You can retry the check or adjust the target.'}
+              </p>
+            )}
+          </>
         )}
       </div>
 
