@@ -32,14 +32,6 @@ let db: Database;
 let sentryIssueCache: SentryIssue[] = [];
 let uptimeRobotMonitorCache: UptimeRobotMonitor[] = [];
 
-function persistDatabase(): void {
-  try {
-    saveDatabase(db, DB_PATH);
-  } catch (err: any) {
-    console.error('[Nightlamp] Failed to persist database:', err.message);
-  }
-}
-
 async function init(): Promise<void> {
   console.log('[Nightlamp] Initializing health check engine...');
   db = await createDatabase(DB_PATH);
@@ -154,11 +146,10 @@ const stripeKey = process.env.STRIPE_SECRET_KEY;
       stripeClient,
       stripeWebhookSecret,
       baseUrl,
-      onMutation: persistDatabase,
     });
     console.log(`[Nightlamp] Billing API configured (port ${API_PORT})`);
   } else {
-    startApiServer(db, { port: API_PORT, onMutation: persistDatabase });
+    startApiServer(db, { port: API_PORT });
     console.log(`[Nightlamp] API server started without billing (port ${API_PORT})`);
     console.log('[Nightlamp] Set STRIPE_SECRET_KEY to enable subscription billing');
   }
