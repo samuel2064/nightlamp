@@ -21,6 +21,8 @@
       "ok": true
     },
     {
+      "label": "a member cannot promote itself to owner",
+      "test": "self-promotion-to-owner",
       "expected": [
         403
       ],
@@ -29,6 +31,8 @@
       "ok": true
     },
     {
+      "label": "a member cannot promote itself to admin",
+      "test": "self-promotion-to-admin",
       "expected": [
         403
       ],
@@ -37,6 +41,8 @@
       "ok": true
     },
     {
+      "label": "a member cannot add another member",
+      "test": "member-add-member",
       "expected": [
         403
       ],
@@ -45,6 +51,8 @@
       "ok": true
     },
     {
+      "label": "a member cannot remove itself",
+      "test": "member-remove-self",
       "expected": [
         403
       ],
@@ -53,6 +61,8 @@
       "ok": true
     },
     {
+      "label": "a member cannot rewrite the team",
+      "test": "member-rewrite-team",
       "expected": [
         403
       ],
@@ -61,6 +71,8 @@
       "ok": true
     },
     {
+      "label": "a member cannot delete the team",
+      "test": "member-delete-team",
       "expected": [
         403
       ],
@@ -69,6 +81,8 @@
       "ok": true
     },
     {
+      "label": "a member cannot create an admin invitation",
+      "test": "member-create-admin-invitation",
       "expected": [
         403
       ],
@@ -77,6 +91,8 @@
       "ok": true
     },
     {
+      "label": "a member cannot reach the admin endpoint",
+      "test": "member-admin-endpoint",
       "expected": [
         403
       ],
@@ -85,21 +101,8 @@
       "ok": true
     },
     {
-      "expected": [
-        403
-      ],
-      "status": 404,
-      "ok": false
-    },
-    {
-      "expected": [
-        403
-      ],
-      "status": 403,
-      "code": "FORBIDDEN",
-      "ok": true
-    },
-    {
+      "label": "a member cannot reach a team it does not belong to",
+      "test": "unknown-team",
       "expected": [
         404
       ],
@@ -107,6 +110,27 @@
       "ok": true
     },
     {
+      "label": "non-member-target",
+      "test": "non-member-target",
+      "expected": [
+        403
+      ],
+      "status": 403,
+      "code": "FORBIDDEN",
+      "ok": true
+    },
+    {
+      "label": "the owner gets a truthful 404 for a target that does not exist",
+      "test": "owner-non-member-target",
+      "expected": [
+        404
+      ],
+      "status": 404,
+      "ok": true
+    },
+    {
+      "label": "the member role persists after the attempts",
+      "test": "member-role-persists",
       "expected": [
         "member"
       ],
@@ -115,6 +139,8 @@
       "ok": true
     },
     {
+      "label": "approving an unknown run does not claim success",
+      "test": "approve-unknown-run",
       "expected": [
         400,
         404
@@ -123,6 +149,8 @@
       "ok": true
     },
     {
+      "label": "rejecting an unknown run does not claim success",
+      "test": "reject-unknown-run",
       "expected": [
         400,
         404
@@ -131,6 +159,8 @@
       "ok": true
     },
     {
+      "label": "retrying an unknown run does not claim success",
+      "test": "retry-unknown-run",
       "expected": [
         400,
         404
@@ -139,6 +169,8 @@
       "ok": true
     },
     {
+      "label": "an unknown action is rejected without claiming success",
+      "test": "unknown-action-rejected",
       "expected": [
         400,
         404
@@ -398,7 +430,7 @@
     "testTeamRemoved": true,
     "fullMatrixRun": true,
     "privilegeProbesRun": 16,
-    "privilegeProbesPassed": 15,
+    "privilegeProbesPassed": 16,
     "controlledOwnerDeleted": true,
     "noTeamExpectedStatus": 403,
     "contractMismatches": 0
@@ -464,7 +496,7 @@
     "--- NOC-280: Admin endpoint ---",
     "Member admin endpoint: 403 PASS",
     "--- NOC-280: Unknown team ---",
-    "Unknown team: 404 FAIL",
+    "Unknown team: 404 PASS",
     "--- NOC-280: Non-member role target ---",
     "Non-member target: 403 PASS",
     "--- NOC-280: Owner target that does not exist ---",
@@ -511,6 +543,6 @@
   ],
   "valuesIncluded": false,
   "bodiesIncluded": false,
-  "probesPassed": 35,
+  "probesPassed": 36,
   "probesTotal": 36
 }
