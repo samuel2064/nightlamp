@@ -17,9 +17,13 @@ export class OnboardingApi {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = parsedUrl.pathname;
     const teamId = auth ? auth.teamId : null;
+    // Onboarding sessions are personal rows keyed by the authenticated
+    // principal; every read and write binds to that identity so one caller
+    // can never reach another user's session (NOC-319).
+    const userId = auth ? auth.userId : null;
 
     if (path === '/api/onboarding/start' || path === '/api/onboarding/start/') {
-      if (req.method === 'POST') { this.handleStart(req, res, auth, teamId); return true; }
+      if (req.method === 'POST') { this.handleStart(req, res, auth, teamId, userId); return true; }
       res.writeHead(405);
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return true;
@@ -37,21 +41,21 @@ export class OnboardingApi {
       }
 
       if (subPath === '/status') {
-        if (req.method === 'GET') { this.handleStatus(sessionId, res, teamId); return true; }
+        if (req.method === 'GET') { this.handleStatus(sessionId, res, teamId, userId); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
       }
 
       if (subPath === '/step') {
-        if (req.method === 'POST') { this.handleStep(req, sessionId, res, teamId); return true; }
+        if (req.method === 'POST') { this.handleStep(req, sessionId, res, teamId, userId); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
       }
 
       if (subPath === '/complete') {
-        if (req.method === 'POST') { this.handleComplete(sessionId, res, teamId); return true; }
+        if (req.method === 'POST') { this.handleComplete(sessionId, res, teamId, userId); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
@@ -65,15 +69,22 @@ export class OnboardingApi {
     return false;
   }
 
-  private handleStart(req: IncomingMessage, res: ServerResponse, auth: AuthContext | null, teamId: string | null): void {
+  private handleStart(req: IncomingMessage, res: ServerResponse, auth: AuthContext | null, teamId: string | null, userId: string | null): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {
-        const { userId } = JSON.parse(body);
-        if (!userId) {
+        const { userId: requestedUserId } = JSON.parse(body);
+        if (!requestedUserId) {
           res.writeHead(400);
           res.end(JSON.stringify({ error: 'userId is required' }));
+          return;
+        }
+        // The session identity comes from the verified token, never from the
+        // request body: a body-supplied identity can only describe the caller.
+        if (!userId || requestedUserId !== userId) {
+          res.writeHead(403);
+          res.end(JSON.stringify({ error: 'Onboarding identity is resolved from authentication', code: 'FORBIDDEN' }));
           return;
         }
 
@@ -113,11 +124,11 @@ export class OnboardingApi {
     });
   }
 
-  private handleStatus(sessionId: string, res: ServerResponse, teamId: string | null): void {
+  private handleStatus(sessionId: string, res: ServerResponse, teamId: string | null, userId: string | null): void {
     const scope = tenantFilter('team_id', teamId);
     const result = this.db.exec(
-      `SELECT id, user_id, current_step, step_data, completed_at, created_team_id, created_at, updated_at FROM onboarding_sessions WHERE id = ? AND ${scope.clause}`,
-      [sessionId, ...scope.params]
+      `SELECT id, user_id, current_step, step_data, completed_at, created_team_id, created_at, updated_at FROM onboarding_sessions WHERE id = ? AND user_id = ? AND ${scope.clause}`,
+      [sessionId, userId, ...scope.params]
     );
 
     if (result.length === 0 || result[0].values.length === 0) {
@@ -144,15 +155,15 @@ export class OnboardingApi {
     }));
   }
 
-  private handleStep(req: IncomingMessage, sessionId: string, res: ServerResponse, teamId: string | null): void {
+  private handleStep(req: IncomingMessage, sessionId: string, res: ServerResponse, teamId: string | null, userId: string | null): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {
         const scope = tenantFilter('team_id', teamId);
         const sessionResult = this.db.exec(
-          `SELECT id, current_step, completed_at FROM onboarding_sessions WHERE id = ? AND ${scope.clause}`,
-          [sessionId, ...scope.params]
+          `SELECT id, current_step, completed_at FROM onboarding_sessions WHERE id = ? AND user_id = ? AND ${scope.clause}`,
+          [sessionId, userId, ...scope.params]
         );
 
         if (sessionResult.length === 0 || sessionResult[0].values.length === 0) {
@@ -226,12 +237,12 @@ export class OnboardingApi {
     });
   }
 
-  private handleComplete(sessionId: string, res: ServerResponse, teamId: string | null): void {
+  private handleComplete(sessionId: string, res: ServerResponse, teamId: string | null, userId: string | null): void {
     try {
       const scope = tenantFilter('team_id', teamId);
       const sessionResult = this.db.exec(
-        `SELECT id, current_step, completed_at FROM onboarding_sessions WHERE id = ? AND ${scope.clause}`,
-        [sessionId, ...scope.params]
+        `SELECT id, current_step, completed_at FROM onboarding_sessions WHERE id = ? AND user_id = ? AND ${scope.clause}`,
+        [sessionId, userId, ...scope.params]
       );
 
       if (sessionResult.length === 0 || sessionResult[0].values.length === 0) {
@@ -262,9 +273,11 @@ export class OnboardingApi {
       const newTeamId = uuidv4();
       const workspaceId = uuidv4();
 
+      // The completed session creates a team owned by the authenticated principal.
+      // Binding owner_id to a session id left the team owned by nobody (NOC-319).
       this.db.run(
         `INSERT INTO teams (id, name, slug, owner_id, plan) VALUES (?, ?, ?, ?, 'free')`,
-        [newTeamId, `Team-${sessionId.slice(0, 8)}`, `team-${sessionId.slice(0, 8)}`, sessionId]
+        [newTeamId, `Team-${sessionId.slice(0, 8)}`, `team-${sessionId.slice(0, 8)}`, userId]
       );
 
       this.db.run(
@@ -273,8 +286,8 @@ export class OnboardingApi {
       );
 
       this.db.run(
-        `UPDATE onboarding_sessions SET completed_at = datetime('now'), created_team_id = ?, updated_at = datetime('now') WHERE id = ? AND ${scope.clause}`,
-        [newTeamId, sessionId, ...scope.params]
+        `UPDATE onboarding_sessions SET completed_at = datetime('now'), created_team_id = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ? AND ${scope.clause}`,
+        [newTeamId, sessionId, userId, ...scope.params]
       );
 
       res.end(JSON.stringify({

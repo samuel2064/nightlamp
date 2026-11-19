@@ -6,7 +6,7 @@ import { SubscriptionModel, PlanTier, Subscription, PLAN_TIERS } from './subscri
 import { TierEnforcer } from './tier-enforcer';
 import { UsageTracker } from './usage';
 import { AuthContext, requireRole } from '../api/auth';
-import { tenantFilter } from '../api/tenant';
+import { tenantFilter, tenantOwnedFilter } from '../api/tenant';
 
 interface BillingApiDeps {
   db: Database;
@@ -83,6 +83,14 @@ export class BillingApi {
     }
 
     if (path === '/api/billing/webhook-events' && req.method === 'GET') {
+      // The audit table has no owner column, so the unscoped bucket is shared
+      // by every personal identity: a caller with no membership is refused
+      // before the query instead of reading every legacy row (NOC-319).
+      if (teamId === null) {
+        res.writeHead(403);
+        res.end(JSON.stringify({ error: 'A team membership is required to access this resource', code: 'FORBIDDEN' }));
+        return true;
+      }
       const limit = parseInt(parsedUrl.searchParams.get('limit') || '50', 10);
       res.end(JSON.stringify({ events: this.getWebhookEvents(limit, teamId) }));
       return true;
@@ -323,6 +331,40 @@ export class BillingApi {
     });
   }
 
+  /**
+   * Resolve the owning team for a Stripe event from the local customer or
+   * subscription rows it references. Stripe callback payloads carry no
+   * Nightlamp session, so the attribution has to come from the stored rows.
+   * Returns null when nothing local references the event, which keeps the
+   * legacy (pre-team) rows workable while owned rows stay attributed.
+   */
+  private resolveWebhookTeam(event: any): string | null {
+    const object = event?.data?.object;
+    if (!object) return null;
+
+    const stripeCustomerId = typeof object.customer === 'string' ? object.customer : object.customer?.id;
+    const stripeSubscriptionId = event?.type?.startsWith?.('customer.subscription')
+      ? object.id
+      : object.subscription;
+
+    const lookups: Array<[string, string]> = [];
+    if (typeof stripeSubscriptionId === 'string' && stripeSubscriptionId) {
+      lookups.push(['SELECT team_id FROM subscriptions WHERE stripe_subscription_id = ?', stripeSubscriptionId]);
+    }
+    if (typeof stripeCustomerId === 'string' && stripeCustomerId) {
+      lookups.push(['SELECT team_id FROM customers WHERE stripe_customer_id = ?', stripeCustomerId]);
+    }
+
+    for (const [sql, param] of lookups) {
+      const rows = this.deps.db.exec(sql, [param]);
+      if (rows.length > 0 && rows[0].values.length > 0) {
+        const value = rows[0].values[0][0];
+        if (typeof value === 'string' && value) return value;
+      }
+    }
+    return null;
+  }
+
   private handleWebhook(req: IncomingMessage, res: ServerResponse, teamId: string | null): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
@@ -351,9 +393,15 @@ export class BillingApi {
       const eventId: string = event.id || `evt_${uuid()}`;
       const livemode: boolean = event.livemode === true;
 
+      // The webhook is authenticated by the Stripe signature, not by a session,
+      // so the row is attributed to the team that owns the referenced customer
+      // or subscription. Without that binding the audit row would land in the
+      // unscoped bucket that every personal identity shares (NOC-319).
+      const resolvedTeamId = this.resolveWebhookTeam(event) ?? teamId;
+
       // Idempotency: a previously processed event id is acknowledged without
       // re-running side effects (Stripe retries deliveries at-least-once).
-      const eventScope = tenantFilter('team_id', teamId);
+      const eventScope = tenantFilter('team_id', resolvedTeamId);
       const existing = this.deps.db.exec(
         `SELECT status FROM webhook_events WHERE id = ? AND ${eventScope.clause}`,
         [eventId, ...eventScope.params],
@@ -368,12 +416,12 @@ export class BillingApi {
         this.deps.db.run(
           `INSERT INTO webhook_events (id, provider, event_type, livemode, status, payload, received_at, team_id)
            VALUES (?, 'stripe', ?, ?, 'received', ?, datetime('now'), ?)`,
-          [eventId, event.type, livemode ? 1 : 0, body, teamId],
+          [eventId, event.type, livemode ? 1 : 0, body, resolvedTeamId],
         );
       }
 
       try {
-        this.applyWebhookEvent(event, teamId);
+        this.applyWebhookEvent(event, resolvedTeamId);
         this.deps.db.run(
           `UPDATE webhook_events SET status = 'processed', processed_at = datetime('now'), error = NULL WHERE id = ? AND ${eventScope.clause}`,
           [eventId, ...eventScope.params],
@@ -517,8 +565,10 @@ export class BillingApi {
   }
 
   private handleSummary(res: ServerResponse, teamId: string | null): void {
-    const customerScope = tenantFilter('team_id', teamId);
-    const subscriptionScope = tenantFilter('team_id', teamId);
+    // Billing aggregates cover rows that always belong to a tenant, so a caller
+    // without a membership reads nothing rather than the unscoped bucket.
+    const customerScope = tenantOwnedFilter('team_id', teamId);
+    const subscriptionScope = tenantOwnedFilter('team_id', teamId);
 
     const customerResult = this.deps.db.exec(`SELECT COUNT(*) FROM customers WHERE ${customerScope.clause}`, customerScope.params);
     const totalCustomers = customerResult.length > 0 ? (customerResult[0].values[0][0] as number) : 0;
@@ -555,8 +605,8 @@ export class BillingApi {
   }
 
   private handleListSubscriptions(res: ServerResponse, teamId: string | null): void {
-    const subscriptionScope = tenantFilter('s.team_id', teamId);
-    const customerScope = tenantFilter('c.team_id', teamId);
+    const subscriptionScope = tenantOwnedFilter('s.team_id', teamId);
+    const customerScope = tenantOwnedFilter('c.team_id', teamId);
     const result = this.deps.db.exec(
       `SELECT s.id, s.customer_id, c.name as customer_name, c.email as customer_email, s.plan_tier, s.status, s.current_period_start, s.current_period_end, s.created_at
        FROM subscriptions s LEFT JOIN customers c ON s.customer_id = c.id

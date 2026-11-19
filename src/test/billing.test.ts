@@ -657,19 +657,63 @@ describe('Billing - Webhook Idempotency, Audit & Lifecycle (NOC-183)', () => {
   });
 
   it('GET /api/billing/webhook-events exposes the audit trail', async () => {
-    const cust = subs.createCustomer('audit-endpoint@test.com');
-    const sub = subs.createSubscription(cust.id, 'basic');
-    subs.updateStripeSubscriptionId(sub.id, 'sub_audit_ep', 'incomplete');
+    // The audit table has no owner column, so the route is team-scoped: the
+    // webhook attributes the event to the team that owns the referenced
+    // customer and subscription, and only a member of that team reads it.
+    const auditTeamId = 'billing-audit-team';
+    db.run('INSERT INTO teams (id, name, slug, owner_id) VALUES (?, ?, ?, ?)',
+      [auditTeamId, 'Billing Audit Team', 'billing-audit-team', 'billing-user']);
+    const cust = subs.createCustomer('audit-endpoint@test.com', undefined, auditTeamId);
+    const sub = subs.createSubscription(cust.id, 'basic', auditTeamId);
+    subs.updateStripeSubscriptionId(sub.id, 'sub_audit_ep', 'incomplete', auditTeamId);
 
     await handleRequest(api, 'POST', '/api/billing/webhook', evt('customer.subscription.created', {
       id: 'sub_audit_ep', status: 'active',
     }), { 'stripe-signature': 'sig' });
 
-    const res = await handleRequest(api, 'GET', '/api/billing/webhook-events');
+    const res = await handleRequest(api, 'GET', '/api/billing/webhook-events', undefined, undefined, auditTeamId);
     expect(res.statusCode).to.equal(200);
     const data = JSON.parse(res.body);
     expect(data.events).to.have.lengthOf(1);
     expect(data.events[0].eventType).to.equal('customer.subscription.created');
+  });
+
+  it('GET /api/billing/webhook-events refuses a caller with no membership', async () => {
+    const cust = subs.createCustomer('audit-teamless@test.com');
+    const sub = subs.createSubscription(cust.id, 'basic');
+    subs.updateStripeSubscriptionId(sub.id, 'sub_audit_teamless', 'incomplete');
+
+    await handleRequest(api, 'POST', '/api/billing/webhook', evt('customer.subscription.created', {
+      id: 'sub_audit_teamless', status: 'active',
+    }), { 'stripe-signature': 'sig' });
+
+    const res = await handleRequest(api, 'GET', '/api/billing/webhook-events');
+    expect(res.statusCode).to.equal(403);
+    expect(JSON.parse(res.body).code).to.equal('FORBIDDEN');
+  });
+
+  it('GET /api/billing/summary fails closed for a caller with no membership', async () => {
+    const cust = subs.createCustomer('summary-shared@test.com');
+    subs.createSubscription(cust.id, 'basic');
+
+    const res = await handleRequest(api, 'GET', '/api/billing/summary');
+    expect(res.statusCode).to.equal(200);
+    const data = JSON.parse(res.body);
+    // The aggregates cover rows that always belong to a tenant, so a caller
+    // without a membership reads zeros instead of the unscoped bucket.
+    expect(data.customers).to.equal(0);
+    expect(data.subscriptions).to.equal(0);
+    expect(data.mrr).to.equal(0);
+  });
+
+  it('GET /api/billing/subscriptions fails closed for a caller with no membership', async () => {
+    const cust = subs.createCustomer('subscriptions-shared@test.com');
+    subs.createSubscription(cust.id, 'basic');
+
+    const res = await handleRequest(api, 'GET', '/api/billing/subscriptions');
+    expect(res.statusCode).to.equal(200);
+    const data = JSON.parse(res.body);
+    expect(data.subscriptions).to.have.lengthOf(0);
   });
 
   it('marks the audit row failed when a handler throws', async () => {
@@ -683,7 +727,7 @@ describe('Billing - Webhook Idempotency, Audit & Lifecycle (NOC-183)', () => {
   });
 });
 
-function handleRequest(api: BillingApi, method: string, url: string, body?: string, headers?: Record<string, string>): Promise<{ statusCode: number; body: string }> {
+function handleRequest(api: BillingApi, method: string, url: string, body?: string, headers?: Record<string, string>, teamId?: string | null): Promise<{ statusCode: number; body: string }> {
   return new Promise((resolve) => {
     let responseBody = '';
     let responseCode = 200;
@@ -707,7 +751,7 @@ function handleRequest(api: BillingApi, method: string, url: string, body?: stri
     } as any;
 
     api.handle(req, res, url === '/api/billing/webhook' ? null : {
-      userId: 'billing-user', email: 'billing@test.com', teamId: null, role: 'owner', token: 'verified-test-context',
+      userId: 'billing-user', email: 'billing@test.com', teamId: teamId === undefined ? null : teamId, role: 'owner', token: 'verified-test-context',
     });
   });
 }

@@ -365,13 +365,22 @@ describe('Alerting System', function () {
   describe('Notification Channel Formats', function () {
     it('should format Slack message payload correctly', async function () {
       const { evaluateAndNotify } = await import('../alerting');
+      // Channels and rules are tenant-owned: the evaluator fails closed for an
+      // event that resolves to no team (NOC-319), so the fixtures carry one.
       db.run(
-        `INSERT INTO alert_channels (id, name, type, config) VALUES ('fmt_ch', 'Fmt Slack', 'slack', ?)`,
+        `INSERT INTO teams (id, name, slug, owner_id) VALUES ('fmt_team', 'Fmt Team', 'fmt-team', 'fmt-owner')`
+      );
+      db.run(
+        `INSERT INTO alert_channels (id, name, type, config, team_id) VALUES ('fmt_ch', 'Fmt Slack', 'slack', ?, 'fmt_team')`,
         [JSON.stringify({ webhookUrl: 'https://hooks.slack.com/services/invalid' })]
       );
       db.run(
-        `INSERT INTO alert_rules (id, name, channel_id, failure_types, min_severity) VALUES ('fmt_rule', 'Fmt Rule', 'fmt_ch', ?, 'info')`,
+        `INSERT INTO alert_rules (id, name, channel_id, failure_types, min_severity, team_id) VALUES ('fmt_rule', 'Fmt Rule', 'fmt_ch', ?, 'info', 'fmt_team')`,
         [JSON.stringify(['broken_webhook'])]
+      );
+      db.run(
+        `INSERT INTO failure_events (id, check_id, failure_type, severity, title, description, detected_at, team_id)
+         VALUES ('evt_fmt', 'check_fmt', 'broken_webhook', 'critical', 'Test Alert', 'Something broke', datetime('now'), 'fmt_team')`
       );
       await evaluateAndNotify(db, 'broken_webhook', 'critical', 'Test Alert', 'Something broke', new Date().toISOString(), 'check_fmt', 'evt_fmt');
       const result = db.exec('SELECT status FROM alert_log WHERE rule_id = ?', ['fmt_rule']);
