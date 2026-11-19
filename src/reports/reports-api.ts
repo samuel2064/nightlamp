@@ -1,7 +1,7 @@
 import { Database } from 'sql.js';
 import { IncomingMessage, ServerResponse } from 'http';
 import type { AuthContext } from '../api/auth';
-import { tenantFilter } from '../api/tenant';
+import { tenantOwnedFilter } from '../api/tenant';
 
 interface CacheEntry {
   data: any;
@@ -103,7 +103,7 @@ export class ReportsApi {
     const format = parsedUrl.searchParams.get('format') || 'json';
     const periodDays = this.parsePeriod(parsedUrl.searchParams);
     const granularity = this.getGranularity(periodDays);
-    const scope = tenantFilter('team_id', teamId);
+    const scope = tenantOwnedFilter('team_id', teamId);
 
     const data = this.getCachedOrFetch(`incident-trends:${teamId || 'personal'}:${periodDays}:${granularity}`, () => {
       const dateTrunc = granularity === 'hour'
@@ -187,7 +187,7 @@ export class ReportsApi {
     const format = parsedUrl.searchParams.get('format') || 'json';
     const periodDays = this.parsePeriod(parsedUrl.searchParams);
     const monitorId = parsedUrl.searchParams.get('monitor_id') || '';
-    const scope = tenantFilter('team_id', teamId);
+    const scope = tenantOwnedFilter('team_id', teamId);
 
     const data = this.getCachedOrFetch(`uptime-stats:${teamId || 'personal'}:${monitorId}:${periodDays}`, () => {
       if (!monitorId) {
@@ -331,7 +331,7 @@ export class ReportsApi {
   private handlePlaybookEffectiveness(parsedUrl: URL, res: ServerResponse, teamId: string | null): void {
     const format = parsedUrl.searchParams.get('format') || 'json';
     const playbookId = parsedUrl.searchParams.get('playbook_id') || '';
-    const scope = tenantFilter('team_id', teamId);
+    const scope = tenantOwnedFilter('team_id', teamId);
 
     const data = this.getCachedOrFetch(`playbook-effectiveness:${teamId || 'personal'}:${playbookId}`, () => {
       if (!playbookId) {
@@ -460,7 +460,7 @@ export class ReportsApi {
 
   private handleTeamSummary(parsedUrl: URL, res: ServerResponse, teamId: string | null): void {
     const format = parsedUrl.searchParams.get('format') || 'json';
-    const scope = tenantFilter('team_id', teamId);
+    const scope = tenantOwnedFilter('team_id', teamId);
 
     const data = this.getCachedOrFetch(`team-summary:${teamId || 'personal'}`, () => {
       const teamCount = teamId

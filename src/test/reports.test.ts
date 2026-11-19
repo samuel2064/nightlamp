@@ -5,6 +5,7 @@ import { Database } from 'sql.js';
 import { Server } from 'http';
 import assert from 'assert';
 import { v4 as uuidv4 } from 'uuid';
+import { TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID } from './setup';
 
 describe('Reports API', () => {
   let db: Database;
@@ -57,11 +58,19 @@ describe('Reports API', () => {
         [uuidv4(), peId, 'expired_token', 'rotate-token', i < 2 ? 'success' : 'failed', `Output ${i}`, new Date().toISOString()]
       );
     }
+    // Reports are tenant-owned: the default test identity must resolve to a
+    // member of the team that owns every fixture row (NOC-319 follow-up).
+    db.run('INSERT INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)',
+      [TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID, 'owner@example.com', 'Owner']);
     const teamId = uuidv4();
     db.run('INSERT INTO teams (id, name, slug, owner_id) VALUES (?, ?, ?, ?)',
-      [teamId, 'Test Team', 'test-team', 'user-1']);
+      [teamId, 'Test Team', 'test-team', TEST_LOCAL_USER_ID]);
     db.run('INSERT INTO memberships (id, team_id, user_id, role) VALUES (?, ?, ?, ?)',
-      [uuidv4(), teamId, 'user-1', 'owner']);
+      [uuidv4(), teamId, TEST_LOCAL_USER_ID, 'owner']);
+
+    for (const table of ['checks', 'failure_events', 'check_results', 'playbook_entries', 'remediation_log']) {
+      db.run(`UPDATE ${table} SET team_id = ?`, [teamId]);
+    }
 
     server = startApiServer(db, { port: 0 });
     const addr = server.address() as any;
