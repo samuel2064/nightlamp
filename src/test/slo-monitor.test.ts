@@ -49,7 +49,7 @@ describe('SLO Monitor', () => {
 
   describe('SLO Breach Detection', () => {
     it('should detect LCP breach when value exceeds target', () => {
-      const breach = monitor.checkSlo('http://test.com', 'LCP', 3000);
+      const breach = monitor.checkSlo('http://test.com', 'LCP', 3000, 'test-team');
       assert.ok(breach);
       assert.strictEqual(breach.metric, 'LCP');
       assert.strictEqual(breach.currentValue, 3000);
@@ -58,23 +58,23 @@ describe('SLO Monitor', () => {
     });
 
     it('should not detect breach when value meets target', () => {
-      const breach = monitor.checkSlo('http://test.com', 'LCP', 1500);
+      const breach = monitor.checkSlo('http://test.com', 'LCP', 1500, 'test-team');
       assert.strictEqual(breach, null);
     });
 
     it('should detect score breach when value below target', () => {
-      const breach = monitor.checkSlo('http://test.com', 'score', 0.6);
+      const breach = monitor.checkSlo('http://test.com', 'score', 0.6, 'test-team');
       assert.ok(breach);
       assert.strictEqual(breach.metric, 'score');
     });
 
     it('should not detect breach for unknown metric', () => {
-      const breach = monitor.checkSlo('http://test.com', 'UNKNOWN', 999);
+      const breach = monitor.checkSlo('http://test.com', 'UNKNOWN', 999, 'test-team');
       assert.strictEqual(breach, null);
     });
 
     it('should return null for unknown SLO', () => {
-      const result = monitor.checkSlo('http://test.com', 'nonexistent', 100);
+      const result = monitor.checkSlo('http://test.com', 'nonexistent', 100, 'test-team');
       assert.strictEqual(result, null);
     });
   });
@@ -88,7 +88,7 @@ describe('SLO Monitor', () => {
         fcp: 3000,
         inp: 400,
         score: 0.4,
-      });
+      }, 'test-team');
       assert.strictEqual(breaches.length, 6);
     });
 
@@ -100,7 +100,7 @@ describe('SLO Monitor', () => {
         fcp: 800,
         inp: 100,
         score: 0.95,
-      });
+      }, 'test-team');
       assert.strictEqual(breaches.length, 0);
     });
 
@@ -112,7 +112,7 @@ describe('SLO Monitor', () => {
         fcp: 1500,
         inp: 150,
         score: 0.9,
-      });
+      }, 'test-team');
       assert.ok(breaches.length > 0);
       assert.ok(breaches.length < 6);
       assert.ok(breaches.every(b => b.metric === 'LCP'));
@@ -121,8 +121,8 @@ describe('SLO Monitor', () => {
 
   describe('Breach Management', () => {
     it('should track breaches per URL', () => {
-      monitor.checkSlo('http://url-a.com', 'LCP', 3000);
-      monitor.checkSlo('http://url-b.com', 'TBT', 300);
+      monitor.checkSlo('http://url-a.com', 'LCP', 3000, 'test-team');
+      monitor.checkSlo('http://url-b.com', 'TBT', 300, 'test-team');
 
       const urlABreaches = monitor.getBreaches('http://url-a.com');
       assert.ok(urlABreaches.length > 0);
@@ -130,7 +130,7 @@ describe('SLO Monitor', () => {
     });
 
     it('should acknowledge a breach', () => {
-      monitor.checkSlo('http://ack-test.com', 'LCP', 3000);
+      monitor.checkSlo('http://ack-test.com', 'LCP', 3000, 'test-team');
       const breaches = monitor.getBreaches('http://ack-test.com');
       assert.ok(breaches.length > 0);
 
@@ -155,7 +155,7 @@ describe('SLO Monitor', () => {
     });
 
     it('should return fail when breaches exist', () => {
-      monitor.checkSlo('http://fail-test.com', 'LCP', 3000);
+      monitor.checkSlo('http://fail-test.com', 'LCP', 3000, 'test-team');
       const summary = monitor.summarize('http://fail-test.com');
       assert.strictEqual(summary.sloPass, false);
       assert.ok(summary.breaches.length > 0);
@@ -169,7 +169,7 @@ describe('SLO Monitor', () => {
 
   describe('Error Budget', () => {
     it('should calculate error budget remaining', () => {
-      const breach = monitor.checkSlo('http://budget-test.com', 'LCP', 5000);
+      const breach = monitor.checkSlo('http://budget-test.com', 'LCP', 5000, 'test-team');
       assert.ok(breach);
       assert.ok(breach.errorBudgetRemaining >= 0);
       assert.ok(breach.errorBudgetRemaining <= 43200);
@@ -186,7 +186,7 @@ describe('SLO Monitor', () => {
       assert.strictEqual(defs.length, 1);
       assert.strictEqual(defs[0].metric, 'custom_metric');
 
-      const breach = customMonitor.checkSlo('http://test.com', 'custom_metric', 200);
+      const breach = customMonitor.checkSlo('http://test.com', 'custom_metric', 200, 'test-team');
       assert.ok(breach);
     });
   });

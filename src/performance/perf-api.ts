@@ -81,7 +81,7 @@ export class PerfApi {
         if (result.successful) {
           const runs = this.storage.getRecentRuns(url, teamId, 1);
           if (runs.length > 0) {
-            const detection = this.detector.analyzeRuns(url, runs[0]);
+            const detection = this.detector.analyzeRuns(url, runs[0], teamId);
             for (const reg of detection.regressions) {
               this.diagnosis.diagnose(url, reg, teamId);
             }

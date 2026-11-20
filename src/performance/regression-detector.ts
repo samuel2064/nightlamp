@@ -7,7 +7,7 @@ export class RegressionDetector {
     this.pValueThreshold = threshold;
   }
 
-  analyzeRuns(url: string, currentRun: PerfRun, teamId: string | null = null): { detected: boolean; regressions: any[] } {
+  analyzeRuns(url: string, currentRun: PerfRun, teamId: string): { detected: boolean; regressions: any[] } {
     const metrics: { name: string; value: number }[] = [
       { name: 'LCP', value: currentRun.lcp },
       { name: 'TBT', value: currentRun.tbt },

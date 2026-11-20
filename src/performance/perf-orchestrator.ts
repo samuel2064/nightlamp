@@ -16,17 +16,16 @@ export class PerfOrchestrator {
   }
 
   async runAudit(url: string): Promise<LighthouseResult> {
-    const runId = this.storage.createRun(url);
-    const result = await this.runner.runAudit(url);
-    this.storage.completeRun(runId, result);
-    return result;
+    return this.runner.runAudit(url);
   }
 
-  schedule(url: string, cronExpr: string): void {
+  schedule(url: string, cronExpr: string, teamId: string): void {
     cron.schedule(cronExpr, async () => {
       console.log(`[PerfOrchestrator] Running scheduled audit for ${url}`);
       try {
+        const runId = this.storage.createRun(url, teamId);
         const result = await this.runAudit(url);
+        this.storage.completeRun(runId, result, teamId);
         if (result.successful) {
           console.log(`[PerfOrchestrator] ${url} - LCP: ${result.lcp}ms, Score: ${result.score}`);
         } else {
@@ -37,6 +36,6 @@ export class PerfOrchestrator {
       }
     });
 
-    console.log(`[PerfOrchestrator] Scheduled ${url} with "${cronExpr}"`);
+    console.log(`[PerfOrchestrator] Scheduled ${url} with "${cronExpr}" for team ${teamId}`);
   }
 }

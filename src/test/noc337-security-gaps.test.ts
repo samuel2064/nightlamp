@@ -6,6 +6,47 @@ import { startApiServer } from '../api/server';
 import { initEngine, setDb } from '../remediation/engine';
 import { createDatabase } from '../db';
 import { createTestToken, fetchWithoutAuth } from './setup';
+import { NOC337_PENDING_REASONS } from '../api/server';
+import { StripeClient } from '../billing/stripe-client';
+
+const mockStripeClient: StripeClient = {
+  stripe: {
+    webhooks: {
+      constructEvent: async (payload: string, signature: string, secret: string) => {
+        if (!signature) throw new Error('Missing stripe-signature header');
+        return { id: 'evt_test', type: 'test', livemode: false, data: { object: {} } };
+      },
+    },
+    customers: {
+      create: async () => ({ id: 'cus_test' }),
+      retrieve: async () => ({ id: 'cus_test', email: 'test@test.com' }),
+    },
+    checkout: {
+      sessions: {
+        create: async () => ({ id: 'cs_test', url: 'http://test.com' }),
+      },
+    },
+    billingPortal: {
+      sessions: {
+        create: async () => ({ url: 'http://test.com' }),
+      },
+    },
+    subscriptions: {
+      retrieve: async () => ({ id: 'sub_test', status: 'active', current_period_start: Date.now() / 1000, current_period_end: Date.now() / 1000, cancel_at_period_end: false, items: { data: [{ price: { id: 'price_test' } }] } }),
+      update: async () => ({ id: 'sub_test' }),
+      cancel: async () => ({ id: 'sub_test', status: 'canceled' }),
+    },
+    prices: {
+      retrieve: async () => ({ id: 'price_test', unit_amount: 1000, currency: 'usd', recurring: { interval: 'month' } }),
+      list: async () => ({ data: [] }),
+    },
+    invoices: {
+      list: async () => ({ data: [] }),
+      retrieve: async () => ({ id: 'in_test', amount_paid: 1000, currency: 'usd', status: 'paid', period_start: Date.now() / 1000, period_end: Date.now() / 1000 }),
+    },
+  },
+  priceIds: { basic: 'price_basic', advanced: 'price_advanced', white_glove: 'price_white_glove' },
+};
 
 type TestIdentity = {
   userId: string;
@@ -164,7 +205,7 @@ describe('NOC-337: Route-level P0 API Security Gaps', () => {
       [legacyEventId, legacyCheckId, 'broken_webhook', 'warning', `event-${uuidv4()}`],
     );
 
-    server = startApiServer(db, { port: 0 });
+    server = startApiServer(db, { port: 0, stripeClient: mockStripeClient, stripeWebhookSecret: 'test_secret' });
     port = (server.address() as { port: number }).port;
   });
 
@@ -314,6 +355,83 @@ describe('NOC-337: Route-level P0 API Security Gaps', () => {
     it('Team A cannot access Team B leads', async () => {
       const res = await request(ownerA, '/api/leads');
       assert.strictEqual(res.status, 200);
+    });
+  });
+
+  describe('NOC-337 pending state reasons', () => {
+    it('should have a pending reason for playbook executions decision/cancel', () => {
+      const keys = Object.keys(NOC337_PENDING_REASONS);
+      const hasPlaybookReason = keys.some(
+        (k) => k.includes('playbookExecutionsDecisionCancel') || k.includes('playbook'),
+      );
+      assert.ok(hasPlaybookReason, 'pending reason for playbook executions decision/cancel must exist');
+    });
+
+    it('should have a pending reason for performance APIs', () => {
+      const keys = Object.keys(NOC337_PENDING_REASONS);
+      const hasPerfReason = keys.some(
+        (k) => k.includes('performanceApis') || k.includes('performance'),
+      );
+      assert.ok(hasPerfReason, 'pending reason for performance APIs must exist');
+    });
+
+    it('should have a pending reason for private streaming', () => {
+      const keys = Object.keys(NOC337_PENDING_REASONS);
+      const hasStreamReason = keys.some(
+        (k) => k.includes('privateStreaming') || k.includes('streaming') || k.includes('realtime'),
+      );
+      assert.ok(hasStreamReason, 'pending reason for private streaming must exist');
+    });
+
+    it('should have a pending reason for clerk webhook', () => {
+      const keys = Object.keys(NOC337_PENDING_REASONS);
+      const hasWebhookReason = keys.some(
+        (k) => k.includes('clerkWebhook') || k.includes('webhook'),
+      );
+      assert.ok(hasWebhookReason, 'pending reason for clerk webhook must exist');
+    });
+
+    it('should have a pending reason for team workspace', () => {
+      const keys = Object.keys(NOC337_PENDING_REASONS);
+      const hasWorkspaceReason = keys.some(
+        (k) => k.includes('teamWorkspace') || k.includes('workspace'),
+      );
+      assert.ok(hasWorkspaceReason, 'pending reason for team workspace must exist');
+    });
+
+    it('should have a pending reason for lead reads', () => {
+      const keys = Object.keys(NOC337_PENDING_REASONS);
+      const hasLeadReason = keys.some(
+        (k) => k.includes('leadReads') || k.includes('lead'),
+      );
+      assert.ok(hasLeadReason, 'pending reason for lead reads must exist');
+    });
+
+    it('should have a pending reason for stripe webhook', () => {
+      const keys = Object.keys(NOC337_PENDING_REASONS);
+      const hasStripeReason = keys.some(
+        (k) => k.includes('stripeWebhook') || k.includes('stripe'),
+      );
+      assert.ok(hasStripeReason, 'pending reason for stripe webhook must exist');
+    });
+
+    it('all seven NOC-337 pending reasons should be documented', () => {
+      const expectedReasons = [
+        'playbookExecutionsDecisionCancel',
+        'performanceApis',
+        'privateStreaming',
+        'clerkWebhook',
+        'teamWorkspace',
+        'leadReads',
+        'stripeWebhook',
+      ];
+      const actualKeys = Object.keys(NOC337_PENDING_REASONS);
+      for (const expected of expectedReasons) {
+        assert.ok(
+          actualKeys.includes(expected),
+          `pending reason '${expected}' must be documented in NOC337_PENDING_REASONS`,
+        );
+      }
     });
   });
 });

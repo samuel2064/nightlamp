@@ -133,7 +133,7 @@ export class SloMonitor {
     return this.slos;
   }
 
-  checkSlo(url: string, metricName: string, currentValue: number, teamId: string | null = null): SloBreach | null {
+  checkSlo(url: string, metricName: string, currentValue: number, teamId: string): SloBreach | null {
     const slo = this.slos.find(s => s.metric === metricName);
     if (!slo) return null;
 
@@ -166,7 +166,7 @@ export class SloMonitor {
     return breach;
   }
 
-  checkLighthouseRun(url: string, run: { lcp: number; tbt: number; cls: number; fcp: number; inp: number; score: number }): SloBreach[] {
+  checkLighthouseRun(url: string, run: { lcp: number; tbt: number; cls: number; fcp: number; inp: number; score: number }, teamId: string): SloBreach[] {
     const breaches: SloBreach[] = [];
     const metrics: { name: string; value: number }[] = [
       { name: 'LCP', value: run.lcp },
@@ -178,7 +178,7 @@ export class SloMonitor {
     ];
 
     for (const m of metrics) {
-      const breach = this.checkSlo(url, m.name, m.value);
+      const breach = this.checkSlo(url, m.name, m.value, teamId);
       if (breach) breaches.push(breach);
     }
 

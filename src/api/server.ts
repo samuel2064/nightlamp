@@ -39,16 +39,17 @@ export interface ApiConfig {
 interface EndpointRule {
   path: string;
   method?: string;
+  exact?: boolean;
 }
 
 const PUBLIC_ENDPOINTS: EndpointRule[] = [
-  { path: '/api/health' },
-  { path: '/api/performance/latency' },
-  { path: '/api/leads', method: 'POST' },
-  { path: '/api/webhooks/clerk', method: 'POST' },
-  { path: '/api/billing/webhook', method: 'POST' },
-  { path: '/api/x/auth' },
-  { path: '/api/x/callback' },
+  { path: '/api/health', exact: true },
+  { path: '/api/performance/latency', exact: true },
+  { path: '/api/leads', method: 'POST', exact: true },
+  { path: '/api/webhooks/clerk', method: 'POST', exact: true },
+  { path: '/api/billing/webhook', method: 'POST', exact: true },
+  { path: '/api/x/auth', exact: true },
+  { path: '/api/x/callback', exact: true },
 ];
 
 const PUBLIC_PATH_PATTERNS: RegExp[] = [
@@ -71,6 +72,34 @@ const ADMIN_ENDPOINTS: EndpointRule[] = [
   { path: '/api/x/schedule-thread', method: 'POST' },
   { path: '/api/playbook/remediate', method: 'POST' },
 ];
+
+/**
+ * Seven NOC-337 surfaces that remain unremediated.
+ * Adding explicit pending states with reasons for each.
+ */
+export const NOC337_PENDING_REASONS = {
+  // Gap 1: Playbook executions list/read are tenant-scoped, decision/cancel not yet
+  playbookExecutionsDecisionCancel:
+    'decision and cancel operations not yet fully tenant-scoped; verify execution team membership before action',
+  // Gap 2: Performance APIs require auth and tenant scoping
+  performanceApis:
+    'performance APIs (run, history, regressions, diagnosis) not yet fully require auth and tenant scoping',
+  // Gap 3: Private streaming (SSE /api/realtime) requires auth and tenant-scoped client registry
+  privateStreaming:
+    'SSE /api/realtime not yet requires auth and tenant-scoped client registry with broadcastEventToTeam',
+  // Gap 4: Clerk webhook fails closed when secret absent
+  clerkWebhook:
+    'clerk webhook not yet fails closed when secret absent; verify signature/timestamp, reject replayed/stale deliveries',
+  // Gap 5: Team workspace PATCH requires owner/admin
+  teamWorkspace:
+    'PATCH /api/teams/:id/workspace not yet requires owner/admin via requireTeamAdmin',
+  // Gap 6: Lead reads GET /api/leads now tenant-scoped; POST remains public
+  leadReads:
+    'GET /api/leads not yet fully tenant-scoped with team_id column; some routes may expose unscoped data',
+  // Gap 7: Stripe webhook at exact path POST /api/billing/webhook verified without user token
+  stripeWebhook:
+    'POST /api/billing/webhook not yet verified without user token; exact path verification missing',
+};
 
 const AVAILABLE_ROUTES: string[] = [
   '/api/remediation/runs', '/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search',
@@ -111,7 +140,10 @@ function matchesEndpoint(path: string, method: string | undefined, rules: Endpoi
   const normalized = normalizePath(path);
   return rules.some((rule) => {
     const rulePath = normalizePath(rule.path);
-    const pathMatches = normalized === rulePath || normalized.startsWith(`${rulePath}/`);
+    const prefix = rulePath + '/';
+    const pathMatches = rule.exact
+      ? normalized === rulePath
+      : normalized === rulePath || normalized.startsWith(prefix);
     const methodMatches = !rule.method || rule.method === method;
     return pathMatches && methodMatches;
   });
@@ -281,117 +313,6 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       if (path === '/api/performance/latency' || path === '/api/performance/latency/') {
         res.end(JSON.stringify({ latency: latencyTracker.summary() }));
         return;
-      }
-      // NOC-337 Gap 3: Private streaming (SSE /api/realtime) requires auth and tenant-scoped client registry
-      if (path === '/api/realtime' || path === '/api/realtime/') {
-        if (req.method === 'GET') {
-          if (!requireTenantScope(res, teamId)) {
-            res.writeHead(403);
-            res.end(JSON.stringify({ error: 'A team membership is required to access this resource', code: 'FORBIDDEN' }));
-            return;
-          }
-        }
-        res.writeHead(200);
-        res.end(JSON.stringify({ success: true, message: 'SSE realtime endpoint', teamId }));
-        return;
-      }
-      // NOC-337 Gap 1: Playbook executions tenant scoping
-      if (path === '/api/playbook/executions' || path === '/api/playbook/executions/') {
-        if (req.method === 'GET' || req.method === 'POST') {
-          if (!requireTenantScope(res, teamId)) {
-            res.writeHead(403);
-            res.end(JSON.stringify({ error: 'A team membership is required to access this resource', code: 'FORBIDDEN' }));
-            return;
-          }
-        }
-        res.writeHead(200);
-        res.end(JSON.stringify({ success: true, message: 'Playbook executions endpoint', teamId }));
-        return;
-      }
-      // NOC-337 Gap 2: Performance APIs tenant scoping
-      if (path === '/api/performance/run' || path === '/api/performance/run/') {
-        if (req.method === 'POST') {
-          if (!requireTenantScope(res, teamId)) {
-            res.writeHead(403);
-            res.end(JSON.stringify({ error: 'A team membership is required to access this resource', code: 'FORBIDDEN' }));
-            return;
-          }
-        }
-        res.writeHead(200);
-        res.end(JSON.stringify({ success: true, message: 'Performance run endpoint', teamId }));
-        return;
-      }
-      if (path === '/api/performance/history' || path === '/api/performance/history/') {
-        if (req.method === 'GET') {
-          if (!requireTenantScope(res, teamId)) {
-            res.writeHead(403);
-            res.end(JSON.stringify({ error: 'A team membership is required to access this resource', code: 'FORBIDDEN' }));
-            return;
-          }
-        }
-        res.writeHead(200);
-        res.end(JSON.stringify({ success: true, message: 'Performance history endpoint', teamId }));
-        return;
-      }
-      if (path === '/api/performance/regressions' || path === '/api/performance/regressions/') {
-        if (req.method === 'GET') {
-          if (!requireTenantScope(res, teamId)) {
-            res.writeHead(403);
-            res.end(JSON.stringify({ error: 'A team membership is required to access this resource', code: 'FORBIDDEN' }));
-            return;
-          }
-        }
-        res.writeHead(200);
-        res.end(JSON.stringify({ success: true, message: 'Performance regressions endpoint', teamId }));
-        return;
-      }
-      if (path === '/api/performance/diagnosis' || path === '/api/performance/diagnosis/') {
-        if (req.method === 'GET') {
-          if (!requireTenantScope(res, teamId)) {
-            res.writeHead(403);
-            res.end(JSON.stringify({ error: 'A team membership is required to access this resource', code: 'FORBIDDEN' }));
-            return;
-          }
-        }
-        res.writeHead(200);
-        res.end(JSON.stringify({ success: true, message: 'Performance diagnosis endpoint', teamId }));
-        return;
-      }
-      // NOC-337 Gap 5: Team workspace PATCH requires owner/admin (handled by team-api.ts via requireTeamAdmin)
-      // NOC-337 Gap 6: Lead reads GET /api/leads now tenant-scoped
-      if (path === '/api/leads' || path === '/api/leads/') {
-        if (req.method === 'GET') {
-          if (!requireTenantScope(res, teamId)) {
-            res.writeHead(403);
-            res.end(JSON.stringify({ error: 'A team membership is required to access this resource', code: 'FORBIDDEN' }));
-            return;
-          }
-        }
-        res.writeHead(200);
-        res.end(JSON.stringify({ success: true, message: 'Leads endpoint', teamId }));
-        return;
-      }
-      // NOC-337 Gap 4: Clerk webhook fails closed when secret absent
-      if (path === '/api/webhooks/clerk' || path === '/api/webhooks/clerk/') {
-        if (req.method === 'POST') {
-          res.writeHead(401);
-          res.end(JSON.stringify({ error: 'Clerk webhook requires Svix headers', code: 'UNAUTHORIZED' }));
-          return;
-        }
-      }
-      // NOC-337 Gap 7: Stripe webhook at exact path POST /api/billing/webhook verified without user token
-      if (path === '/api/billing/webhook' || path === '/api/billing/webhook/') {
-        if (req.method === 'POST') {
-          const stripeSignature = req.headers['stripe-signature'];
-          if (!stripeSignature) {
-            res.writeHead(400);
-            res.end(JSON.stringify({ error: 'Missing stripe-signature header' }));
-            return;
-          }
-          res.writeHead(200);
-          res.end(JSON.stringify({ success: true, message: 'Stripe webhook received' }));
-          return;
-        }
       }
       if (path === '/api/events/acknowledge' || path === '/api/events/acknowledge/') {
         if (req.method !== 'POST') {
@@ -765,7 +686,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         return;
       }
 
-      if (handleClerkWebhook(req, res)) {
+      if (handleClerkWebhook(req, res, db)) {
         return;
       }
 

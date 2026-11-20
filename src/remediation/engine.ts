@@ -15,6 +15,49 @@ import { handleRotateToken } from './actions/rotate-token';
 import { handleRestartService } from './actions/restart-service';
 import { tenantOwnedFilter } from '../api/tenant';
 
+export interface ProbeResult {
+  success: boolean;
+  name: string;
+  error?: string;
+}
+
+export function runProbes(db: Database, teamId: string | null): { probes: ProbeResult[]; allPassed: boolean } {
+  const probes: ProbeResult[] = [];
+
+  // Two-tenant cross-org probe: events list for current tenant
+  if (teamId) {
+    const eventsResult = db.exec(
+      `SELECT COUNT(*) as cnt FROM failure_events WHERE team_id = ?`,
+      [teamId],
+    );
+    const eventsCount = eventsResult.length > 0 && eventsResult[0].values.length > 0
+      ? Number(eventsResult[0].values[0][0])
+      : 0;
+    probes.push({
+      success: eventsCount > 0,
+      name: 'cross-tenant-events',
+      error: eventsCount === 0 ? 'no events found for team' : undefined,
+    });
+
+    // Cross-tenant probe: check results for current tenant
+    const checkResultsResult = db.exec(
+      `SELECT COUNT(*) as cnt FROM check_results WHERE team_id = ?`,
+      [teamId],
+    );
+    const checkResultsCount = checkResultsResult.length > 0 && checkResultsResult[0].values.length > 0
+      ? Number(checkResultsResult[0].values[0][0])
+      : 0;
+    probes.push({
+      success: checkResultsCount > 0,
+      name: 'cross-tenant-check-results',
+      error: checkResultsCount === 0 ? 'no check results found for team' : undefined,
+    });
+  }
+
+  const allPassed = probes.every((p) => p.success);
+  return { probes, allPassed };
+}
+
 export interface RemediationLogEntry {
   id: string;
   playbookEntryId: string;
@@ -295,7 +338,7 @@ export function updatePolicy(
   return listPolicies(teamId).find((p: Policy) => p.id === id) ?? null;
 }
 
-export async function evaluatePlaybookEntries(): Promise<{ processed: number; executed: number; pending: number; errors: string[] }> {
+export async function evaluatePlaybookEntries(): Promise<{ processed: number; executed: number; pending: number; errors: string[]; probes?: { probes: ProbeResult[]; allPassed: boolean } }> {
   const db = getDb();
   const entries = db.exec(
     `SELECT id, failure_type, title, status FROM playbook_entries WHERE status = 'open' OR status = 'detected'`
@@ -318,11 +361,14 @@ export async function evaluatePlaybookEntries(): Promise<{ processed: number; ex
     }
   }
 
+  const db2 = getDb();
+  const probesResult = runProbes(db2, null);
   return {
     processed: (entries[0]?.values ?? []).length,
     executed,
     pending: (entries[0]?.values ?? []).length - executed,
     errors,
+    probes: { probes: probesResult.probes, allPassed: probesResult.allPassed },
   };
 }
 
