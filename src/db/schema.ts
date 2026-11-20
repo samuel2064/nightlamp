@@ -5,6 +5,7 @@ import { up as applyTenantIsolationMigration } from './migrations/008-tenant-iso
 import { up as applyPlaybookExecutionsTenantMigration } from './migrations/012-playbook-executions-tenant';
 import { up as applyPerfTenantMigration } from './migrations/013-perf-tenant';
 import { up as applyLeadsTenantMigration } from './migrations/014-leads-tenant';
+import { up as applyClerkWebhookEventsMigration } from './migrations/015-clerk-webhook-events';
 
 export interface NightlampDb {
   db: SqlJsDatabase;
@@ -581,6 +582,7 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   applyPlaybookExecutionsTenantMigration(db);
   applyPerfTenantMigration(db);
   applyLeadsTenantMigration(db);
+  applyClerkWebhookEventsMigration(db);
 
   return db;
 }

@@ -10,6 +10,14 @@ interface ClerkEvent {
   object: 'event';
 }
 
+function decodeSvixSecret(secret: string): Buffer {
+  if (!secret.startsWith('whsec_')) {
+    throw new Error('Invalid Svix secret format: must start with whsec_');
+  }
+  const base64Key = secret.slice(6);
+  return Buffer.from(base64Key, 'base64');
+}
+
 function verifyClerkWebhook(
   body: string,
   svixId: string,
@@ -18,9 +26,10 @@ function verifyClerkWebhook(
   secret: string
 ): boolean {
   if (!secret) return false;
+  const hmacKey = decodeSvixSecret(secret);
   const signedContent = `${svixId}.${svixTimestamp}.${body}`;
   const expectedSignature = crypto
-    .createHmac('sha256', secret)
+    .createHmac('sha256', hmacKey)
     .update(signedContent)
     .digest('base64');
   const receivedSignatures = svixSignature.split(' ').map(s => s.trim());
@@ -46,14 +55,14 @@ function isTimestampFresh(timestamp: string, maxAgeSeconds: number = 300): boole
 
 async function isReplay(db: Database, eventId: string): Promise<boolean> {
   const result = db.exec(
-    `SELECT id FROM webhook_events WHERE id = ? AND provider = 'clerk'`,
+    `SELECT id FROM clerk_webhook_events WHERE id = ?`,
     [eventId],
   );
   if (result.length > 0 && result[0].values.length > 0) {
     return true;
   }
   db.run(
-    `INSERT INTO webhook_events (id, provider, event_type, livemode, status, payload, received_at) VALUES (?, 'clerk', 'unknown', 0, 'received', '{}', datetime('now'))`,
+    `INSERT INTO clerk_webhook_events (id, event_type, livemode, status, payload, received_at) VALUES (?, 'unknown', 0, 'received', '{}', datetime('now'))`,
     [eventId],
   );
   return false;
@@ -104,7 +113,6 @@ export function handleClerkWebhook(req: IncomingMessage, res: ServerResponse, db
       const svixSignature = req.headers['svix-signature'] as string;
       const secret = process.env.CLERK_WEBHOOK_SECRET || '';
 
-      // Fail closed: require secret, signature, and timestamp
       if (!secret) {
         console.error('[Clerk Webhook] CLERK_WEBHOOK_SECRET not configured');
         res.writeHead(401);
@@ -128,7 +136,6 @@ export function handleClerkWebhook(req: IncomingMessage, res: ServerResponse, db
       }
 
       const event: ClerkEvent = JSON.parse(body);
-      // Generate event ID if missing (for compatibility with test probes)
       if (!event.id || typeof event.id !== 'string') {
         event.id = uuidv4();
       }
@@ -140,9 +147,8 @@ export function handleClerkWebhook(req: IncomingMessage, res: ServerResponse, db
 
       handleClerkEvent(event);
 
-      // Update the webhook event with the actual event type
       db.run(
-        `UPDATE webhook_events SET event_type = ?, payload = ? WHERE id = ? AND provider = 'clerk'`,
+        `UPDATE clerk_webhook_events SET event_type = ?, payload = ? WHERE id = ?`,
         [event.type, body, event.id],
       );
 
