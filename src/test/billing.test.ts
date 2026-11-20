@@ -408,11 +408,13 @@ describe('Billing - BillingApi', () => {
   });
 
   describe('GET /api/billing/access', () => {
-    function makeRequest(auth: { userId: string; email: string; teamId: string | null; role: string } | null) {
+    function makeRequest(auth: { userId: string; email: string; teamId: string | null; role: string } | null, url?: string) {
       return new Promise<{ statusCode: number; body: string }>((resolve) => {
+        const baseUrl = url || '/api/billing/access';
+        let responseCode = 200;
         const req = {
           method: 'GET',
-          url: '/api/billing/access',
+          url: baseUrl,
           headers: {},
           on: (event: string, cb: Function) => {
             if (event === 'data' && cb) cb('');
@@ -420,9 +422,9 @@ describe('Billing - BillingApi', () => {
           },
         } as any;
         const res = {
-          writeHead: (code: number) => { /* status captured below */ },
+          writeHead: (code: number) => { responseCode = code; },
           end: (data: string) => {
-            resolve({ statusCode: 200, body: data });
+            resolve({ statusCode: responseCode, body: data });
           },
         } as any;
         api.handle(req, res, auth ? { userId: auth.userId, email: auth.email, teamId: auth.teamId, role: auth.role, token: 'verified-test-context' } : null);
@@ -480,23 +482,42 @@ describe('Billing - BillingApi', () => {
 
     it('rejects client-supplied customerId in query params', async () => {
       insertMembership('owner');
-      const res = await makeRequest({ userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'owner', customerId: 'untrusted' });
+      const res = await makeRequest({ userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'owner' }, '/api/billing/access?customerId=untrusted');
       expect(res.statusCode).to.equal(400);
     });
 
     it('rejects client-supplied teamId in query params', async () => {
       insertMembership('owner');
-      const res = await makeRequest({ userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'owner', teamId: 'untrusted' });
+      const res = await makeRequest({ userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'owner' }, '/api/billing/access?teamId=untrusted');
+      expect(res.statusCode).to.equal(400);
+    });
+
+    it('rejects client-supplied orgId in query params', async () => {
+      insertMembership('owner');
+      const res = await makeRequest({ userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'owner' }, '/api/billing/access?orgId=untrusted');
+      expect(res.statusCode).to.equal(400);
+    });
+
+    it('rejects client-supplied stripeCustomerId in query params', async () => {
+      insertMembership('owner');
+      const res = await makeRequest({ userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'owner' }, '/api/billing/access?stripeCustomerId=untrusted');
+      expect(res.statusCode).to.equal(400);
+    });
+
+    it('rejects client-supplied subscriptionId in query params', async () => {
+      insertMembership('owner');
+      const res = await makeRequest({ userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'owner' }, '/api/billing/access?subscriptionId=untrusted');
       expect(res.statusCode).to.equal(400);
     });
 
     it('returns 405 for non-GET method', async () => {
       insertMembership('owner');
       const res = await new Promise<{ statusCode: number; body: string }>((resolve) => {
+        let capturedCode = 200;
         const req = { method: 'POST', url: '/api/billing/access', headers: {} } as IncomingMessage;
         const res = {
-          writeHead: (code: number) => { /* captured */ },
-          end: (data: string) => { resolve({ statusCode: code, body: data }); },
+          writeHead: (code: number) => { capturedCode = code; },
+          end: (data: string) => { resolve({ statusCode: capturedCode, body: data }); },
         } as any;
         api.handle(req, res, { userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'owner', token: 'verified-test-context' });
       });
