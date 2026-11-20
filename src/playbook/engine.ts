@@ -82,10 +82,9 @@ export class PlaybookEngine {
 
   private loadExecutions(): void {
     const result = this.db.exec(
-      `SELECT pe.id, pe.playbook_id, cp.team_id, pe.status, pe.current_step_id, pe.context, pe.step_results,
-              pe.created_at, pe.updated_at, pe.completed_at, pe.error
-       FROM playbook_executions pe
-       JOIN custom_playbooks cp ON pe.playbook_id = cp.id`
+      `SELECT id, playbook_id, team_id, status, current_step_id, context, step_results,
+              created_at, updated_at, completed_at, error
+       FROM playbook_executions`
     );
     if (result.length > 0 && result[0].values.length > 0) {
       for (const row of result[0].values) {

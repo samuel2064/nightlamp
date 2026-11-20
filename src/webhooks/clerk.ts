@@ -1,5 +1,6 @@
 import { IncomingMessage, ServerResponse } from 'http';
 import * as crypto from 'crypto';
+import { Database } from 'sql.js';
 
 interface ClerkEvent {
   id: string;
@@ -42,23 +43,23 @@ function isTimestampFresh(timestamp: string, maxAgeSeconds: number = 300): boole
   return !isNaN(timestampMs) && Math.abs(now - timestampMs) <= maxAgeSeconds * 1000;
 }
 
-const processedEventIds = new Map<string, number>();
-const MAX_PROCESSED_CACHE = 10000;
+function initClerkWebhookTable(db: Database): void {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS clerk_webhook_events (
+      id TEXT PRIMARY KEY,
+      received_at TEXT NOT NULL
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_clerk_webhook_events_received ON clerk_webhook_events(received_at)`);
+}
 
-function isReplay(eventId: string): boolean {
-  const now = Date.now();
-  // Clean old entries
-  if (processedEventIds.size > MAX_PROCESSED_CACHE) {
-    for (const [id, ts] of processedEventIds) {
-      if (now - ts > 24 * 60 * 60 * 1000) {
-        processedEventIds.delete(id);
-      }
-    }
-  }
-  if (processedEventIds.has(eventId)) {
+function isReplay(db: Database, eventId: string): boolean {
+  initClerkWebhookTable(db);
+  const existing = db.exec('SELECT id FROM clerk_webhook_events WHERE id = ?', [eventId]);
+  if (existing.length > 0 && existing[0].values.length > 0) {
     return true;
   }
-  processedEventIds.set(eventId, now);
+  db.run('INSERT INTO clerk_webhook_events (id, received_at) VALUES (?, datetime("now"))', [eventId]);
   return false;
 }
 
@@ -93,7 +94,7 @@ function handleClerkEvent(event: ClerkEvent): void {
   }
 }
 
-export function handleClerkWebhook(req: IncomingMessage, res: ServerResponse): boolean {
+export function handleClerkWebhook(req: IncomingMessage, res: ServerResponse, db: Database): boolean {
   const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
   const path = parsedUrl.pathname;
   if ((path !== '/api/webhooks/clerk' && path !== '/api/webhooks/clerk/') || req.method !== 'POST') return false;
@@ -136,7 +137,7 @@ export function handleClerkWebhook(req: IncomingMessage, res: ServerResponse): b
         res.end(JSON.stringify({ error: 'Missing event id' }));
         return;
       }
-      if (isReplay(event.id)) {
+      if (isReplay(db, event.id)) {
         res.writeHead(409);
         res.end(JSON.stringify({ error: 'Duplicate event' }));
         return;

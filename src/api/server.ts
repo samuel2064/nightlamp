@@ -111,7 +111,9 @@ function matchesEndpoint(path: string, method: string | undefined, rules: Endpoi
   const normalized = normalizePath(path);
   return rules.some((rule) => {
     const rulePath = normalizePath(rule.path);
-    const pathMatches = rule.exact ? normalized === rulePath : (normalized === rulePath || normalized.startsWith(`${rulePath}/`));
+    const pathMatches = rule.exact
+      ? normalized === rulePath
+      : (normalized === rulePath || normalized.startsWith(rulePath + '/'));
     const methodMatches = !rule.method || rule.method === method;
     return pathMatches && methodMatches;
   });
@@ -654,7 +656,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         return;
       }
 
-      if (handleClerkWebhook(req, res)) {
+      if (handleClerkWebhook(req, res, db)) {
         return;
       }
 
