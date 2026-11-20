@@ -55,7 +55,7 @@ export class TeamApi {
 
       if (subPath === '/workspace') {
         if (req.method === 'GET') { this.handleGetWorkspace(teamId, res); return true; }
-        if (req.method === 'PATCH') { this.handleUpdateWorkspace(req, teamId, res); return true; }
+        if (req.method === 'PATCH') { this.handleUpdateWorkspace(req, teamId, res, auth); return true; }
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return true;
@@ -436,7 +436,8 @@ export class TeamApi {
     }));
   }
 
-  private handleUpdateWorkspace(req: IncomingMessage, teamId: string, res: ServerResponse): void {
+  private handleUpdateWorkspace(req: IncomingMessage, teamId: string, res: ServerResponse, auth?: AuthContext | null): void {
+    if (!this.requireTeamAdmin(auth, teamId, res)) return;
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {

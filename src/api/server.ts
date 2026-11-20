@@ -26,6 +26,7 @@ import { createPlaybookEngine } from '../playbook/engine';
 import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
 import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership, authenticateRequestAsync, requireRole } from './auth';
 import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant } from './tenant';
+import { requireTenantScope } from './guards';
 import { getDatabaseConfig, getBootId } from '../db';
 
 export interface ApiConfig {
@@ -70,6 +71,25 @@ const ADMIN_ENDPOINTS: EndpointRule[] = [
   { path: '/api/playbook/remediate', method: 'POST' },
 ];
 
+const AVAILABLE_ROUTES: string[] = [
+  '/api/remediation/runs', '/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search',
+  '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs',
+  '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve',
+  '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules',
+  '/api/alerting/log', '/api/alerting/escalation', '/api/notifications/channels', '/api/notifications/send',
+  '/api/notifications/deliver', '/api/x/auth', '/api/x/callback', '/api/x/status', '/api/x/refresh',
+  '/api/x/schedule', '/api/x/schedule-thread', '/api/x/post', '/api/x/posts', '/api/leads', '/api/health',
+  '/api/monitors', '/api/incidents', '/api/dependency-health', '/api/activity', '/api/webhooks/clerk',
+  '/api/teams', '/api/teams/:id', '/api/teams/:id/members', '/api/teams/:id/members/:userId',
+  '/api/teams/:id/workspace', '/api/teams/:id/invitations', '/api/invitations/:token', '/api/invitations/:token/accept',
+  '/api/onboarding/start', '/api/onboarding/:sessionId/status', '/api/onboarding/:sessionId/step',
+  '/api/onboarding/:sessionId/complete', '/api/playbooks/custom', '/api/playbooks/custom/:id',
+  '/api/playbooks/custom/:id/publish', '/api/playbooks/custom/:id/nodes', '/api/playbooks/custom/:id/versions',
+  '/api/playbooks/custom/:id/versions/:versionId', '/api/reports/incident-trends', '/api/reports/uptime-stats',
+  '/api/reports/playbook-effectiveness', '/api/reports/team-summary', '/api/performance/latency',
+  '/api/alerting/escalation', '/api/alerting/self-monitor',
+];
+
 function normalizePath(path: string): string {
   const normalized = path.replace(/\/+$/, '');
   return normalized || '/';
@@ -99,24 +119,6 @@ function matchesEndpoint(path: string, method: string | undefined, rules: Endpoi
 function isPublicEndpoint(path: string, method: string | undefined): boolean {
   if (PUBLIC_PATH_PATTERNS.some((pattern) => pattern.test(normalizePath(path)))) return true;
   return matchesEndpoint(path, method, PUBLIC_ENDPOINTS);
-}
-
-/**
- * Guard for resources that are always owned by a tenant.
- *
- * The monitoring tables have no owner column, so a signed-in user without a
- * team membership has no rows of its own. Those routes fail closed with 403
- * instead of answering with the unscoped bucket that every personal identity
- * shares (NOC-319).
- */
-function requireTenantScope(res: ServerResponse, teamId: string | null): boolean {
-  if (teamId !== null) return true;
-  res.writeHead(403);
-  res.end(JSON.stringify({
-    error: 'A team membership is required to access this resource',
-    code: 'FORBIDDEN',
-  }));
-  return false;
 }
 
 function buildEventsPayload(db: Database, params: URLSearchParams, teamId: string | null): { events: any[]; count: number; limit: number; offset: number } {
@@ -647,7 +649,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         return;
       }
 
-      if (perfApi.handle(req, res)) {
+      if (perfApi.handle(req, res, { teamId: auth ? auth.teamId : null })) {
         return;
       }
 
@@ -1560,12 +1562,13 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           return;
         }
 
+        if (!requireTenantScope(res, teamId)) return;
         const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit') || '100', 10), 500);
         const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
         const source = parsedUrl.searchParams.get('source') || '';
 
-        let sql = 'SELECT id, email, source, name, created_at FROM leads WHERE 1=1';
-        const params: any[] = [];
+        let sql = 'SELECT id, email, source, name, created_at FROM leads WHERE team_id = ?';
+        const params: any[] = [teamId];
         if (source) {
           sql += ' AND source = ?';
           params.push(source);
@@ -1585,14 +1588,32 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         return;
       }
 
-      if (handleSSERequest(req, res, db)) {
+      if (await handleSSERequest(req, res, db)) {
         return;
       }
 
       if (path === '/api/playbook/executions' || path === '/api/playbook/executions/') {
+        if (!requireTenantScope(res, teamId)) return;
         if (req.method === 'GET') {
           const playbookId = parsedUrl.searchParams.get('playbookId') || undefined;
-          const executions = playbookEngine.listExecutions(playbookId);
+          // Filter executions by team: join with custom_playbooks to get team_id
+          let sql = `SELECT pe.id, pe.playbook_id, pe.status, pe.current_step_id, pe.context, pe.step_results, 
+                            pe.created_at, pe.updated_at, pe.completed_at, pe.error 
+                     FROM playbook_executions pe
+                     JOIN custom_playbooks cp ON pe.playbook_id = cp.id
+                     WHERE cp.team_id = ?`;
+          const params: any[] = [teamId];
+          if (playbookId) {
+            sql += ' AND pe.playbook_id = ?';
+            params.push(playbookId);
+          }
+          sql += ' ORDER BY pe.created_at DESC';
+          const result = db.exec(sql, params);
+          const executions = result.length > 0 ? result[0].values.map((row: any) => ({
+            id: row[0], playbookId: row[1], status: row[2], currentStepId: row[3],
+            context: JSON.parse(row[4]), stepResults: JSON.parse(row[5]),
+            createdAt: row[6], updatedAt: row[7], completedAt: row[8], error: row[9],
+          })) : [];
           res.end(JSON.stringify({ executions, count: executions.length }));
           return;
         }
@@ -1608,6 +1629,18 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
                   res.end(JSON.stringify({ error: 'playbookId is required' }));
                   return;
                 }
+                // Verify playbook belongs to the authenticated team
+                const playbookTeam = db.exec('SELECT team_id FROM custom_playbooks WHERE id = ?', [playbookId]);
+                if (!playbookTeam.length || playbookTeam[0].values.length === 0) {
+                  res.writeHead(404);
+                  res.end(JSON.stringify({ error: 'Playbook not found' }));
+                  return;
+                }
+                if (playbookTeam[0].values[0][0] !== teamId) {
+                  res.writeHead(403);
+                  res.end(JSON.stringify({ error: 'Playbook not accessible from this team' }));
+                  return;
+                }
                 const playbook = playbookEngine.getPlaybookDefinition(playbookId);
                 if (!playbook) {
                   res.writeHead(404);
@@ -1615,6 +1648,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
                   return;
                 }
                 const execution = await playbookEngine.createExecution(playbook, context || {});
+                // Update execution with team_id
+                db.run('UPDATE playbook_executions SET team_id = ? WHERE id = ?', [teamId, execution.id]);
                 await playbookEngine.startExecution(execution.id);
                 res.end(JSON.stringify({ execution: playbookEngine.getExecution(execution.id) }));
               } catch (err: any) {
@@ -1632,10 +1667,23 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
       const executionMatch = path.match(/^\/api\/playbook\/executions\/([a-zA-Z0-9-]+)(\/[a-z-]+)?\/?$/);
       if (executionMatch) {
+        if (!requireTenantScope(res, teamId)) return;
         const executionId = executionMatch[1];
         const action = executionMatch[2] || '';
 
         if (!action && req.method === 'GET') {
+          // Verify execution belongs to the authenticated team
+          const execTeam = db.exec(
+            `SELECT pe.team_id FROM playbook_executions pe
+             JOIN custom_playbooks cp ON pe.playbook_id = cp.id
+             WHERE pe.id = ? AND cp.team_id = ?`,
+            [executionId, teamId]
+          );
+          if (!execTeam.length || execTeam[0].values.length === 0) {
+            res.writeHead(404);
+            res.end(JSON.stringify({ error: 'Execution not found' }));
+            return;
+          }
           const execution = playbookEngine.getExecution(executionId);
           if (!execution) {
             res.writeHead(404);
@@ -1647,6 +1695,18 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         }
 
         if (action === '/decision' && req.method === 'POST') {
+          // Verify execution belongs to the authenticated team
+          const execTeam = db.exec(
+            `SELECT pe.team_id FROM playbook_executions pe
+             JOIN custom_playbooks cp ON pe.playbook_id = cp.id
+             WHERE pe.id = ? AND cp.team_id = ?`,
+            [executionId, teamId]
+          );
+          if (!execTeam.length || execTeam[0].values.length === 0) {
+            res.writeHead(404);
+            res.end(JSON.stringify({ error: 'Execution not found' }));
+            return;
+          }
           let body = '';
           req.on('data', (chunk) => { body += chunk; });
           req.on('end', () => {
@@ -1666,6 +1726,31 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
               }
             })();
           });
+          return;
+        }
+
+        if (action === '/cancel' && req.method === 'POST') {
+          // Verify execution belongs to the authenticated team
+          const execTeam = db.exec(
+            `SELECT pe.team_id FROM playbook_executions pe
+             JOIN custom_playbooks cp ON pe.playbook_id = cp.id
+             WHERE pe.id = ? AND cp.team_id = ?`,
+            [executionId, teamId]
+          );
+          if (!execTeam.length || execTeam[0].values.length === 0) {
+            res.writeHead(404);
+            res.end(JSON.stringify({ error: 'Execution not found' }));
+            return;
+          }
+          (async () => {
+            try {
+              const execution = await playbookEngine.cancelExecution(executionId);
+              res.end(JSON.stringify({ execution }));
+            } catch (err: any) {
+              res.writeHead(err.message.includes('not found') ? 404 : 400);
+              res.end(JSON.stringify({ error: err.message }));
+            }
+          })();
           return;
         }
 
@@ -1771,7 +1856,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
       }
 
       res.writeHead(404);
-      res.end(JSON.stringify({ error: 'Not found', available: ['/api/remediation/runs', '/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules', '/api/alerting/log', '/api/alerting/escalation', '/api/notifications/channels', '/api/notifications/send', '/api/notifications/deliver', '/api/x/auth', '/api/x/callback', '/api/x/status', '/api/x/refresh', '/api/x/schedule', '/api/x/schedule-thread', '/api/x/post', '/api/x/posts', '/api/leads', '/api/health', '/api/monitors', '/api/incidents', '/api/dependency-health', '/api/activity', '/api/webhooks/clerk', '/api/teams', '/api/teams/:id', '/api/teams/:id/members', '/api/teams/:id/members/:userId', '/api/teams/:id/workspace', '/api/teams/:id/invitations', '/api/invitations/:token', '/api/invitations/:token/accept', '/api/onboarding/start', '/api/onboarding/:sessionId/status', '/api/onboarding/:sessionId/step', '/api/onboarding/:sessionId/complete', '/api/playbooks/custom', '/api/playbooks/custom/:id', '/api/playbooks/custom/:id/publish', '/api/playbooks/custom/:id/nodes', '/api/playbooks/custom/:id/versions', '/api/playbooks/custom/:id/versions/:versionId', '/api/reports/incident-trends', '/api/reports/uptime-stats', '/api/reports/playbook-effectiveness', '/api/reports/team-summary', '/api/performance/latency', '/api/alerting/escalation', '/api/alerting/self-monitor'] }));
+      res.end(JSON.stringify({ error: 'Not found', available: AVAILABLE_ROUTES }));
     } catch (err: any) {
       res.writeHead(500);
       res.end(JSON.stringify({ error: err.message }));

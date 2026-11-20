@@ -3,13 +3,13 @@ import { PerfStorage } from './perf-storage';
 export class PerfDiagnosis {
   constructor(private storage: PerfStorage) {}
 
-  diagnose(url: string, regression: any): { diagnosis: string; recommendation: string; impact: string; category: string }[] {
+  diagnose(url: string, regression: any, teamId: string): { diagnosis: string; recommendation: string; impact: string; category: string }[] {
     const results: { diagnosis: string; recommendation: string; impact: string; category: string }[] = [];
 
     switch (regression.metric) {
       case 'LCP':
         results.push({
-          diagnosis: 'Largest Contentful Paint degraded — page loading slower',
+          diagnosis: 'Largest Contentful Paint degraded - page loading slower',
           recommendation: 'Optimize images, reduce server response time, eliminate render-blocking resources',
           impact: 'high',
           category: 'loading',
@@ -18,7 +18,7 @@ export class PerfDiagnosis {
 
       case 'TBT':
         results.push({
-          diagnosis: 'Total Blocking Time increased — main thread contention',
+          diagnosis: 'Total Blocking Time increased - main thread contention',
           recommendation: 'Break up long tasks, optimize third-party scripts, defer non-critical JS',
           impact: 'high',
           category: 'interactivity',
@@ -27,7 +27,7 @@ export class PerfDiagnosis {
 
       case 'CLS':
         results.push({
-          diagnosis: 'Cumulative Layout Shift increased — visual instability',
+          diagnosis: 'Cumulative Layout Shift increased - visual instability',
           recommendation: 'Set explicit dimensions on images/ads, avoid injecting content above fold',
           impact: 'medium',
           category: 'visual-stability',
@@ -36,7 +36,7 @@ export class PerfDiagnosis {
 
       case 'FCP':
         results.push({
-          diagnosis: 'First Contentful Paint degraded — initial render delay',
+          diagnosis: 'First Contentful Paint degraded - initial render delay',
           recommendation: 'Reduce server response time, inline critical CSS, preload key resources',
           impact: 'high',
           category: 'loading',
@@ -45,7 +45,7 @@ export class PerfDiagnosis {
 
       case 'INP':
         results.push({
-          diagnosis: 'Interaction to Next Paint degraded — input responsiveness',
+          diagnosis: 'Interaction to Next Paint degraded - input responsiveness',
           recommendation: 'Reduce event handler complexity, use passive listeners, debounce heavy callbacks',
           impact: 'high',
           category: 'interactivity',
@@ -66,7 +66,7 @@ export class PerfDiagnosis {
       this.storage.storeDiagnosis({
         regressionId: regression.id,
         ...r,
-      });
+      }, teamId);
     }
 
     return results;
