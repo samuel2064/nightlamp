@@ -133,7 +133,7 @@ export class SloMonitor {
     return this.slos;
   }
 
-  checkSlo(url: string, metricName: string, currentValue: number): SloBreach | null {
+  checkSlo(url: string, metricName: string, currentValue: number, teamId: string | null = null): SloBreach | null {
     const slo = this.slos.find(s => s.metric === metricName);
     if (!slo) return null;
 
@@ -143,7 +143,7 @@ export class SloMonitor {
 
     if (!breached) return null;
 
-    const baseline = this.storage.getBaseline(url, metricName);
+    const baseline = this.storage.getBaseline(url, teamId, metricName);
     const totalMinutes = slo.errorBudgetMinutes;
     const breachedMinutes = baseline.count > 0 ? Math.ceil(Math.abs(currentValue - slo.target) / slo.target * totalMinutes) : 0;
     const remaining = Math.max(0, totalMinutes - breachedMinutes);

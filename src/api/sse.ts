@@ -1,12 +1,15 @@
 import { IncomingMessage, ServerResponse } from 'http';
 import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
+import { AuthContext, authenticateRequestAsync, ApiAuthError } from '../api/auth';
+import { requireTenantScope } from './guards';
 
 export interface SSEClient {
   id: string;
   res: ServerResponse;
   connectedAt: Date;
   lastHeartbeat: Date;
+  teamId: string;
 }
 
 export type SSEEventType = 
@@ -27,13 +30,14 @@ export interface SSEEvent {
 
 const clients = new Map<string, SSEClient>();
 
-export function addSSEClient(req: IncomingMessage, res: ServerResponse): string {
+export function addSSEClient(req: IncomingMessage, res: ServerResponse, teamId: string): string {
   const clientId = uuidv4();
   const client: SSEClient = {
     id: clientId,
     res,
     connectedAt: new Date(),
     lastHeartbeat: new Date(),
+    teamId,
   };
   clients.set(clientId, client);
 
@@ -110,27 +114,44 @@ export function broadcastEvent(type: SSEEventType, data: any): number {
   return sent;
 }
 
+export function broadcastEventToTeam(teamId: string, type: SSEEventType, data: any): number {
+  const event: SSEEvent = {
+    id: uuidv4(),
+    type,
+    timestamp: new Date().toISOString(),
+    data,
+  };
+
+  let sent = 0;
+  for (const client of clients.values()) {
+    if (client.teamId === teamId && sendEvent(client, event)) {
+      sent++;
+    }
+  }
+  return sent;
+}
+
 export function broadcastHeartbeat(): number {
   return broadcastEvent('heartbeat', { timestamp: new Date().toISOString(), clientCount: clients.size });
 }
 
-export function notifyMonitorUpdate(monitor: any): number {
-  return broadcastEvent('monitor_update', monitor);
+export function notifyMonitorUpdate(teamId: string, monitor: any): number {
+  return broadcastEventToTeam(teamId, 'monitor_update', monitor);
 }
 
-export function notifyIncidentAlert(incident: any): number {
-  return broadcastEvent('incident_alert', incident);
+export function notifyIncidentAlert(teamId: string, incident: any): number {
+  return broadcastEventToTeam(teamId, 'incident_alert', incident);
 }
 
-export function notifyPlaybookProgress(progress: any): number {
-  return broadcastEvent('playbook_progress', progress);
+export function notifyPlaybookProgress(teamId: string, progress: any): number {
+  return broadcastEventToTeam(teamId, 'playbook_progress', progress);
 }
 
-export function notifyBillingEvent(event: any): number {
-  return broadcastEvent('billing_event', event);
+export function notifyBillingEvent(teamId: string, event: any): number {
+  return broadcastEventToTeam(teamId, 'billing_event', event);
 }
 
-export function handleSSERequest(req: IncomingMessage, res: ServerResponse, db: Database): boolean {
+export async function handleSSERequest(req: IncomingMessage, res: ServerResponse, db: Database): Promise<boolean> {
   try {
     const host = req.headers.host;
     if (!host) {
@@ -140,7 +161,24 @@ export function handleSSERequest(req: IncomingMessage, res: ServerResponse, db: 
     const path = parsedUrl.pathname;
 
     if (path === '/api/realtime' || path === '/api/realtime/') {
-      addSSEClient(req, res);
+      // Require authentication
+      let auth: AuthContext;
+      try {
+        auth = await authenticateRequestAsync(db, req);
+      } catch (err: any) {
+        if (err instanceof ApiAuthError) {
+          res.writeHead(err.statusCode);
+          res.end(JSON.stringify({ error: err.message, code: err.code }));
+          return true;
+        }
+        throw err;
+      }
+
+      if (!requireTenantScope(res, auth.teamId)) {
+        return true;
+      }
+
+      addSSEClient(req, res, auth.teamId!);
       return true;
     }
   } catch {
