@@ -76,7 +76,7 @@ export class PerfApi {
         }
 
         const runId = this.storage.createRun(url, teamId);
-        const result = await this.orchestrator.runAudit(url);
+        const result = await this.orchestrator.runAudit(url, teamId);
 
         if (result.successful) {
           const runs = this.storage.getRecentRuns(url, teamId, 1);

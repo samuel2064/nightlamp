@@ -4,64 +4,72 @@ import { createDatabase } from '../db/schema';
 import { PerfStorage } from '../performance/perf-storage';
 import { RegressionDetector } from '../performance/regression-detector';
 import { PerfDiagnosis } from '../performance/perf-diagnosis';
+import { v4 as uuidv4 } from 'uuid';
 
 describe('Performance - Storage', () => {
   let db: Database;
   let storage: PerfStorage;
+  let testTeamId: string;
 
   beforeEach(async () => {
     db = await createDatabase();
     storage = new PerfStorage(db);
+
+    // Create a test team
+    testTeamId = uuidv4();
+    db.run('INSERT INTO teams (id, name, slug, owner_id, plan) VALUES (?, ?, ?, ?, ?)', [
+      testTeamId, 'Test Team', 'test-team', uuidv4(), 'free',
+    ]);
   });
 
   it('creates a performance run', () => {
-    const id = storage.createRun('https://example.com');
+    const id = storage.createRun('https://example.com', testTeamId);
     expect(id).to.be.a('string');
 
-    const runs = storage.getRecentRuns('https://example.com');
+    const runs = storage.getRecentRuns('https://example.com', testTeamId);
     expect(runs).to.have.length(1);
     expect(runs[0].status).to.equal('pending');
   });
 
   it('completes a run successfully', () => {
-    const id = storage.createRun('https://example.com');
+    const id = storage.createRun('https://example.com', testTeamId);
     storage.completeRun(id, {
       url: 'https://example.com',
       lcp: 1500, tbt: 200, cls: 0.1, fcp: 800, inp: 100, score: 85,
       rawJson: '{}', successful: true,
-    });
+    }, testTeamId);
 
-    const runs = storage.getRecentRuns('https://example.com');
+    const runs = storage.getRecentRuns('https://example.com', testTeamId);
     expect(runs[0].status).to.equal('completed');
     expect(runs[0].lcp).to.equal(1500);
     expect(runs[0].score).to.equal(85);
   });
 
   it('marks run as failed', () => {
-    const id = storage.createRun('https://example.com');
+    const id = storage.createRun('https://example.com', testTeamId);
     storage.completeRun(id, {
       url: 'https://example.com', lcp: 0, tbt: 0, cls: 0, fcp: 0, inp: 0, score: 0,
       rawJson: '', successful: false, error: 'Timeout',
-    });
+    }, testTeamId);
 
-    const runs = storage.getRecentRuns('https://example.com');
+    const runs = storage.getRecentRuns('https://example.com', testTeamId);
     expect(runs[0].status).to.equal('failed');
   });
 
   it('stores and retrieves metric history', () => {
-    const id1 = storage.createRun('https://example.com');
+    const id1 = storage.createRun('https://example.com', testTeamId);
     storage.completeRun(id1, {
       url: 'https://example.com', lcp: 1000, tbt: 150, cls: 0.1, fcp: 600, inp: 80, score: 90,
       rawJson: '{}', successful: true,
-    });
+    }, testTeamId);
 
-    const id2 = storage.createRun('https://example.com');
+    const id2 = storage.createRun('https://example.com', testTeamId);
     storage.completeRun(id2, {
       url: 'https://example.com', lcp: 1200, tbt: 180, cls: 0.12, fcp: 700, inp: 90, score: 85,
       rawJson: '{}', successful: true,
-    });
+    }, testTeamId);
 
-    const history = storage.getMetricHistory('https://example.com', 'LCP', 10);
+    const history = storage.getMetricHistory('https://example.com', testTeamId, 'LCP', 10);
     expect(history).to.have.length(2);
     const values = history.map(h => h.value).sort();
     expect(values[0]).to.equal(1000);
@@ -71,14 +79,14 @@ describe('Performance - Storage', () => {
   it('calculates baseline stats', () => {
     const url = 'https://example.com';
     for (const lcp of [1000, 1100, 1050, 950]) {
-      const id = storage.createRun(url);
+      const id = storage.createRun(url, testTeamId);
       storage.completeRun(id, {
         url, lcp, tbt: 150, cls: 0.1, fcp: 600, inp: 80, score: 90,
         rawJson: '{}', successful: true,
-      });
+      }, testTeamId);
     }
 
-    const baseline = storage.getBaseline(url, 'LCP', 10);
+    const baseline = storage.getBaseline(url, testTeamId, 'LCP', 10);
     expect(baseline.count).to.equal(4);
     expect(baseline.mean).to.be.closeTo(1025, 50);
     expect(baseline.stddev).to.be.greaterThan(0);
@@ -88,9 +96,9 @@ describe('Performance - Storage', () => {
     storage.storeRegression({
       metric: 'LCP', currentValue: 3000, baselineMean: 1000, baselineStddev: 100,
       pValue: 0.001, direction: 'degradation', url: 'https://example.com', runId: 'run-1',
-    });
+    }, testTeamId);
 
-    const regs = storage.getRegressions();
+    const regs = storage.getRegressions(testTeamId);
     expect(regs).to.have.length(1);
     expect(regs[0].metric).to.equal('LCP');
     expect(regs[0].pValue).to.be.lessThan(0.05);
@@ -100,7 +108,7 @@ describe('Performance - Storage', () => {
     const regId = storage.storeRegression({
       metric: 'LCP', currentValue: 3000, baselineMean: 1000, baselineStddev: 100,
       pValue: 0.001, direction: 'degradation', url: 'https://example.com', runId: 'run-1',
-    });
+    }, testTeamId);
 
     storage.storeDiagnosis({
       regressionId: regId,
@@ -108,9 +116,9 @@ describe('Performance - Storage', () => {
       recommendation: 'Optimize images',
       impact: 'high',
       category: 'loading',
-    });
+    }, testTeamId);
 
-    const diagnoses = storage.getDiagnoses(regId);
+    const diagnoses = storage.getDiagnoses(testTeamId, regId);
     expect(diagnoses).to.have.length(1);
     expect(diagnoses[0].diagnosis).to.equal('LCP degraded');
   });
@@ -120,24 +128,31 @@ describe('Performance - Regression Detector', () => {
   let db: Database;
   let storage: PerfStorage;
   let detector: RegressionDetector;
+  let testTeamId: string;
 
   beforeEach(async () => {
     db = await createDatabase();
     storage = new PerfStorage(db);
     detector = new RegressionDetector(storage, 0.05);
 
+    // Create a test team
+    testTeamId = uuidv4();
+    db.run('INSERT INTO teams (id, name, slug, owner_id, plan) VALUES (?, ?, ?, ?, ?)', [
+      testTeamId, 'Test Team', 'test-team', uuidv4(), 'free',
+    ]);
+
     const url = 'https://example.com';
     for (const lcp of [1000, 1050, 950, 1100]) {
-      const id = storage.createRun(url);
+      const id = storage.createRun(url, testTeamId);
       storage.completeRun(id, {
         url, lcp, tbt: 150, cls: 0.1, fcp: 600, inp: 80, score: 90,
         rawJson: '{}', successful: true,
-      });
+      }, testTeamId);
     }
   });
 
   it('detects no regression when value is within baseline', () => {
-    const runs = storage.getRecentRuns('https://example.com', 1);
+    const runs = storage.getRecentRuns('https://example.com', testTeamId, 1);
     runs[0].lcp = 1050;
 
     const result = detector.analyzeRuns('https://example.com', runs[0]);
@@ -145,19 +160,19 @@ describe('Performance - Regression Detector', () => {
   });
 
   it('detects regression when value far from baseline', () => {
-    const runs = storage.getRecentRuns('https://example.com', 1);
+    const runs = storage.getRecentRuns('https://example.com', testTeamId, 1);
     runs[0].lcp = 3000;
 
-    const result = detector.analyzeRuns('https://example.com', runs[0]);
+    const result = detector.analyzeRuns('https://example.com', runs[0], testTeamId);
     expect(result.detected).to.be.true;
     expect(result.regressions[0].metric).to.equal('LCP');
   });
 
   it('registers regression with p-value < 0.05', () => {
-    const runs = storage.getRecentRuns('https://example.com', 1);
+    const runs = storage.getRecentRuns('https://example.com', testTeamId, 1);
     runs[0].lcp = 3000;
 
-    const result = detector.analyzeRuns('https://example.com', runs[0]);
+    const result = detector.analyzeRuns('https://example.com', runs[0], testTeamId);
     expect(result.regressions[0].pValue).to.be.lessThan(0.05);
   });
 });
@@ -166,33 +181,40 @@ describe('Performance - Diagnosis', () => {
   let db: Database;
   let storage: PerfStorage;
   let diagnosis: PerfDiagnosis;
+  let testTeamId: string;
 
   beforeEach(async () => {
     db = await createDatabase();
     storage = new PerfStorage(db);
     diagnosis = new PerfDiagnosis(storage);
+
+    // Create a test team
+    testTeamId = uuidv4();
+    db.run('INSERT INTO teams (id, name, slug, owner_id, plan) VALUES (?, ?, ?, ?, ?)', [
+      testTeamId, 'Test Team', 'test-team', uuidv4(), 'free',
+    ]);
   });
 
   it('diagnoses LCP regression', () => {
-    const results = diagnosis.diagnose('https://example.com', { metric: 'LCP', id: 'reg-1' });
+    const results = diagnosis.diagnose('https://example.com', { metric: 'LCP', id: 'reg-1' }, testTeamId);
     expect(results).to.have.length(1);
     expect(results[0].category).to.equal('loading');
     expect(results[0].impact).to.equal('high');
   });
 
   it('diagnoses TBT regression', () => {
-    const results = diagnosis.diagnose('https://example.com', { metric: 'TBT', id: 'reg-2' });
+    const results = diagnosis.diagnose('https://example.com', { metric: 'TBT', id: 'reg-2' }, testTeamId);
     expect(results[0].category).to.equal('interactivity');
   });
 
   it('diagnoses CLS regression', () => {
-    const results = diagnosis.diagnose('https://example.com', { metric: 'CLS', id: 'reg-3' });
+    const results = diagnosis.diagnose('https://example.com', { metric: 'CLS', id: 'reg-3' }, testTeamId);
     expect(results[0].category).to.equal('visual-stability');
   });
 
   it('stores diagnoses in database', () => {
-    diagnosis.diagnose('https://example.com', { metric: 'FCP', id: 'reg-4' });
-    const stored = storage.getDiagnoses('reg-4');
+    diagnosis.diagnose('https://example.com', { metric: 'FCP', id: 'reg-4' }, testTeamId);
+    const stored = storage.getDiagnoses(testTeamId, 'reg-4');
     expect(stored).to.have.length(1);
   });
 });
