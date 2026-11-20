@@ -30,25 +30,38 @@ export interface SSEEvent {
 
 const clients = new Map<string, SSEClient>();
 
-const heartbeatTimer = setInterval(() => {
-  const event: SSEEvent = {
-    id: uuidv4(),
-    type: 'heartbeat',
-    timestamp: new Date().toISOString(),
-    data: { timestamp: new Date().toISOString(), clientCount: clients.size },
-  };
+// Heartbeat interval to keep connections alive
+const HEARTBEAT_INTERVAL_MS = 30_000;
+let heartbeatInterval: NodeJS.Timeout | null = null;
 
-  let sent = 0;
-  for (const client of clients.values()) {
-    if (sendEvent(client, event)) {
-      sent++;
+function startHeartbeat(): void {
+  if (heartbeatInterval) return;
+  heartbeatInterval = setInterval(() => {
+    const event: SSEEvent = {
+      id: uuidv4(),
+      type: 'heartbeat',
+      timestamp: new Date().toISOString(),
+      data: { timestamp: new Date().toISOString() },
+    };
+    for (const client of clients.values()) {
+      sendEvent(client, event);
     }
-  }
-}, 30000);
+  }, HEARTBEAT_INTERVAL_MS);
+  heartbeatInterval.unref();
+}
 
-heartbeatTimer.unref();
+function stopHeartbeat(): void {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+  }
+}
 
 export function addSSEClient(req: IncomingMessage, res: ServerResponse, teamId: string): string {
+  // Start heartbeat when first client connects
+  if (clients.size === 0) {
+    startHeartbeat();
+  }
   const clientId = uuidv4();
   const client: SSEClient = {
     id: clientId,
@@ -88,6 +101,10 @@ export function removeSSEClient(clientId: string): boolean {
       client.res.end();
     } catch { }
     clients.delete(clientId);
+    // Stop heartbeat when last client disconnects
+    if (clients.size === 0) {
+      stopHeartbeat();
+    }
     return true;
   }
   return false;
