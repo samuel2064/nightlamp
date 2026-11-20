@@ -36,10 +36,10 @@ const bootId: string = getBootId();
 async function init(): Promise<void> {
   warnIfClerkJwtAudienceConfigured();
   const dbConfig = getDatabaseConfig();
-  
+
   console.log(`[Nightlamp] Starting with storage mode: ${dbConfig.mode}`);
   console.log(`[Nightlamp] Boot ID: ${bootId}`);
-  
+
   // Warn only when the database path is on the local container filesystem (not persistent volume)
   // and we're in production. The CEO chose Option 1 (Render disk) with DB_PATH on the mount,
   // so warn when the path is NOT under the persistent disk mount point.

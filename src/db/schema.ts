@@ -15,7 +15,7 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
 
   if (dbPath && fs.existsSync(dbPath)) {
     const persisted = fs.readFileSync(dbPath);
-    
+
     // Validate SQLite file before loading - fail loud on corrupt files
     if (persisted.length === 0) {
       throw new Error(`Database file ${dbPath} is empty (0 bytes). This indicates a corrupted or incomplete database file.`);
@@ -27,7 +27,7 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
     if (header !== SQLITE_MAGIC_HEADER) {
       throw new Error(`Database file ${dbPath} is not a valid SQLite database (invalid magic header).`);
     }
-    
+
     // Load the database and force a parse to catch truncated images that pass header check
     try {
       db = new SQL.Database(persisted);

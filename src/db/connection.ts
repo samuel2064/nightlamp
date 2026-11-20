@@ -105,7 +105,7 @@ async function createPostgresConnection(databaseUrl: string): Promise<DatabaseCo
   });
 
   const client = await pool.connect();
-  
+
   // Run PostgreSQL migrations
   await runPostgresMigrations(pool);
 
@@ -171,7 +171,7 @@ export function getBootId(): string {
 export function getDatabaseConfig(): DatabaseConfig {
   const databaseUrl = process.env.DATABASE_URL;
   const dbPath = process.env.DB_PATH || './data/nightlamp.db';
-  
+
   if (databaseUrl) {
     return { mode: 'postgres', databaseUrl };
   }
