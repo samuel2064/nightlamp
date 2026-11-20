@@ -8,6 +8,13 @@ import { UsageTracker } from './usage';
 import { AuthContext, requireRole } from '../api/auth';
 import { tenantFilter, tenantOwnedFilter } from '../api/tenant';
 
+/**
+ * The role the billing surface exposes to the dashboard. It is derived from
+ * the local membership row of the authenticated caller and never from a
+ * client-supplied tenant, customer or subscription (NOC-354).
+ */
+export type BillingAccessRole = 'owner' | 'admin' | 'member' | 'none';
+
 interface BillingApiDeps {
   db: Database;
   stripeClient: StripeClient;
@@ -30,7 +37,7 @@ export class BillingApi {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = parsedUrl.pathname;
     const teamId = auth ? auth.teamId : null;
-    const routes = ['create-checkout-session', 'portal', 'webhook', 'webhook-events', 'subscription',
+    const routes = ['access', 'create-checkout-session', 'portal', 'webhook', 'webhook-events', 'subscription',
       'usage', 'plans', 'customer', 'summary', 'subscriptions', 'invoices', 'change-plan', 'cancel'];
     if (!routes.some(route => path === `/api/billing/${route}`)) return false;
 
@@ -96,6 +103,19 @@ export class BillingApi {
       return true;
     }
 
+    if (path === '/api/billing/access') {
+      if (req.method !== 'GET') {
+        res.writeHead(405);
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return true;
+      }
+      // The role is resolved from the local membership row of the caller in the
+      // tenant the request already resolved to. It never comes from a
+      // client-selected tenant, customer or subscription, and a caller without
+      // a membership reads `none` rather than an inherited role (NOC-354).
+      res.end(JSON.stringify({ role: auth ? this.resolveBillingAccessRole(auth) : 'none' }));
+      return true;
+    }
     if (path === '/api/billing/subscription' && req.method === 'GET') {
       this.handleGetSubscription(req, res, auth!);
       return true;
@@ -127,6 +147,40 @@ export class BillingApi {
     }
 
     return false;
+  }
+
+  /**
+   * Resolve the billing role of the caller from the local membership rows.
+   *
+   * The auth context already carries the membership the request resolved to,
+   * but the role is re-read from the membership table here so that the answer
+   * cannot come from a stale or caller-supplied value. A caller with no
+   * membership in the resolved tenant reads `none`; a membership row whose
+   * role is not one of the known roles also reads `none` instead of being
+   * passed through. Team ownership is honoured because the owner of a team is
+   * an owner of its billing surface even when the legacy membership row is
+   * absent.
+   */
+  private resolveBillingAccessRole(auth: AuthContext): BillingAccessRole {
+    if (!auth.teamId) return 'none';
+
+    const membership = this.deps.db.exec(
+      'SELECT role FROM memberships WHERE user_id = ? AND team_id = ?',
+      [auth.userId, auth.teamId],
+    );
+    if (membership.length > 0 && membership[0].values.length > 0) {
+      const role = membership[0].values[0][0];
+      if (role === 'owner' || role === 'admin' || role === 'member') return role;
+      return 'none';
+    }
+
+    const owned = this.deps.db.exec(
+      'SELECT id FROM teams WHERE id = ? AND owner_id = ?',
+      [auth.teamId, auth.userId],
+    );
+    if (owned.length > 0 && owned[0].values.length > 0) return 'owner';
+
+    return 'none';
   }
 
   private handleListPlans(res: ServerResponse): void {
