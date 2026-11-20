@@ -20,7 +20,11 @@ export type TenantTable =
   | 'onboarding_sessions'
   | 'x_scheduled_posts'
   | 'usage_records'
-  | 'webhook_events';
+  | 'webhook_events'
+  | 'monitored_apps'
+  | 'health_snapshots'
+  | 'analytics_events'
+  | 'feedback_responses';
 
 export function tenantFilter(column: string, teamId: string | null): TenantFilter {
   if (teamId === null) {
@@ -60,5 +64,70 @@ export function rowBelongsToTenant(
 ): boolean {
   const filter = tenantFilterForTables(table, teamId);
   const result = db.exec(`SELECT id FROM ${table} WHERE id = ? AND ${filter.clause}`, [id, ...filter.params]);
+  return result.length > 0 && result[0].values.length > 0;
+}
+
+/**
+ * Tables that carry both a team scope and a personal ownership column.
+ *
+ * A monitored application and an alert channel can belong to a team, or to the
+ * individual who created it before that individual joined a team.
+ */
+export type OwnedTenantTable = 'alert_channels' | 'monitored_apps';
+
+/**
+ * Scope for rows owned by a team or by an individual.
+ *
+ * The scope fails closed. A caller with a team membership sees exactly that
+ * team's rows. A caller without one sees only the rows it personally owns, and
+ * an empty owner never matches, because a signed-in user with no ownership is
+ * refused rather than shown a shared bucket. Rows with no owner at all are
+ * never readable by an arbitrary signed-in user and never become bindable to
+ * one (NOC-303 blocker 3).
+ */
+export function scopedTenantFilter(
+  table: OwnedTenantTable,
+  teamId: string | null,
+  userId: string,
+  qualifyColumn = true,
+): TenantFilter {
+  const teamColumn = qualifyColumn ? `${table}.team_id` : 'team_id';
+  const ownerColumn = qualifyColumn ? `${table}.owner_id` : 'owner_id';
+
+  if (teamId !== null) {
+    return tenantFilter(teamColumn, teamId);
+  }
+
+  // Personal scope requires a real ownership predicate. A missing caller
+  // identity matches nothing, and an owner-less legacy row is not readable.
+  if (!userId) {
+    return { clause: '1 = 0', params: [] };
+  }
+
+  return {
+    clause: `${teamColumn} IS NULL AND ${ownerColumn} = ?`,
+    params: [userId],
+  };
+}
+
+/**
+ * Whether a single row is inside the caller's scope.
+ *
+ * The same fail-closed rule as `scopedTenantFilter`: a teamless caller must own
+ * the row, and an owner-less row belongs to nobody.
+ */
+export function rowBelongsToScope(
+  db: { exec(sql: string, params?: any[]): any[] },
+  table: OwnedTenantTable,
+  id: string,
+  teamId: string | null,
+  userId: string,
+  qualifyColumn = true,
+): boolean {
+  const filter = scopedTenantFilter(table, teamId, userId, qualifyColumn);
+  const result = db.exec(
+    `SELECT id FROM ${table} WHERE id = ? AND ${filter.clause}`,
+    [id, ...filter.params],
+  );
   return result.length > 0 && result[0].values.length > 0;
 }

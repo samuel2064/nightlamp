@@ -19,6 +19,17 @@ import { OnboardingApi } from '../teams/onboarding-api';
 import { PlaybookBuilderApi } from '../playbook/playbook-builder-api';
 import { NotificationApi } from '../notifications';
 import { ReportsApi } from '../reports';
+import { AppsApi, AppsApiDeps } from '../apps';
+import { AnalyticsApi } from '../analytics';
+import {
+  assertTargetAllowed,
+  runEndpointCheck,
+  type EndpointCheckConfig,
+  type EndpointCheckDeps,
+  type EndpointCheckResult,
+  type EndpointCheckType,
+} from '../engine/endpoint-check';
+import { defaultHostResolver, defaultTargetPolicy } from '../engine/outbound-safety';
 import { getPolicyForSeverity, getOnCallAt, ESCALATION_POLICIES, buildSelfMonitorDashboard, computeErrorBudgetStatus, SELF_MONITOR_DEFAULTS } from '../alerting';
 import { nodeHTTPRequestHandler } from '@trpc/server/adapters/node-http';
 import { handleSSERequest } from './sse';
@@ -33,6 +44,14 @@ export interface ApiConfig {
   stripeClient?: StripeClient;
   stripeWebhookSecret?: string;
   baseUrl?: string;
+  /**
+   * Outbound dependencies for the monitored application check path.
+   *
+   * Provided by the tests to inject a resolver and a policy that permit the
+   * local targets a closed suite uses, so the suite stays hermetic and never
+   * reaches the network. Production leaves it unset and takes the real policy.
+   */
+  appsApiDeps?: AppsApiDeps;
 }
 
 interface EndpointRule {
@@ -73,6 +92,29 @@ const ADMIN_ENDPOINTS: EndpointRule[] = [
 function normalizePath(path: string): string {
   const normalized = path.replace(/\/+$/, '');
   return normalized || '/';
+}
+
+/**
+ * Outbound dependencies for the monitored application check path.
+ *
+ * Both the safety policy and the resolver are taken from
+ * `src/engine/outbound-safety.ts` and `src/engine/endpoint-check.ts`, so every
+ * client-controlled destination goes through the same private, loopback,
+ * link-local and metadata rejection as the rest of the outbound surface. The
+ * resolver is injected by the tests, which keeps the suite hermetic (NOC-303
+ * blocker 10).
+ */
+function buildAppsApiDeps(): AppsApiDeps {
+  const endpointDeps: EndpointCheckDeps = {
+    resolver: defaultHostResolver,
+    policy: defaultTargetPolicy,
+  };
+
+  return {
+    assertTargetAllowed: (target: string, checkType: EndpointCheckType) => assertTargetAllowed(target, checkType),
+    runCheck: (config: EndpointCheckConfig) => runEndpointCheck(config),
+    endpointDeps,
+  };
 }
 
 const TEAM_ADMIN_ROLES: TeamRole[] = ['owner', 'admin'];
@@ -200,6 +242,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
   const playbookBuilderApi = new PlaybookBuilderApi(db);
   const notificationApi = new NotificationApi(db);
   const reportsApi = new ReportsApi(db);
+  const appsApi = new AppsApi(db, config.appsApiDeps ?? buildAppsApiDeps());
+  const analyticsApi = new AnalyticsApi(db);
   const playbookEngine = createPlaybookEngine(db);
   const latencyTracker = new ApiLatencyTracker();
   const hotCache = new ApiCache(15_000);
@@ -274,6 +318,18 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
       const scope = auth ? `${auth.userId}:${auth.teamId || 'personal'}` : 'public';
       const teamId = auth ? auth.teamId : null;
+
+      // The monitored application registry owns its own tenant scoping, so it
+      // runs before the generic route chain and never falls through to it.
+      if (auth && appsApi.handle(req, res, auth)) {
+        return;
+      }
+
+      // Analytics ingestion stays reachable for anonymous callers, which the
+      // handle method decides per event inside its own contract validation.
+      if (analyticsApi.handle(req, res, auth)) {
+        return;
+      }
 
       if (path === '/api/performance/latency' || path === '/api/performance/latency/') {
         res.end(JSON.stringify({ latency: latencyTracker.summary() }));
@@ -706,10 +762,10 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
                 res.end(JSON.stringify({ error: 'type must be slack, email, or pagerduty' }));
                 return;
               }
-              const id = uuidv4();
+const id = uuidv4();
               db.run(
-                `INSERT INTO alert_channels (id, name, type, config, team_id) VALUES (?, ?, ?, ?, ?)`,
-                [id, name, type, JSON.stringify(config), teamId]
+                `INSERT INTO alert_channels (id, name, type, config, team_id, owner_id) VALUES (?, ?, ?, ?, ?, ?)`,
+                [id, name, type, JSON.stringify(config), teamId, auth?.userId ?? null]
               );
               res.end(JSON.stringify({ success: true, id, name, type }));
             } catch (err: any) {

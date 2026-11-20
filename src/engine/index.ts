@@ -5,5 +5,13 @@ export {
   deduplicateChecks,
   disablePlaceholderChecks,
   sanitizeChecks,
+  runEndpointCheck,
 } from './health-check';
-export type { HealthCheckConfig, CheckRunResult } from './health-check';
+export type {
+  HealthCheckConfig,
+  CheckRunResult,
+  EndpointCheckConfig,
+  EndpointCheckFailureType,
+  EndpointCheckResult,
+  EndpointCheckType,
+} from './health-check';

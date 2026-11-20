@@ -15,6 +15,19 @@ import { getOrCreatePlaybookEntry, writePlaybookFile } from '../playbook';
 import { runRemediation } from '../remediation/engine';
 import { evaluateAndNotify } from '../alerting';
 
+export {
+  assertTargetAllowed,
+  parseTcpTarget,
+  runEndpointCheck,
+} from './endpoint-check';
+export type {
+  EndpointCheckConfig,
+  EndpointCheckDeps,
+  EndpointCheckFailureType,
+  EndpointCheckResult,
+  EndpointCheckType,
+} from './endpoint-check';
+
 export interface HealthCheckConfig {
   sentry?: SentryConfig;
   uptimerobot?: UptimeRobotConfig;
