@@ -27,24 +27,35 @@ export class PerfApi {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = parsedUrl.pathname;
 
+    // Check if this is a performance API route we handle
+    const isPerfRun = path === '/api/performance/run' && req.method === 'POST';
+    const isPerfHistory = path === '/api/performance/history' && req.method === 'GET';
+    const isPerfRegressions = path === '/api/performance/regressions' && req.method === 'GET';
+    const isPerfDiagnosis = path === '/api/performance/diagnosis' && req.method === 'GET';
+
+    if (!isPerfRun && !isPerfHistory && !isPerfRegressions && !isPerfDiagnosis) {
+      return false;
+    }
+
+    // All performance API routes require tenant scope
     if (!requireTenantScope(res, auth.teamId)) return true;
 
-    if (path === '/api/performance/run' && req.method === 'POST') {
+    if (isPerfRun) {
       this.handleRun(req, res, auth.teamId!);
       return true;
     }
 
-    if (path === '/api/performance/history' && req.method === 'GET') {
+    if (isPerfHistory) {
       this.handleHistory(req, res, auth.teamId!);
       return true;
     }
 
-    if (path === '/api/performance/regressions' && req.method === 'GET') {
+    if (isPerfRegressions) {
       this.handleRegressions(req, res, auth.teamId!);
       return true;
     }
 
-    if (path === '/api/performance/diagnosis' && req.method === 'GET') {
+    if (isPerfDiagnosis) {
       this.handleDiagnosis(req, res, auth.teamId!);
       return true;
     }
