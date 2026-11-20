@@ -12,7 +12,7 @@ export interface SSEClient {
   teamId: string;
 }
 
-export type SSEEventType = 
+export type SSEEventType =
   | 'monitor_update'
   | 'incident_alert'
   | 'playbook_progress'
@@ -97,23 +97,6 @@ export function sendEvent(client: SSEClient, event: SSEEvent): boolean {
   }
 }
 
-export function broadcastEvent(type: SSEEventType, data: any): number {
-  const event: SSEEvent = {
-    id: uuidv4(),
-    type,
-    timestamp: new Date().toISOString(),
-    data,
-  };
-
-  let sent = 0;
-  for (const client of clients.values()) {
-    if (sendEvent(client, event)) {
-      sent++;
-    }
-  }
-  return sent;
-}
-
 export function broadcastEventToTeam(teamId: string, type: SSEEventType, data: any): number {
   const event: SSEEvent = {
     id: uuidv4(),
@@ -129,10 +112,6 @@ export function broadcastEventToTeam(teamId: string, type: SSEEventType, data: a
     }
   }
   return sent;
-}
-
-export function broadcastHeartbeat(): number {
-  return broadcastEvent('heartbeat', { timestamp: new Date().toISOString(), clientCount: clients.size });
 }
 
 export function notifyMonitorUpdate(teamId: string, monitor: any): number {
@@ -187,9 +166,3 @@ export async function handleSSERequest(req: IncomingMessage, res: ServerResponse
 
   return false;
 }
-
-const heartbeatTimer = setInterval(() => {
-  broadcastHeartbeat();
-}, 30000);
-
-heartbeatTimer.unref();

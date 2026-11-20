@@ -222,15 +222,23 @@ describe('API Server', () => {
     it('GET /api/leads returns created leads', async () => {
       const email = `lead-list-${Date.now()}@example.com`;
       testEmails.push(email);
-      await fetch(`http://127.0.0.1:${port}/api/leads`, {
+      const postRes = await fetch(`http://127.0.0.1:${port}/api/leads`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
       });
+      const postJson = await postRes.json() as any;
+      console.log('POST /api/leads status:', postRes.status);
+      console.log('POST /api/leads response:', postJson);
+      assert.strictEqual(postRes.status, 200);
+      assert.strictEqual(postJson.success, true);
 
-      const res = await (await fetch(`http://127.0.0.1:${port}/api/leads`)).json() as any;
-      assert.ok(Array.isArray(res.leads));
-      assert.ok(res.leads.some((l: any) => l.email === email.toLowerCase()));
+      const getRes = await fetch(`http://127.0.0.1:${port}/api/leads`);
+      const getJson = await getRes.json() as any;
+      console.log('GET /api/leads status:', getRes.status);
+      console.log('GET /api/leads response:', JSON.stringify(getJson, null, 2));
+      assert.ok(Array.isArray(getJson.leads));
+      assert.ok(getJson.leads.some((l: any) => l.email === email.toLowerCase()), 'Lead not found in GET response');
     });
 
     it('GET /api/leads filters by source', async () => {

@@ -31,14 +31,14 @@ export class PerfStorage {
   completeRun(runId: string, result: LighthouseResult, teamId: string | null = null): void {
     if (result.successful) {
       this.db.run(
-        `UPDATE perf_runs SET status = 'completed', lcp = ?, tbt = ?, cls = ?, fcp = ?, inp = ?, score = ?, raw_output = ?, completed_at = datetime('now') WHERE id = ? AND (team_id = ? OR team_id IS NULL)`,
+        `UPDATE perf_runs SET status = 'completed', lcp = ?, tbt = ?, cls = ?, fcp = ?, inp = ?, score = ?, raw_output = ?, completed_at = datetime('now') WHERE id = ? AND team_id = ?`,
         [result.lcp, result.tbt, result.cls, result.fcp, result.inp, result.score, result.rawJson, runId, teamId],
       );
 
       this.storeMetrics(runId, result, teamId);
     } else {
       this.db.run(
-        `UPDATE perf_runs SET status = 'failed', raw_output = ?, completed_at = datetime('now') WHERE id = ? AND (team_id = ? OR team_id IS NULL)`,
+        `UPDATE perf_runs SET status = 'failed', raw_output = ?, completed_at = datetime('now') WHERE id = ? AND team_id = ?`,
         [result.error || '', runId, teamId],
       );
     }
@@ -64,7 +64,7 @@ export class PerfStorage {
 
   getRecentRuns(url: string, teamId: string | null = null, limit: number = 10): PerfRun[] {
     const result = this.db.exec(
-      `SELECT id, url, status, lcp, tbt, cls, fcp, inp, score, started_at, completed_at FROM perf_runs WHERE url = ? AND (team_id = ? OR team_id IS NULL) ORDER BY started_at DESC LIMIT ?`,
+      `SELECT id, url, status, lcp, tbt, cls, fcp, inp, score, started_at, completed_at FROM perf_runs WHERE url = ? AND team_id = ? ORDER BY started_at DESC LIMIT ?`,
       [url, teamId, limit],
     );
 
@@ -90,7 +90,7 @@ export class PerfStorage {
       `SELECT pm.value, pr.started_at
        FROM perf_metrics pm
        JOIN perf_runs pr ON pm.run_id = pr.id
-       WHERE pr.url = ? AND (pr.team_id = ? OR pr.team_id IS NULL) AND pm.name = ? AND pr.status = 'completed'
+       WHERE pr.url = ? AND pr.team_id = ? AND pm.name = ? AND pr.status = 'completed'
        ORDER BY pr.started_at DESC LIMIT ?`,
       [url, teamId, metric, limit],
     );
@@ -138,7 +138,7 @@ export class PerfStorage {
   }
 
   getRegressions(teamId: string | null = null, url?: string, limit: number = 20): any[] {
-    let sql = `SELECT pr.id, pr.metric, pr.current_value, pr.baseline_mean, pr.baseline_stddev, pr.p_value, pr.direction, pr.trend, pr.url, pr.detected_at, pr.acknowledged FROM perf_regressions pr WHERE (pr.team_id = ? OR pr.team_id IS NULL)`;
+    let sql = `SELECT pr.id, pr.metric, pr.current_value, pr.baseline_mean, pr.baseline_stddev, pr.p_value, pr.direction, pr.trend, pr.url, pr.detected_at, pr.acknowledged FROM perf_regressions pr WHERE pr.team_id = ?`;
     const params: any[] = [teamId];
 
     if (url) {
@@ -176,7 +176,7 @@ export class PerfStorage {
 
   getDiagnoses(teamId: string | null = null, regressionId: string): any[] {
     const result = this.db.exec(
-      'SELECT id, diagnosis, recommendation, impact, category, created_at FROM perf_diagnoses WHERE regression_id = ? AND (team_id = ? OR team_id IS NULL) ORDER BY created_at DESC',
+      'SELECT id, diagnosis, recommendation, impact, category, created_at FROM perf_diagnoses WHERE regression_id = ? AND team_id = ? ORDER BY created_at DESC',
       [regressionId, teamId],
     );
     if (result.length === 0) return [];

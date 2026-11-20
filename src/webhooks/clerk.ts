@@ -110,7 +110,7 @@ export function handleClerkWebhook(req: IncomingMessage, res: ServerResponse): b
       // Fail closed: require secret, signature, and timestamp
       if (!secret) {
         console.error('[Clerk Webhook] CLERK_WEBHOOK_SECRET not configured');
-        res.writeHead(500);
+        res.writeHead(401);
         res.end(JSON.stringify({ error: 'Webhook secret not configured' }));
         return;
       }
