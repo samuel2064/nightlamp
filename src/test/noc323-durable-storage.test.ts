@@ -406,8 +406,8 @@ describe('NOC-323 durable storage', () => {
         }
       }
 
-      // Verify total table count matches (37 tables)
-      assert.strictEqual(pgTableNames.length, 37, `Postgres migration should have 37 tables, got ${pgTableNames.length}`);
+      // Verify total table count matches (38 tables including clerk_webhook_events)
+      assert.strictEqual(pgTableNames.length, 38, `Postgres migration should have 38 tables, got ${pgTableNames.length}`);
     });
   });
 

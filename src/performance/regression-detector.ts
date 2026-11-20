@@ -8,6 +8,9 @@ export class RegressionDetector {
   }
 
   analyzeRuns(url: string, currentRun: PerfRun, teamId: string): { detected: boolean; regressions: any[] } {
+    if (!teamId) {
+      throw new Error('Regression detector requires a team ID');
+    }
     const metrics: { name: string; value: number }[] = [
       { name: 'LCP', value: currentRun.lcp },
       { name: 'TBT', value: currentRun.tbt },

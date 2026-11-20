@@ -73,33 +73,7 @@ const ADMIN_ENDPOINTS: EndpointRule[] = [
   { path: '/api/playbook/remediate', method: 'POST' },
 ];
 
-/**
- * Seven NOC-337 surfaces that remain unremediated.
- * Adding explicit pending states with reasons for each.
- */
-export const NOC337_PENDING_REASONS = {
-  // Gap 1: Playbook executions list/read are tenant-scoped, decision/cancel not yet
-  playbookExecutionsDecisionCancel:
-    'decision and cancel operations not yet fully tenant-scoped; verify execution team membership before action',
-  // Gap 2: Performance APIs require auth and tenant scoping
-  performanceApis:
-    'performance APIs (run, history, regressions, diagnosis) not yet fully require auth and tenant scoping',
-  // Gap 3: Private streaming (SSE /api/realtime) requires auth and tenant-scoped client registry
-  privateStreaming:
-    'SSE /api/realtime not yet requires auth and tenant-scoped client registry with broadcastEventToTeam',
-  // Gap 4: Clerk webhook fails closed when secret absent
-  clerkWebhook:
-    'clerk webhook not yet fails closed when secret absent; verify signature/timestamp, reject replayed/stale deliveries',
-  // Gap 5: Team workspace PATCH requires owner/admin
-  teamWorkspace:
-    'PATCH /api/teams/:id/workspace not yet requires owner/admin via requireTeamAdmin',
-  // Gap 6: Lead reads GET /api/leads now tenant-scoped; POST remains public
-  leadReads:
-    'GET /api/leads not yet fully tenant-scoped with team_id column; some routes may expose unscoped data',
-  // Gap 7: Stripe webhook at exact path POST /api/billing/webhook verified without user token
-  stripeWebhook:
-    'POST /api/billing/webhook not yet verified without user token; exact path verification missing',
-};
+
 
 const AVAILABLE_ROUTES: string[] = [
   '/api/remediation/runs', '/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search',
@@ -253,18 +227,26 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
     try {
       let auth: AuthContext | null = null;
-      if (!isPublicEndpoint(path, req.method)) {
-        try {
-          auth = await authenticateRequestAsync(db, req);
-        } catch (err: any) {
-          if (err instanceof ApiAuthError) {
+      const isPublic = isPublicEndpoint(path, req.method);
+
+      // Attempt authentication for all endpoints; for public ones, treat auth failure as no auth
+      try {
+        auth = await authenticateRequestAsync(db, req);
+      } catch (err: any) {
+        if (err instanceof ApiAuthError) {
+          if (!isPublic) {
             res.writeHead(err.statusCode);
             res.end(JSON.stringify({ error: err.message, code: err.code }));
             return;
           }
+          // For public endpoints, invalid auth is treated as no auth
+          auth = null;
+        } else {
           throw err;
         }
+      }
 
+      if (!isPublic) {
         const teamPathMatch = path.match(/^\/api\/teams\/([^/]+)(\/.*)?$/);
         if (teamPathMatch) {
           const requestedTeamId = teamPathMatch[1];
@@ -277,7 +259,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           }
           let teamRole: TeamRole;
           try {
-            teamRole = assertTeamMembership(db, auth.userId, requestedTeamId);
+            teamRole = assertTeamMembership(db, auth!.userId, requestedTeamId);
           } catch (err: any) {
             if (err instanceof ApiAuthError) {
               res.writeHead(err.statusCode);
@@ -295,7 +277,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
         if (matchesEndpoint(path, req.method, ADMIN_ENDPOINTS)) {
           try {
-            requireRole(auth, ['owner', 'admin']);
+            requireRole(auth!, ['owner', 'admin']);
           } catch (err: any) {
             if (err instanceof ApiAuthError) {
               res.writeHead(err.statusCode);

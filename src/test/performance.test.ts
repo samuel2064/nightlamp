@@ -155,7 +155,7 @@ describe('Performance - Regression Detector', () => {
     const runs = storage.getRecentRuns('https://example.com', testTeamId, 1);
     runs[0].lcp = 1050;
 
-    const result = detector.analyzeRuns('https://example.com', runs[0]);
+    const result = detector.analyzeRuns('https://example.com', runs[0], testTeamId);
     expect(result.detected).to.be.false;
   });
 

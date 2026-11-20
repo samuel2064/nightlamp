@@ -537,6 +537,18 @@ export async function up(pool: Pool): Promise<void> {
       );
     `);
 
+    // clerk_webhook_events
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS clerk_webhook_events (
+        id TEXT PRIMARY KEY,
+        event_type TEXT NOT NULL,
+        livemode INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'received' CHECK(status IN ('received', 'processed', 'failed', 'skipped')),
+        payload TEXT,
+        received_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+      );
+    `);
+
     // Indexes
     await client.query('CREATE INDEX IF NOT EXISTS idx_failure_events_detected ON failure_events(detected_at)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_failure_events_type_detected ON failure_events(failure_type, detected_at)');
@@ -590,6 +602,7 @@ export async function down(pool: Pool): Promise<void> {
   try {
     await client.query('BEGIN');
     // Drop tables in reverse order to handle foreign keys
+    await client.query('DROP TABLE IF EXISTS clerk_webhook_events');
     await client.query('DROP TABLE IF EXISTS webhook_events');
     await client.query('DROP TABLE IF EXISTS leads');
     await client.query('DROP TABLE IF EXISTS notification_deduplication');
