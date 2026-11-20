@@ -1709,8 +1709,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         if (req.method === 'GET') {
           const playbookId = parsedUrl.searchParams.get('playbookId') || undefined;
           // Filter executions by team: join with custom_playbooks to get team_id
-          let sql = `SELECT pe.id, pe.playbook_id, pe.status, pe.current_step_id, pe.context, pe.step_results, 
-                            pe.created_at, pe.updated_at, pe.completed_at, pe.error 
+          let sql = `SELECT pe.id, pe.playbook_id, pe.status, pe.current_step_id, pe.context, pe.step_results,
+                            pe.created_at, pe.updated_at, pe.completed_at, pe.error
                      FROM playbook_executions pe
                      JOIN custom_playbooks cp ON pe.playbook_id = cp.id
                      WHERE cp.team_id = ?`;
