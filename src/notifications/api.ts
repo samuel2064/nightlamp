@@ -164,7 +164,13 @@ export class NotificationApi {
         // The send is authorized against the authenticated principal, never against
         // only a client-supplied channel id: the caller must either belong to the
         // channel's team or personally own the channel.
-        if (!rowBelongsToScope(this.db, 'alert_channels', channelId, teamId, userId)) {
+        const inScope = rowBelongsToScope(this.db, 'alert_channels', channelId, teamId, userId);
+        if (!inScope) {
+          if (teamId === null) {
+            res.writeHead(403);
+            res.end(JSON.stringify({ error: 'A team membership is required to access this resource', code: 'FORBIDDEN' }));
+            return;
+          }
           res.writeHead(404);
           res.end(JSON.stringify({ error: 'Channel not found' }));
           return;
