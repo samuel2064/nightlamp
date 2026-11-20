@@ -1340,7 +1340,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
         const eventScope = tenantOwnedFilter('fe.team_id', teamId);
         const checkScope = tenantOwnedFilter('c.team_id', teamId);
-        let sql = `SELECT fe.id, fe.check_id, fe.failure_type, fe.severity, fe.title, fe.description, 
+        let sql = `SELECT fe.id, fe.check_id, fe.failure_type, fe.severity, fe.title, fe.description,
                           fe.raw_data, fe.detected_at, fe.acknowledged,
                           c.name as check_name, c.source as check_source
                    FROM failure_events fe
@@ -1576,17 +1576,17 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
               const existing = db.exec('SELECT id FROM leads WHERE email = ?', [normalized]);
               if (existing.length > 0 && existing[0].values.length > 0) {
                 res.writeHead(409);
-                res.end(JSON.stringify({ error: 'This email is already registered', id: existing[0].values[0][0] }));
+                res.end(JSON.stringify({ error: 'This email is already registered' }));
                 return;
               }
 
-              const id = uuidv4();
-              const leadSource = (source && typeof source === 'string' && source.trim()) ? source.trim() : 'webinar';
-              db.run(
-                `INSERT INTO leads (id, email, source, name) VALUES (?, ?, ?, ?)`,
-                [id, normalized, leadSource, name ? String(name) : null]
-              );
-              res.end(JSON.stringify({ success: true, id, email: normalized, source: leadSource }));
+const id = uuidv4();
+                const leadSource = (source && typeof source === 'string' && source.trim()) ? source.trim() : 'webinar';
+                db.run(
+                  `INSERT INTO leads (id, email, source, name, team_id) VALUES (?, ?, ?, ?, ?)`,
+                  [id, normalized, leadSource, name ? String(name) : null, teamId]
+                );
+                res.end(JSON.stringify({ success: true, id, email: normalized, source: leadSource }));
             } catch (err: any) {
               res.writeHead(400);
               res.end(JSON.stringify({ error: err.message }));
@@ -1629,12 +1629,11 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         if (!requireTenantScope(res, teamId)) return;
         if (req.method === 'GET') {
           const playbookId = parsedUrl.searchParams.get('playbookId') || undefined;
-          // Filter executions by team: join with custom_playbooks to get team_id
-          let sql = `SELECT pe.id, pe.playbook_id, pe.status, pe.current_step_id, pe.context, pe.step_results, 
-                            pe.created_at, pe.updated_at, pe.completed_at, pe.error 
+          // Filter executions by team using playbook_executions.team_id
+          let sql = `SELECT pe.id, pe.playbook_id, pe.status, pe.current_step_id, pe.context, pe.step_results,
+                            pe.created_at, pe.updated_at, pe.completed_at, pe.error
                      FROM playbook_executions pe
-                     JOIN custom_playbooks cp ON pe.playbook_id = cp.id
-                     WHERE cp.team_id = ?`;
+                     WHERE pe.team_id = ?`;
           const params: any[] = [teamId];
           if (playbookId) {
             sql += ' AND pe.playbook_id = ?';
@@ -1705,11 +1704,9 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         const action = executionMatch[2] || '';
 
         if (!action && req.method === 'GET') {
-          // Verify execution belongs to the authenticated team
+          // Verify execution belongs to the authenticated team using playbook_executions.team_id
           const execTeam = db.exec(
-            `SELECT pe.team_id FROM playbook_executions pe
-             JOIN custom_playbooks cp ON pe.playbook_id = cp.id
-             WHERE pe.id = ? AND cp.team_id = ?`,
+            `SELECT pe.team_id FROM playbook_executions pe WHERE pe.id = ? AND pe.team_id = ?`,
             [executionId, teamId]
           );
           if (!execTeam.length || execTeam[0].values.length === 0) {
@@ -1728,11 +1725,9 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         }
 
         if (action === '/decision' && req.method === 'POST') {
-          // Verify execution belongs to the authenticated team
+          // Verify execution belongs to the authenticated team using playbook_executions.team_id
           const execTeam = db.exec(
-            `SELECT pe.team_id FROM playbook_executions pe
-             JOIN custom_playbooks cp ON pe.playbook_id = cp.id
-             WHERE pe.id = ? AND cp.team_id = ?`,
+            `SELECT pe.team_id FROM playbook_executions pe WHERE pe.id = ? AND pe.team_id = ?`,
             [executionId, teamId]
           );
           if (!execTeam.length || execTeam[0].values.length === 0) {
@@ -1763,11 +1758,9 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         }
 
         if (action === '/cancel' && req.method === 'POST') {
-          // Verify execution belongs to the authenticated team
+          // Verify execution belongs to the authenticated team using playbook_executions.team_id
           const execTeam = db.exec(
-            `SELECT pe.team_id FROM playbook_executions pe
-             JOIN custom_playbooks cp ON pe.playbook_id = cp.id
-             WHERE pe.id = ? AND cp.team_id = ?`,
+            `SELECT pe.team_id FROM playbook_executions pe WHERE pe.id = ? AND pe.team_id = ?`,
             [executionId, teamId]
           );
           if (!execTeam.length || execTeam[0].values.length === 0) {

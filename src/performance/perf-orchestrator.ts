@@ -15,7 +15,7 @@ export class PerfOrchestrator {
     this.storage = new PerfStorage(db);
   }
 
-  async runAudit(url: string): Promise<LighthouseResult> {
+async runAudit(url: string): Promise<LighthouseResult> {
     return this.runner.runAudit(url);
   }
 

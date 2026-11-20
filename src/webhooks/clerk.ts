@@ -18,9 +18,25 @@ function verifyClerkWebhook(
   secret: string
 ): boolean {
   if (!secret) return false;
+
+  // Svix secret format: whsec_<base64_key>
+  // The base64 part after whsec_ must be decoded for HMAC
+  let hmacKey: Buffer;
+  if (secret.startsWith('whsec_')) {
+    const base64Key = secret.slice(6);
+    try {
+      hmacKey = Buffer.from(base64Key, 'base64');
+    } catch {
+      return false;
+    }
+  } else {
+    // Fallback for non-standard secrets
+    hmacKey = Buffer.from(secret, 'utf8');
+  }
+
   const signedContent = `${svixId}.${svixTimestamp}.${body}`;
   const expectedSignature = crypto
-    .createHmac('sha256', secret)
+    .createHmac('sha256', hmacKey)
     .update(signedContent)
     .digest('base64');
   const receivedSignatures = svixSignature.split(' ').map(s => s.trim());
@@ -46,14 +62,14 @@ function isTimestampFresh(timestamp: string, maxAgeSeconds: number = 300): boole
 
 async function isReplay(db: Database, eventId: string): Promise<boolean> {
   const result = db.exec(
-    `SELECT id FROM webhook_events WHERE id = ? AND provider = 'clerk'`,
+    `SELECT id FROM clerk_webhook_events WHERE id = ?`,
     [eventId],
   );
   if (result.length > 0 && result[0].values.length > 0) {
     return true;
   }
   db.run(
-    `INSERT INTO webhook_events (id, provider, event_type, livemode, status, payload, received_at) VALUES (?, 'clerk', 'unknown', 0, 'received', '{}', datetime('now'))`,
+    `INSERT INTO clerk_webhook_events (id, received_at) VALUES (?, datetime('now'))`,
     [eventId],
   );
   return false;

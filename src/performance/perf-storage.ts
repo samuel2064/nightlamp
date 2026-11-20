@@ -137,7 +137,7 @@ export class PerfStorage {
     return id;
   }
 
-  getRegressions(teamId: string, url?: string, limit: number = 20): any[] {
+getRegressions(teamId: string, url?: string, limit: number = 20): any[] {
     let sql = `SELECT pr.id, pr.metric, pr.current_value, pr.baseline_mean, pr.baseline_stddev, pr.p_value, pr.direction, pr.trend, pr.url, pr.detected_at, pr.acknowledged FROM perf_regressions pr WHERE pr.team_id = ?`;
     const params: any[] = [teamId];
 

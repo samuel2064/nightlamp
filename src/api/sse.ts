@@ -12,7 +12,7 @@ export interface SSEClient {
   teamId: string;
 }
 
-export type SSEEventType = 
+export type SSEEventType =
   | 'monitor_update'
   | 'incident_alert'
   | 'playbook_progress'
