@@ -1,6 +1,6 @@
 import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
-import { broadcastEvent, SSEEventType } from '../api/sse';
+import { broadcastEventToTeam, SSEEventType } from '../api/sse';
 
 export type PlaybookExecutionStatus = 'pending' | 'running' | 'waiting_decision' | 'completed' | 'failed' | 'cancelled';
 
@@ -27,11 +27,13 @@ export interface PlaybookDefinition {
   description: string;
   steps: PlaybookStep[];
   variables: Record<string, unknown>;
+  teamId: string;
 }
 
 export interface PlaybookExecution {
   id: string;
   playbookId: string;
+  teamId: string;
   status: PlaybookExecutionStatus;
   currentStepId: string | null;
   context: Record<string, unknown>;
@@ -80,23 +82,25 @@ export class PlaybookEngine {
 
   private loadExecutions(): void {
     const result = this.db.exec(
-      `SELECT id, playbook_id, status, current_step_id, context, step_results, 
-              created_at, updated_at, completed_at, error 
-       FROM playbook_executions`
+      `SELECT pe.id, pe.playbook_id, cp.team_id, pe.status, pe.current_step_id, pe.context, pe.step_results,
+              pe.created_at, pe.updated_at, pe.completed_at, pe.error
+       FROM playbook_executions pe
+       JOIN custom_playbooks cp ON pe.playbook_id = cp.id`
     );
     if (result.length > 0 && result[0].values.length > 0) {
       for (const row of result[0].values) {
         const execution: PlaybookExecution = {
           id: row[0] as string,
           playbookId: row[1] as string,
-          status: row[2] as PlaybookExecutionStatus,
-          currentStepId: row[3] as string | null,
-          context: JSON.parse(row[4] as string),
-          stepResults: JSON.parse(row[5] as string),
-          createdAt: row[6] as string,
-          updatedAt: row[7] as string,
-          completedAt: row[8] as string | null,
-          error: row[9] as string | null,
+          teamId: row[2] as string,
+          status: row[3] as PlaybookExecutionStatus,
+          currentStepId: row[4] as string | null,
+          context: JSON.parse(row[5] as string),
+          stepResults: JSON.parse(row[6] as string),
+          createdAt: row[7] as string,
+          updatedAt: row[8] as string,
+          completedAt: row[9] as string | null,
+          error: row[10] as string | null,
         };
         this.executions.set(execution.id, execution);
       }
@@ -115,6 +119,7 @@ export class PlaybookEngine {
     const execution: PlaybookExecution = {
       id,
       playbookId: playbook.id,
+      teamId: playbook.teamId,
       status: 'pending',
       currentStepId: firstStep.id,
       context: { ...playbook.variables, ...initialContext },
@@ -126,9 +131,9 @@ export class PlaybookEngine {
     };
 
     this.db.run(
-      `INSERT INTO playbook_executions (id, playbook_id, status, current_step_id, context, step_results, created_at, updated_at) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, playbook.id, 'pending', firstStep.id, JSON.stringify(execution.context), '{}', now, now]
+      `INSERT INTO playbook_executions (id, playbook_id, team_id, status, current_step_id, context, step_results, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, playbook.id, playbook.teamId, 'pending', firstStep.id, JSON.stringify(execution.context), '{}', now, now]
     );
 
     this.executions.set(id, execution);
@@ -149,7 +154,7 @@ export class PlaybookEngine {
     execution.updatedAt = new Date().toISOString();
     this.persistExecution(execution);
 
-    broadcastEvent('playbook_progress', {
+    broadcastEventToTeam(execution.teamId, 'playbook_progress', {
       executionId: execution.id,
       playbookId: execution.playbookId,
       status: 'running',
@@ -186,7 +191,7 @@ export class PlaybookEngine {
       return execution;
     }
 
-    broadcastEvent('playbook_progress', {
+    broadcastEventToTeam(execution.teamId, 'playbook_progress', {
       executionId: execution.id,
       playbookId: execution.playbookId,
       status: 'running',
@@ -216,7 +221,7 @@ export class PlaybookEngine {
         execution.error = result.error || `Step ${step.name} failed`;
         execution.completedAt = new Date().toISOString();
         this.persistExecution(execution);
-        broadcastEvent('playbook_progress', {
+        broadcastEventToTeam(execution.teamId, 'playbook_progress', {
           executionId: execution.id,
           playbookId: execution.playbookId,
           status: 'failed',
@@ -232,7 +237,7 @@ export class PlaybookEngine {
       execution.status = 'waiting_decision';
       execution.updatedAt = new Date().toISOString();
       this.persistExecution(execution);
-      broadcastEvent('playbook_progress', {
+      broadcastEventToTeam(execution.teamId, 'playbook_progress', {
         executionId: execution.id,
         playbookId: execution.playbookId,
         status: 'waiting_decision',
@@ -262,7 +267,7 @@ export class PlaybookEngine {
       execution.status = 'completed';
       execution.completedAt = new Date().toISOString();
       this.persistExecution(execution);
-      broadcastEvent('playbook_progress', {
+      broadcastEventToTeam(execution.teamId, 'playbook_progress', {
         executionId: execution.id,
         playbookId: execution.playbookId,
         status: 'completed',
@@ -286,7 +291,7 @@ export class PlaybookEngine {
       case 'conditional':
         return this.executeConditional(step, execution.context);
       case 'notification':
-        return this.executeNotification(step, execution.context);
+        return this.executeNotification(step, execution.context, execution.teamId);
       case 'custom_code':
         return this.executeCustomCode(step, execution.context);
       default:
@@ -398,14 +403,14 @@ export class PlaybookEngine {
     };
   }
 
-  private async executeNotification(step: PlaybookStep, context: Record<string, unknown>): Promise<StepExecutionResult> {
+  private async executeNotification(step: PlaybookStep, context: Record<string, unknown>, teamId: string): Promise<StepExecutionResult> {
     const config = step.config as {
       channel: string;
       message: string;
       severity?: 'info' | 'warning' | 'critical';
     };
 
-    broadcastEvent('playbook_progress', {
+    broadcastEventToTeam(teamId, 'playbook_progress', {
       executionId: 'notification',
       playbookId: 'notification',
       status: 'notification',
@@ -492,7 +497,7 @@ export class PlaybookEngine {
   private persistExecution(execution: PlaybookExecution): void {
     this.db.run(
       `UPDATE playbook_executions SET status = ?, current_step_id = ?, context = ?, step_results = ?, 
-              updated_at = ?, completed_at = ?, error = ? WHERE id = ?`,
+              updated_at = ?, completed_at = ?, error = ?, team_id = ? WHERE id = ?`,
       [
         execution.status,
         execution.currentStepId,
@@ -501,6 +506,7 @@ export class PlaybookEngine {
         execution.updatedAt,
         execution.completedAt,
         execution.error,
+        execution.teamId,
         execution.id,
       ]
     );
@@ -509,7 +515,7 @@ export class PlaybookEngine {
 
   getPlaybookDefinition(playbookId: string): PlaybookDefinition | null {
     const result = this.db.exec(
-      `SELECT id, name, description, variables FROM custom_playbooks WHERE id = ?`,
+      `SELECT id, name, description, variables, team_id FROM custom_playbooks WHERE id = ?`,
       [playbookId]
     );
     if (result.length === 0 || result[0].values.length === 0) return null;
@@ -592,6 +598,7 @@ export class PlaybookEngine {
       description: row[2] as string,
       steps: Array.from(stepMap.values()),
       variables: JSON.parse(row[3] as string),
+      teamId: row[4] as string,
     };
   }
 
@@ -650,7 +657,7 @@ export class PlaybookEngine {
     execution.updatedAt = new Date().toISOString();
     this.persistExecution(execution);
 
-    broadcastEvent('playbook_progress', {
+    broadcastEventToTeam(execution.teamId, 'playbook_progress', {
       executionId: execution.id,
       playbookId: execution.playbookId,
       status: 'cancelled',
