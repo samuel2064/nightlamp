@@ -239,7 +239,8 @@ export async function up(pool: Pool): Promise<void> {
         score REAL,
         raw_output TEXT,
         started_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-        completed_at TEXT
+        completed_at TEXT,
+        team_id TEXT
       );
     `);
 
@@ -482,7 +483,9 @@ export async function up(pool: Pool): Promise<void> {
         updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
         completed_at TEXT,
         error TEXT,
-        FOREIGN KEY (playbook_id) REFERENCES custom_playbooks(id) ON DELETE CASCADE
+        team_id TEXT,
+        FOREIGN KEY (playbook_id) REFERENCES custom_playbooks(id) ON DELETE CASCADE,
+        FOREIGN KEY (team_id) REFERENCES teams(id)
       );
     `);
 
@@ -520,7 +523,8 @@ export async function up(pool: Pool): Promise<void> {
         email TEXT NOT NULL,
         source TEXT NOT NULL DEFAULT 'webinar',
         name TEXT,
-        created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        team_id TEXT
       );
     `);
 
@@ -547,7 +551,8 @@ export async function up(pool: Pool): Promise<void> {
         livemode INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'received' CHECK(status IN ('received', 'processed', 'failed', 'skipped')),
         payload TEXT,
-        received_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        received_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        team_id TEXT
       );
     `);
 
@@ -573,6 +578,7 @@ export async function up(pool: Pool): Promise<void> {
 
     // Hot-path indexes for performance optimization
     await client.query('CREATE INDEX IF NOT EXISTS idx_perf_runs_url_started ON perf_runs(url, started_at DESC)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_perf_runs_team ON perf_runs(team_id)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_perf_metrics_run_name ON perf_metrics(run_id, name)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_perf_regressions_url_detected ON perf_regressions(url, detected_at DESC)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_perf_regressions_team ON perf_regressions(team_id)');
@@ -586,6 +592,9 @@ export async function up(pool: Pool): Promise<void> {
     await client.query('CREATE INDEX IF NOT EXISTS idx_x_posts_schedule ON x_scheduled_posts(status, scheduled_at)');
 
     await client.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email ON leads(email)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_leads_team ON leads(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_playbook_executions_team ON playbook_executions(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_clerk_webhook_events_team ON clerk_webhook_events(team_id)');
 
     await client.query('CREATE INDEX IF NOT EXISTS idx_failure_events_severity ON failure_events(severity)');
 
