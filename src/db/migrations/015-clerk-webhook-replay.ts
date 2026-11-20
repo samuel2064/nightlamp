@@ -25,7 +25,7 @@ export function up(db: Database): void {
 }
 
 export function down(db: Database): void {
-  db.run(`DROP INDEX IF NOT EXISTS idx_clerk_webhook_events_received`);
-  db.run(`DROP INDEX IF NOT EXISTS idx_clerk_webhook_events_team`);
+  db.run(`DROP INDEX IF EXISTS idx_clerk_webhook_events_received`);
+  db.run(`DROP INDEX IF EXISTS idx_clerk_webhook_events_team`);
   db.run(`DROP TABLE IF EXISTS clerk_webhook_events`);
 }

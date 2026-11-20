@@ -30,6 +30,24 @@ export interface SSEEvent {
 
 const clients = new Map<string, SSEClient>();
 
+const heartbeatTimer = setInterval(() => {
+  const event: SSEEvent = {
+    id: uuidv4(),
+    type: 'heartbeat',
+    timestamp: new Date().toISOString(),
+    data: { timestamp: new Date().toISOString(), clientCount: clients.size },
+  };
+
+  let sent = 0;
+  for (const client of clients.values()) {
+    if (sendEvent(client, event)) {
+      sent++;
+    }
+  }
+}, 30000);
+
+heartbeatTimer.unref();
+
 export function addSSEClient(req: IncomingMessage, res: ServerResponse, teamId: string): string {
   const clientId = uuidv4();
   const client: SSEClient = {

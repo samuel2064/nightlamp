@@ -201,6 +201,62 @@ describe('NOC-337: Route-level P0 API Security Gaps', () => {
       runAId, entryAId, 'retry-webhook', 'pending', teamAId,
     ]);
 
+    // Seed playbook_executions for both teams
+    const execAId = uuidv4();
+    const execBId = uuidv4();
+    const playbookAId = uuidv4();
+    const playbookBId = uuidv4();
+    db.run('INSERT INTO custom_playbooks (id, team_id, name, description, status, version, variables, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+      playbookAId, teamAId, 'Playbook A', 'Desc', 'published', 1, '{}', new Date().toISOString(), new Date().toISOString(),
+    ]);
+    db.run('INSERT INTO custom_playbooks (id, team_id, name, description, status, version, variables, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+      playbookBId, teamBId, 'Playbook B', 'Desc', 'published', 1, '{}', new Date().toISOString(), new Date().toISOString(),
+    ]);
+    db.run('INSERT INTO playbook_executions (id, playbook_id, team_id, status, current_step_id, context, step_results, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+      execAId, playbookAId, teamAId, 'completed', null, '{}', '{}', new Date().toISOString(), new Date().toISOString(),
+    ]);
+    db.run('INSERT INTO playbook_executions (id, playbook_id, team_id, status, current_step_id, context, step_results, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+      execBId, playbookBId, teamBId, 'completed', null, '{}', '{}', new Date().toISOString(), new Date().toISOString(),
+    ]);
+
+    // Seed perf_runs for both teams
+    const runAId2 = uuidv4();
+    const runBId2 = uuidv4();
+    db.run('INSERT INTO perf_runs (id, url, status, lcp, tbt, cls, fcp, inp, score, started_at, completed_at, team_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+      runAId2, 'https://example.com', 'completed', 1000, 50, 0.1, 800, 100, 90, new Date().toISOString(), new Date().toISOString(), teamAId,
+    ]);
+    db.run('INSERT INTO perf_runs (id, url, status, lcp, tbt, cls, fcp, inp, score, started_at, completed_at, team_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+      runBId2, 'https://other.com', 'completed', 2000, 100, 0.2, 1500, 200, 80, new Date().toISOString(), new Date().toISOString(), teamBId,
+    ]);
+
+    // Seed perf_metrics for both teams (required for history endpoint)
+    const metrics = [
+      { name: 'LCP', value: 1000, unit: 'ms' },
+      { name: 'TBT', value: 50, unit: 'ms' },
+      { name: 'CLS', value: 0.1, unit: '' },
+      { name: 'FCP', value: 800, unit: 'ms' },
+      { name: 'INP', value: 100, unit: 'ms' },
+      { name: 'score', value: 90, unit: 'score' },
+    ];
+    for (const m of metrics) {
+      db.run('INSERT INTO perf_metrics (id, run_id, name, value, unit) VALUES (?, ?, ?, ?, ?)', [
+        uuidv4(), runAId2, m.name, m.value, m.unit,
+      ]);
+    }
+    for (const m of metrics) {
+      db.run('INSERT INTO perf_metrics (id, run_id, name, value, unit) VALUES (?, ?, ?, ?, ?)', [
+        uuidv4(), runBId2, m.name, m.value, m.unit,
+      ]);
+    }
+
+    // Seed leads for both teams
+    db.run('INSERT INTO leads (id, email, source, name, created_at, team_id) VALUES (?, ?, ?, ?, ?, ?)', [
+      uuidv4(), 'leadA@test.com', 'webinar', 'Lead A', new Date().toISOString(), teamAId,
+    ]);
+    db.run('INSERT INTO leads (id, email, source, name, created_at, team_id) VALUES (?, ?, ?, ?, ?, ?)', [
+      uuidv4(), 'leadB@test.com', 'webinar', 'Lead B', new Date().toISOString(), teamBId,
+    ]);
+
     const legacyCheckId = uuidv4();
     legacyEventId = uuidv4();
     db.run('INSERT INTO checks (id, source, name, config, enabled, team_id) VALUES (?, ?, ?, ?, 1, NULL)', [
@@ -373,22 +429,53 @@ server = startApiServer(db, { port: 0, stripeClient: mockStripeClient, stripeWeb
       // Team B should not see Team A's executions
       const teamAExecutions = bodyA.executions || [];
       const teamBExecutions = bodyB.executions || [];
-      assert.ok(teamAExecutions.length >= 0);
-      assert.ok(teamBExecutions.length >= 0);
+      // Each team should see their own executions
+      assert.ok(teamAExecutions.length > 0, 'Team A should see their own executions');
+      assert.ok(teamBExecutions.length > 0, 'Team B should see their own executions');
+      // Cross-team isolation: Team A's executions not in Team B's list
+      const teamAIds = new Set(teamAExecutions.map((e: any) => e.id));
+      const teamBIds = new Set(teamBExecutions.map((e: any) => e.id));
+      for (const id of teamBIds) {
+        assert.ok(!teamAIds.has(id), `Team A's list should not contain Team B's execution ${id}`);
+      }
+      for (const id of teamAIds) {
+        assert.ok(!teamBIds.has(id), `Team B's list should not contain Team A's execution ${id}`);
+      }
     });
 
     it('Team A performance data not visible to Team B', async () => {
       const resA = await request(ownerA, '/api/performance/history?url=https://example.com');
       assert.strictEqual(resA.status, 200);
+      const bodyA = await resA.json() as any;
       const resB = await request(ownerB, '/api/performance/history?url=https://example.com');
       assert.strictEqual(resB.status, 200);
+      const bodyB = await resB.json() as any;
+      // Team A's history should not be visible to Team B
+      assert.ok(bodyA.history.length > 0, 'Team A should have performance history');
+      assert.ok(bodyB.history.length >= 0, 'Team B performance history');
+      // No overlap in URLs between teams
+      const urlsA = new Set(bodyA.history.map((h: any) => h.url));
+      const urlsB = new Set(bodyB.history.map((h: any) => h.url));
+      for (const url of urlsB) {
+        assert.ok(!urlsA.has(url), `Team A's history should not contain Team B's URL ${url}`);
+      }
     });
 
     it('Team A leads not visible to Team B', async () => {
       const resA = await request(ownerA, '/api/leads');
       assert.strictEqual(resA.status, 200);
+      const bodyA = await resA.json() as any;
       const resB = await request(ownerB, '/api/leads');
       assert.strictEqual(resB.status, 200);
+      const bodyB = await resB.json() as any;
+      // Team A's leads should not be visible to Team B
+      assert.ok(bodyA.leads.length > 0, 'Team A should have leads');
+      assert.ok(bodyB.leads.length >= 0, 'Team B leads');
+      const emailsA = new Set(bodyA.leads.map((l: any) => l.email));
+      const emailsB = new Set(bodyB.leads.map((l: any) => l.email));
+      for (const email of emailsB) {
+        assert.ok(!emailsA.has(email), `Team A's leads should not contain Team B's email ${email}`);
+      }
     });
   });
 

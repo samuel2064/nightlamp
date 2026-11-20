@@ -269,6 +269,7 @@ export async function up(pool: Pool): Promise<void> {
         trend TEXT NOT NULL DEFAULT 'declining' CHECK(trend IN ('improving', 'declining', 'stable')),
         url TEXT NOT NULL,
         run_id TEXT NOT NULL,
+        team_id TEXT,
         detected_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
         acknowledged INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY (run_id) REFERENCES perf_runs(id)
@@ -280,6 +281,7 @@ export async function up(pool: Pool): Promise<void> {
       CREATE TABLE IF NOT EXISTS perf_diagnoses (
         id TEXT PRIMARY KEY,
         regression_id TEXT NOT NULL,
+        team_id TEXT,
         diagnosis TEXT NOT NULL,
         recommendation TEXT NOT NULL,
         impact TEXT NOT NULL CHECK(impact IN ('high', 'medium', 'low')),
@@ -573,7 +575,9 @@ export async function up(pool: Pool): Promise<void> {
     await client.query('CREATE INDEX IF NOT EXISTS idx_perf_runs_url_started ON perf_runs(url, started_at DESC)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_perf_metrics_run_name ON perf_metrics(run_id, name)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_perf_regressions_url_detected ON perf_regressions(url, detected_at DESC)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_perf_regressions_team ON perf_regressions(team_id)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_perf_diagnoses_regression ON perf_diagnoses(regression_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_perf_diagnoses_team ON perf_diagnoses(team_id)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_dep_updates_dep_detected ON dependency_updates(dependency_id, detected_at DESC)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_usage_customer_recorded ON usage_records(customer_id, recorded_at DESC)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_subscriptions_customer ON subscriptions(customer_id)');
