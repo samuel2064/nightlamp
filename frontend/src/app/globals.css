@@ -60,3 +60,19 @@
     @apply outline-none ring-2 ring-[hsl(var(--ring))] ring-offset-2 ring-offset-background;
   }
 }
+
+/*
+ * Reduced motion: the billing surface uses the Progress fill transition, so it is
+ * disabled globally rather than per-component. Tailwind's `motion-reduce:` variant
+ * and this block both resolve to the same media query.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
