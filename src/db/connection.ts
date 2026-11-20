@@ -178,8 +178,16 @@ export function getDatabaseConfig(): DatabaseConfig {
   return { mode: 'sqlite', sqlitePath: dbPath };
 }
 
+export const DEFAULT_PERSISTENT_MOUNT_PATH = '/mnt/data';
+export const DATABASE_FILE_NAME = 'nightlamp.db';
+
 export function getPersistentMountPath(): string {
-  return process.env.PERSISTENT_MOUNT_PATH || '/var/data/nightlamp';
+  const configured = process.env.PERSISTENT_MOUNT_PATH || DEFAULT_PERSISTENT_MOUNT_PATH;
+  return configured.replace(/\/+$/, '');
+}
+
+export function getExpectedDatabasePath(): string {
+  return `${getPersistentMountPath()}/${DATABASE_FILE_NAME}`;
 }
 
 export function shouldWarnAboutEphemeralStorage(config: DatabaseConfig): string | null {
@@ -191,5 +199,5 @@ export function shouldWarnAboutEphemeralStorage(config: DatabaseConfig): string 
   if (isOnPersistentVolume) {
     return null;
   }
-  return `WARNING: Running in production with SQLite file storage on local container filesystem. Data will be lost on restart/deploy! DB_PATH must point at the mounted disk at ${persistentMountPath}/nightlamp.db.`;
+  return `WARNING: Running in production with SQLite file storage on local container filesystem. Data will be lost on restart/deploy! DB_PATH must point at the mounted disk at ${getExpectedDatabasePath()}.`;
 }

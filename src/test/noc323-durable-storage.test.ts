@@ -1,5 +1,5 @@
 import { createDatabase, saveDatabase, getDatabaseConfig } from '../db/schema';
-import { bootId, getBootId, shouldWarnAboutEphemeralStorage, getPersistentMountPath } from '../db/connection';
+import { bootId, getBootId, shouldWarnAboutEphemeralStorage, getPersistentMountPath, getExpectedDatabasePath, DEFAULT_PERSISTENT_MOUNT_PATH } from '../db/connection';
 import { Database } from 'sql.js';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -304,17 +304,18 @@ describe('NOC-323 durable storage', () => {
       }
       assert.strictEqual(warned, true, 'warning should be called for local path');
       assert.ok(message.includes('local container filesystem'), 'warning should mention local filesystem');
-      assert.ok(message.includes('/var/data/nightlamp/nightlamp.db'), 'warning should mention the persistent path');
+      assert.ok(message.includes('/mnt/data/nightlamp.db'), 'warning should mention the decided persistent path');
+      assert.ok(!message.includes('DATABASE_URL'), 'the warning must never tell the operator to set DATABASE_URL');
     });
 
     it('does not warn when SQLite path is on persistent volume', () => {
-      process.env.DB_PATH = '/var/data/nightlamp/nightlamp.db';
+      process.env.DB_PATH = '/mnt/data/nightlamp.db';
 
       const { getDatabaseConfig } = require('../db');
       const dbConfig = getDatabaseConfig();
 
       assert.strictEqual(dbConfig.mode, 'sqlite', 'should be sqlite mode');
-      assert.strictEqual(dbConfig.sqlitePath, '/var/data/nightlamp/nightlamp.db');
+      assert.strictEqual(dbConfig.sqlitePath, '/mnt/data/nightlamp.db');
 
       const persistentMountPath = getPersistentMountPath();
       const isOnPersistentVolume = dbConfig.sqlitePath && dbConfig.sqlitePath.startsWith(persistentMountPath);
@@ -330,6 +331,48 @@ describe('NOC-323 durable storage', () => {
         console.warn = originalWarn;
       }
       assert.strictEqual(warned, false, 'warning should NOT be called for persistent path');
+    });
+
+    it('defaults the persistent mount to the decided path', () => {
+      delete process.env.PERSISTENT_MOUNT_PATH;
+
+      assert.strictEqual(
+        DEFAULT_PERSISTENT_MOUNT_PATH,
+        '/mnt/data',
+        'the decided disk mount is /mnt/data and the default must track it',
+      );
+      assert.strictEqual(getPersistentMountPath(), '/mnt/data', 'the mount default must be the decided mount');
+      assert.strictEqual(
+        getExpectedDatabasePath(),
+        '/mnt/data/nightlamp.db',
+        'the expected database file must be the decided file',
+      );
+    });
+
+    it('keeps the decided path when the override is unset and honours the override when it is set', () => {
+      delete process.env.PERSISTENT_MOUNT_PATH;
+      assert.strictEqual(getPersistentMountPath(), '/mnt/data');
+
+      process.env.PERSISTENT_MOUNT_PATH = '/opt/persistent';
+      assert.strictEqual(getPersistentMountPath(), '/opt/persistent');
+      assert.strictEqual(getExpectedDatabasePath(), '/opt/persistent/nightlamp.db');
+
+      process.env.PERSISTENT_MOUNT_PATH = '/opt/persistent/';
+      assert.strictEqual(getPersistentMountPath(), '/opt/persistent', 'a trailing slash must not double up');
+      assert.strictEqual(getExpectedDatabasePath(), '/opt/persistent/nightlamp.db');
+    });
+
+    it('names the decided database file in the warning and never names DATABASE_URL', () => {
+      delete process.env.PERSISTENT_MOUNT_PATH;
+      process.env.DB_PATH = './data/nightlamp.db';
+
+      const { getDatabaseConfig } = require('../db');
+      const warning = shouldWarnAboutEphemeralStorage(getDatabaseConfig());
+
+      assert.ok(warning, 'a local path in production must warn');
+      assert.ok(warning.includes('/mnt/data/nightlamp.db'), `the warning must name the decided file: ${warning}`);
+      assert.ok(!warning.includes('DATABASE_URL'), 'the warning must never tell the operator to set DATABASE_URL');
+      assert.ok(!warning.includes('/var/data/nightlamp'), 'the withdrawn mount path must not appear');
     });
   });
 
