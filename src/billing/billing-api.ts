@@ -1,16 +1,23 @@
 import { Database } from 'sql.js';
 import { IncomingMessage, ServerResponse } from 'http';
 import { v4 as uuid } from 'uuid';
-import { StripeClient, createCheckoutSession, createCustomerPortalSession, constructWebhookEvent } from './stripe-client';
+import { StripeClient, createCheckoutSession, createCustomerPortalSession, constructWebhookEvent, resolvePriceId } from './stripe-client';
 import { SubscriptionModel, PlanTier, Subscription, PLAN_TIERS } from './subscription';
 import { TierEnforcer } from './tier-enforcer';
 import { UsageTracker } from './usage';
 import { AuthContext, requireRole } from '../api/auth';
 import { tenantFilter, tenantOwnedFilter } from '../api/tenant';
 
+/**
+ * The role the billing surface exposes to the dashboard. It is derived from
+ * the local membership row of the authenticated caller and never from a
+ * client-supplied tenant, customer or subscription (NOC-354).
+ */
+export type BillingAccessRole = 'owner' | 'admin' | 'member' | 'none';
+
 interface BillingApiDeps {
   db: Database;
-  stripeClient: StripeClient;
+  stripeClient: StripeClient | null;
   webhookSecret: string;
   baseUrl: string;
 }
@@ -30,7 +37,7 @@ export class BillingApi {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = parsedUrl.pathname;
     const teamId = auth ? auth.teamId : null;
-    const routes = ['create-checkout-session', 'portal', 'webhook', 'webhook-events', 'subscription',
+    const routes = ['access', 'create-checkout-session', 'portal', 'webhook', 'webhook-events', 'subscription',
       'usage', 'plans', 'customer', 'summary', 'subscriptions', 'invoices', 'change-plan', 'cancel'];
     if (!routes.some(route => path === `/api/billing/${route}`)) return false;
 
@@ -58,8 +65,22 @@ export class BillingApi {
       }
     }
 
+    if (path === '/api/billing/access') {
+      if (req.method !== 'GET') {
+        res.writeHead(405);
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return true;
+      }
+      // The role is resolved from the local membership row of the caller in the
+      // tenant the request already resolved to. It never comes from a
+      // client-selected tenant, customer or subscription, and a caller without
+      // a membership reads `none` rather than an inherited role (NOC-354).
+      res.end(JSON.stringify({ role: auth ? this.resolveBillingAccessRole(auth) : 'none' }));
+      return true;
+    }
+
     if (path === '/api/billing/invoices' && req.method === 'GET') {
-      this.handleInvoices(res, auth!);
+      this.handleInvoices(req, res, auth!);
       return true;
     }
     if ((path === '/api/billing/change-plan' || path === '/api/billing/cancel') && req.method === 'POST') {
@@ -162,14 +183,65 @@ export class BillingApi {
     return rows.length ? this.subscriptions.getCustomer(rows[0].values[0][0] as string, auth.teamId) : null;
   }
 
-  private async handleInvoices(res: ServerResponse, auth: AuthContext): Promise<void> {
+  /**
+   * Resolve the billing role of the caller from the local membership rows.
+   *
+   * The auth context already carries the membership the request resolved to,
+   * but the role is re-read from the membership table here so that the answer
+   * cannot come from a stale or caller-supplied value. A caller with no
+   * membership in the resolved tenant reads `none`; a membership row whose
+   * role is not one of the known roles also reads `none` instead of being
+   * passed through. Team ownership is honoured because the owner of a team is
+   * an owner of its billing surface even when the legacy membership row is
+   * absent.
+   */
+  private resolveBillingAccessRole(auth: AuthContext): BillingAccessRole {
+    if (!auth.teamId) return 'none';
+
+    const membership = this.deps.db.exec(
+      'SELECT role FROM memberships WHERE user_id = ? AND team_id = ?',
+      [auth.userId, auth.teamId],
+    );
+    if (membership.length > 0 && membership[0].values.length > 0) {
+      const role = membership[0].values[0][0];
+      if (role === 'owner' || role === 'admin' || role === 'member') return role;
+      return 'none';
+    }
+
+    const owned = this.deps.db.exec(
+      'SELECT id FROM teams WHERE id = ? AND owner_id = ?',
+      [auth.teamId, auth.userId],
+    );
+    if (owned.length > 0 && owned[0].values.length > 0) return 'owner';
+
+    return 'none';
+  }
+
+  /**
+   * Resolve the configured Stripe client, or fail the request closed.
+   *
+   * The billing surface is mounted even when no Stripe client is configured,
+   * because the role, plan and local subscription routes do not depend on a
+   * third-party credential. A route that does depend on Stripe answers 503
+   * when the client is missing, never 404 and never 500.
+   */
+  private requireStripeClient(res: ServerResponse): StripeClient | null {
+    if (this.deps.stripeClient) return this.deps.stripeClient;
+    res.writeHead(503);
+    res.end(JSON.stringify({ error: 'Billing provider is not configured' }));
+    return null;
+  }
+
+  private async handleInvoices(req: IncomingMessage, res: ServerResponse, auth: AuthContext): Promise<void> {
+    const stripe = this.requireStripeClient(res);
+    if (!stripe) return;
     try {
       const customer = this.resolveCustomer(auth);
       if (!customer?.stripeCustomerId) {
         res.end(JSON.stringify({ invoices: [], hasMore: false }));
         return;
       }
-      const result = await this.deps.stripeClient.stripe.invoices.list({ customer: customer.stripeCustomerId, limit: 50 });
+      const result = await stripe.stripe.invoices.list({ customer: customer.stripeCustomerId, limit: 50 });
       const invoices = result.data.map((invoice: any) => ({
         id: invoice.id, number: invoice.number, status: invoice.status, currency: invoice.currency,
         amountDue: invoice.amount_due, amountPaid: invoice.amount_paid, created: invoice.created,
@@ -196,10 +268,22 @@ export class BillingApi {
         return;
       }
       if (this.rejectIdentity(input, res)) return;
+      let priceId: string | null = null;
       if (!cancel && (typeof input.planTier !== 'string' || !Object.hasOwn(PLAN_TIERS, input.planTier))) {
         res.writeHead(400);
         res.end(JSON.stringify({ error: 'Invalid plan tier' }));
         return;
+      }
+      if (!cancel) {
+        // Fail closed before any Stripe call: a missing price id refuses with
+        // the missing variable named instead of reaching Stripe (NOC-318).
+        try {
+          priceId = resolvePriceId(this.deps.stripeClient!, input.planTier as string);
+        } catch (err: any) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: err.message }));
+          return;
+        }
       }
       try {
         const customer = this.resolveCustomer(auth);
@@ -209,21 +293,24 @@ export class BillingApi {
           res.end(JSON.stringify({ error: 'No current subscription' }));
           return;
         }
-        const stripe = this.deps.stripeClient.stripe;
-        const remote = await stripe.subscriptions.retrieve(sub.stripeSubscriptionId);
+
+        const stripe = this.requireStripeClient(res);
+        if (!stripe) return;
+
+        const remote = await stripe.stripe.subscriptions.retrieve(sub.stripeSubscriptionId);
         const remoteCustomer = typeof remote.customer === 'string' ? remote.customer : remote.customer?.id;
         if (remoteCustomer !== customer.stripeCustomerId) throw new Error('Subscription customer mismatch');
         if (cancel) {
-          await stripe.subscriptions.update(sub.stripeSubscriptionId, { cancel_at_period_end: true });
+          await stripe.stripe.subscriptions.update(sub.stripeSubscriptionId, { cancel_at_period_end: true });
           const scope = tenantFilter('team_id', auth.teamId);
           this.deps.db.run(`UPDATE subscriptions SET cancel_at_period_end = 1, updated_at = datetime('now') WHERE id = ? AND ${scope.clause}`, [sub.id, ...scope.params]);
         } else {
           const planTier = input.planTier as PlanTier;
-          const price = this.deps.stripeClient.priceIds[planTier];
-          if (!price || remote.items?.data?.length !== 1) throw new Error('Unsupported subscription configuration');
+          const price = priceId ?? resolvePriceId(stripe, planTier);
+          if (remote.items?.data?.length !== 1) throw new Error('Unsupported subscription configuration');
           // Leave proration_behavior unspecified: retain Stripe's configured/default
           // policy rather than accepting a client-controlled billing policy.
-          await stripe.subscriptions.update(sub.stripeSubscriptionId, {
+          await stripe.stripe.subscriptions.update(sub.stripeSubscriptionId, {
             items: [{ id: remote.items.data[0].id, price }], payment_behavior: 'error_if_incomplete',
           });
           const scope = tenantFilter('team_id', auth.teamId);
@@ -289,11 +376,24 @@ export class BillingApi {
           return;
         }
 
+        // Fail closed before any Stripe call: an unconfigured price id refuses
+        // with the missing variable named instead of reaching Stripe (NOC-318).
+        try {
+          resolvePriceId(this.deps.stripeClient!, planTier);
+        } catch (err: any) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: err.message }));
+          return;
+        }
+
         const successUrl = `${this.deps.baseUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`;
         const cancelUrl = `${this.deps.baseUrl}/billing/cancel`;
 
+        const stripe = this.requireStripeClient(res);
+        if (!stripe) return;
+
         const session = await createCheckoutSession(
-          this.deps.stripeClient,
+          stripe,
           customer.stripeCustomerId,
           planTier,
           successUrl,
@@ -312,6 +412,9 @@ export class BillingApi {
   }
 
   private handlePortalRedirect(req: IncomingMessage, res: ServerResponse, auth: AuthContext): void {
+    const stripe = this.requireStripeClient(res);
+    if (!stripe) return;
+
     const customer = this.resolveCustomer(auth);
     if (!customer || !customer.stripeCustomerId) {
       res.writeHead(404);
@@ -320,7 +423,7 @@ export class BillingApi {
     }
 
     createCustomerPortalSession(
-      this.deps.stripeClient,
+      stripe,
       customer.stripeCustomerId,
       `${this.deps.baseUrl}/dashboard/billing`,
     ).then((session) => {
@@ -369,6 +472,9 @@ export class BillingApi {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', async () => {
+      const stripe = this.requireStripeClient(res);
+      if (!stripe) return;
+
       const signature = req.headers['stripe-signature'] as string;
       if (!signature) {
         res.writeHead(400);
@@ -379,7 +485,7 @@ export class BillingApi {
       let event: any;
       try {
         event = await constructWebhookEvent(
-          this.deps.stripeClient,
+          stripe,
           body,
           signature,
           this.deps.webhookSecret,
