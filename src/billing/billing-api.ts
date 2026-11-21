@@ -189,8 +189,22 @@ export class BillingApi {
       // white_glove is withdrawn from sale (CEO ratified on NOC-327); existing
       // subscriptions are honoured but new signups and plan changes to white_glove
       // are not allowed.
-      const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'enterprise', 'basic', 'advanced'];
+      // free and enterprise are not self-serve purchasable tiers: free has no
+      // Stripe price, enterprise is custom pricing. They are published in the
+      // plans list but rejected at checkout/change-plan with a clear message.
+      const allowedPlanTiers: PlanTier[] = ['pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
       if (!cancel && (typeof input.planTier !== 'string' || !allowedPlanTiers.includes(input.planTier as PlanTier))) {
+        const tier = input.planTier as PlanTier;
+        if (tier === 'free') {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'Free plan does not require checkout' }));
+          return;
+        }
+        if (tier === 'enterprise') {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'Enterprise plans require custom pricing; contact sales' }));
+          return;
+        }
         res.writeHead(400);
         res.end(JSON.stringify({ error: 'Invalid plan tier' }));
         return;
@@ -292,8 +306,20 @@ export class BillingApi {
 
         // white_glove is withdrawn from sale (CEO ratified on NOC-327); existing
         // subscriptions are honoured but new signups to white_glove are not allowed.
-        const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'enterprise', 'basic', 'advanced'];
+        // free and enterprise are not self-serve purchasable tiers: free has no
+        // Stripe price, enterprise is custom pricing.
+        const allowedPlanTiers: PlanTier[] = ['pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
         if (!allowedPlanTiers.includes(planTier as PlanTier)) {
+          if (planTier === 'free') {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: 'Free plan does not require checkout' }));
+            return;
+          }
+          if (planTier === 'enterprise') {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: 'Enterprise plans require custom pricing; contact sales' }));
+            return;
+          }
           res.writeHead(400);
           res.end(JSON.stringify({ error: `Invalid plan tier: ${planTier}` }));
           return;
