@@ -406,8 +406,10 @@ describe('NOC-323 durable storage', () => {
         }
       }
 
-      // Verify total table count matches (37 tables)
-      assert.strictEqual(pgTableNames.length, 37, `Postgres migration should have 37 tables, got ${pgTableNames.length}`);
+      // Verify total table count matches (42 tables: the shipped snapshot plus
+      // the monitored app registry, health snapshots, analytics events, feedback
+      // responses and the migration ledger the SQLite schema creates)
+      assert.strictEqual(pgTableNames.length, 42, `Postgres migration should have 42 tables, got ${pgTableNames.length}`);
     });
   });
 

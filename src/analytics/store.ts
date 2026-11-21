@@ -1,5 +1,6 @@
 import type { Database } from 'sql.js';
 import { tenantFilter } from '../api/tenant';
+import type { TenantFilter } from '../api/tenant';
 import type { ValidatedAnalyticsEvent } from './event-contract';
 
 export interface AnalyticsEventRecord {
@@ -145,12 +146,31 @@ export function markAnalyticsForward(
   );
 }
 
+/**
+ * Scope for the analytics collections.
+ *
+ * A caller with a team sees that team's rows. A caller without one sees only
+ * the rows it recorded itself, so one signed-in user can never read another
+ * user's personal analytics events (NOC-303 finding 3). An empty caller
+ * identity matches nothing.
+ */
+export function analyticsScope(teamId: string | null, userId: string): TenantFilter {
+  if (teamId !== null) {
+    return { clause: 'team_id = ?', params: [teamId] };
+  }
+  if (!userId) {
+    return { clause: '1 = 0', params: [] };
+  }
+  return { clause: 'team_id IS NULL AND user_id = ?', params: [userId] };
+}
+
 export function listAnalyticsEvents(
   db: Database,
   teamId: string | null,
   limit = 50,
+  userId = '',
 ): AnalyticsEventRecord[] {
-  const scope = tenantFilter('team_id', teamId);
+  const scope = analyticsScope(teamId, userId);
   const result = db.exec(
     `SELECT id, event, schema_version, occurred_at, team_id, user_id, properties, received_at, forwarded, forward_error
      FROM analytics_events WHERE ${scope.clause} ORDER BY received_at DESC LIMIT ?`,
@@ -158,6 +178,140 @@ export function listAnalyticsEvents(
   );
   if (result.length === 0) return [];
   return result[0].values.map((row: any[]) => mapAnalyticsRow(row));
+}
+
+function canonicalize(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(canonicalize);
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+    sorted[key] = canonicalize((value as Record<string, unknown>)[key]);
+  }
+  return sorted;
+}
+
+function stableStringify(value: unknown): string {
+  return JSON.stringify(canonicalize(value));
+}
+
+function normalizeSubmittedPayload(submitted: {
+  kind: string;
+  feedback_type?: string;
+  survey_id?: string;
+  score?: number;
+  response: Record<string, unknown>;
+}): string {
+  return stableStringify({
+    kind: submitted.kind,
+    feedback_type: submitted.feedback_type ?? null,
+    survey_id: submitted.survey_id ?? null,
+    score: submitted.score ?? null,
+    response: submitted.response,
+  });
+}
+
+function normalizeStoredPayload(record: FeedbackResponseRecord): string {
+  return stableStringify({
+    kind: record.kind,
+    feedback_type: record.feedback_type ?? null,
+    survey_id: record.survey_id ?? null,
+    score: record.score === null ? null : Number(record.score),
+    response: record.response,
+  });
+}
+
+export function feedbackPayloadMatches(
+  record: FeedbackResponseRecord,
+  submitted: {
+    kind: string;
+    feedback_type?: string;
+    survey_id?: string;
+    score?: number;
+    response: Record<string, unknown>;
+  },
+): boolean {
+  return normalizeStoredPayload(record) === normalizeSubmittedPayload(submitted);
+}
+
+export function recordFeedbackSubmission(
+  db: Database,
+  input: {
+    teamId: string | null;
+    userId: string;
+    response: {
+      response_id: string;
+      kind: 'feedback' | 'survey';
+      feedback_type?: string;
+      survey_id?: string;
+      score?: number;
+      response: Record<string, unknown>;
+    };
+    event: ValidatedAnalyticsEvent;
+    properties: Record<string, unknown>;
+    receivedAt?: string;
+  },
+): { inserted: boolean; record: FeedbackResponseRecord } {
+  const dedupKey = feedbackDedupKey(input.teamId, input.response.response_id);
+  const receivedAt = input.receivedAt ?? new Date().toISOString();
+
+  const existing = db.exec(
+    'SELECT id, kind, feedback_type, survey_id, score, team_id, user_id, response, event_id, received_at FROM feedback_responses WHERE dedup_key = ?',
+    [dedupKey],
+  );
+  if (existing.length > 0 && existing[0].values.length > 0) {
+    return { inserted: false, record: mapFeedbackRow(existing[0].values[0]) };
+  }
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.run(
+      `INSERT INTO feedback_responses (id, dedup_key, team_id, user_id, kind, feedback_type, survey_id, score, response, event_id, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.response.response_id,
+        dedupKey,
+        input.teamId,
+        input.userId,
+        input.response.kind,
+        input.response.feedback_type ?? null,
+        input.response.survey_id ?? null,
+        input.response.score ?? null,
+        JSON.stringify(input.response.response),
+        input.event.event_id,
+        receivedAt,
+      ],
+    );
+
+    db.run(
+      `INSERT INTO analytics_events (id, dedup_key, team_id, user_id, event, schema_version, occurred_at, properties)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.event.event_id,
+        analyticsDedupKey(input.teamId, input.event.event_id),
+        input.teamId,
+        input.userId,
+        input.event.event,
+        input.event.schema_version,
+        input.event.timestamp,
+        JSON.stringify(input.properties),
+      ],
+    );
+
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // The transaction is already closed by SQLite.
+    }
+    throw error;
+  }
+
+  const stored = db.exec(
+    'SELECT id, kind, feedback_type, survey_id, score, team_id, user_id, response, event_id, received_at FROM feedback_responses WHERE dedup_key = ?',
+    [dedupKey],
+  );
+  return { inserted: true, record: mapFeedbackRow(stored[0].values[0]) };
 }
 
 export function recordFeedbackResponse(
@@ -242,8 +396,9 @@ export function listFeedbackResponses(
   db: Database,
   teamId: string | null,
   limit = 50,
+  userId = '',
 ): FeedbackResponseRecord[] {
-  const scope = tenantFilter('team_id', teamId);
+  const scope = analyticsScope(teamId, userId);
   const result = db.exec(
     `SELECT id, kind, feedback_type, survey_id, score, team_id, user_id, response, event_id, received_at
      FROM feedback_responses WHERE ${scope.clause} ORDER BY received_at DESC LIMIT ?`,
@@ -257,8 +412,9 @@ export function getFeedbackResponse(
   db: Database,
   teamId: string | null,
   responseId: string,
+  userId = '',
 ): FeedbackResponseRecord | null {
-  const scope = tenantFilter('team_id', teamId);
+  const scope = analyticsScope(teamId, userId);
   const result = db.exec(
     `SELECT id, kind, feedback_type, survey_id, score, team_id, user_id, response, event_id, received_at
      FROM feedback_responses WHERE id = ? AND ${scope.clause}`,

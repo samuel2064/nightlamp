@@ -9,12 +9,15 @@ import {
   validateFeedbackResponse,
 } from './event-contract';
 import {
+  feedbackPayloadMatches,
   getFeedbackResponse,
   listAnalyticsEvents,
   listFeedbackResponses,
   markAnalyticsForward,
   recordAnalyticsEvent,
   recordFeedbackResponse,
+  recordFeedbackSubmission,
+  type FeedbackResponseRecord,
 } from './store';
 import { forwardAnalyticsEvent } from './forwarder';
 
@@ -23,6 +26,21 @@ const SCHEMA_VERSION = '1.0';
 
 function hashIdentifier(value: string): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+/**
+ * Render a stored timestamp as the ISO 8601 form the API contract returns.
+ *
+ * The migration stores `received_at` with SQLite's `datetime('now')`, which is
+ * `YYYY-MM-DD HH:MM:SS` and not the `T`-separated UTC form the contract defines.
+ * Every timestamp that reaches a caller passes through here, so an original
+ * receipt and a retried receipt cannot differ only in their shape.
+ */
+function normalizeTimestamp(value: unknown): string {
+  if (typeof value !== 'string' || !value) return new Date().toISOString();
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return new Date(value.replace(' ', 'T') + 'Z').toISOString();
+  return parsed.toISOString();
 }
 
 export class AnalyticsApi {
@@ -81,6 +99,21 @@ export class AnalyticsApi {
       return null;
     }
     return auth;
+  }
+
+  /**
+   * A caller without a team membership can read only the analytics it recorded
+   * itself, and a caller that recorded none has no scope at all. Answer 403
+   * rather than an empty list, so a caller who owns nothing is refused instead
+   * of told that nothing exists anywhere.
+   */
+  private refuseWhenPersonalScopeEmpty(res: ServerResponse, auth: AuthContext, count: number): boolean {
+    if (auth.teamId === null && count === 0) {
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: 'Analytics require an organization or a recorded event', code: 'FORBIDDEN' }));
+      return true;
+    }
+    return false;
   }
 
   private readBody(req: IncomingMessage, res: ServerResponse): Promise<string | null> {
@@ -218,7 +251,8 @@ export class AnalyticsApi {
     const requestedLimit = Number(parsedUrl.searchParams.get('limit') || '100');
     const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 500) : 100;
 
-    const items = listAnalyticsEvents(this.db, caller.teamId, limit);
+    const items = listAnalyticsEvents(this.db, caller.teamId, limit, caller.userId);
+    if (this.refuseWhenPersonalScopeEmpty(res, caller, items.length)) return;
     res.writeHead(200);
     res.end(JSON.stringify({ items, count: items.length }));
   }
@@ -254,24 +288,27 @@ export class AnalyticsApi {
     const eventName = value.kind === 'survey' ? 'survey_completed' : 'feedback_submitted';
     const eventId = value.response_id;
 
-    const stored = recordFeedbackResponse(this.db, {
-      teamId: caller.teamId,
-      userId: caller.userId,
-      response: value,
-      eventId,
-    });
+    const existing = getFeedbackResponse(this.db, caller.teamId, value.response_id, caller.userId);
+    if (existing) {
+      if (!feedbackPayloadMatches(existing, value)) {
+        res.writeHead(409);
+        res.end(JSON.stringify({
+          error: 'response_id was already used with a different payload',
+          code: 'CONFLICT',
+        }));
+        return;
+      }
 
-    if (!stored.inserted) {
-      res.writeHead(200);
-      res.end(JSON.stringify({
-        success: true,
-        duplicate: true,
-        response_id: stored.record.response_id,
-        event_id: stored.record.event_id,
-        event: stored.record.kind === 'survey' ? 'survey_completed' : 'feedback_submitted',
-        received_at: stored.record.received_at,
-      }));
-      return;
+res.writeHead(200);
+    res.end(JSON.stringify({
+      success: true,
+      duplicate: true,
+      response_id: existing.response_id,
+      event_id: existing.event_id,
+      event: existing.kind === 'survey' ? 'survey_completed' : 'feedback_submitted',
+      received_at: normalizeTimestamp(existing.received_at),
+    }));
+    return;
     }
 
     const eventProperties: Record<string, unknown> = { response_id: eventId };
@@ -288,20 +325,31 @@ export class AnalyticsApi {
     }
     Object.assign(eventProperties, this.identityProperties(caller));
 
+    const receivedAt = new Date().toISOString();
+
     const event: ValidatedAnalyticsEvent = {
       event: eventName,
       event_id: eventId,
       schema_version: SCHEMA_VERSION,
-      timestamp: new Date().toISOString(),
+      timestamp: receivedAt,
       properties: eventProperties,
     };
 
-    recordAnalyticsEvent(this.db, {
-      teamId: caller.teamId,
-      userId: caller.userId,
-      event,
-      properties: eventProperties,
-    });
+    let record: { inserted: boolean; record: FeedbackResponseRecord } | null = null;
+    try {
+      record = recordFeedbackSubmission(this.db, {
+        teamId: caller.teamId,
+        userId: caller.userId,
+        response: value,
+        event,
+        properties: eventProperties,
+        receivedAt,
+      });
+    } catch (err: any) {
+      res.writeHead(500);
+      res.end(JSON.stringify({ error: 'Failed to record feedback response' }));
+      return;
+    }
 
     const forwardStatus = await this.forwardStoredEvent(caller, event, eventProperties);
 
@@ -309,10 +357,10 @@ export class AnalyticsApi {
     res.end(JSON.stringify({
       success: true,
       duplicate: false,
-      response_id: stored.record.response_id,
+      response_id: value.response_id,
       event_id: eventId,
       event: eventName,
-      received_at: stored.record.received_at,
+      received_at: record.record.received_at,
       forward_status: forwardStatus,
     }));
   }
@@ -325,7 +373,8 @@ export class AnalyticsApi {
     const requestedLimit = Number(parsedUrl.searchParams.get('limit') || '50');
     const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 200) : 50;
 
-    const items = listFeedbackResponses(this.db, caller.teamId, limit);
+    const items = listFeedbackResponses(this.db, caller.teamId, limit, caller.userId);
+    if (this.refuseWhenPersonalScopeEmpty(res, caller, items.length)) return;
     res.writeHead(200);
     res.end(JSON.stringify({ items, count: items.length }));
   }
@@ -334,7 +383,7 @@ export class AnalyticsApi {
     const caller = this.requireAuth(res, auth);
     if (!caller) return;
 
-    const record = getFeedbackResponse(this.db, caller.teamId, responseId);
+    const record = getFeedbackResponse(this.db, caller.teamId, responseId, caller.userId);
     if (!record) {
       res.writeHead(404);
       res.end(JSON.stringify({ error: 'Response not found' }));

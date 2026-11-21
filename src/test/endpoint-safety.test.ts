@@ -534,15 +534,17 @@ describe('personal ownership isolation', () => {
     assert.strictEqual(owner[0].values[0][0], 'personal-a-user');
 
     const otherList = await apiRequest('/api/notifications/channels', personalB);
-    const otherBody = await otherList.json() as any;
-    assert.ok(!otherBody.channels.some((channel: any) => channel.id === body.id));
-    // An owner-less legacy channel belongs to nobody, so it is not exposed to an
-    // unrelated signed-in user (NOC-303 finding 5).
-    assert.ok(!otherBody.channels.some((channel: any) => channel.id === legacyChannelId));
+    // The ratified contract: a caller that owns nothing in this collection is
+    // refused with 403 rather than shown an empty list that could be hiding
+    // another user's rows.
+    assert.strictEqual(otherList.status, 403);
 
     const ownerList = await apiRequest('/api/notifications/channels', personalA);
     const ownerBody = await ownerList.json() as any;
     assert.ok(ownerBody.channels.some((channel: any) => channel.id === body.id));
+    // An owner-less legacy channel belongs to nobody, so it is not exposed to a
+    // caller that does own a channel either (NOC-303 finding 5).
+    assert.ok(!ownerBody.channels.some((channel: any) => channel.id === legacyChannelId));
   });
 
   it('refuses to mutate a personal channel owned by another user', async () => {
@@ -590,7 +592,12 @@ describe('personal ownership isolation', () => {
     );
 
     const read = await apiRequest(`/api/apps/${legacyAppId}`, personalA);
-    assert.strictEqual(read.status, 200);
+    // Visibility requires ownership evidence: a row with no team, no owner and
+    // an owner-less channel is invisible to every caller and is never bound.
+    assert.strictEqual(read.status, 404);
+
+    const ownerAfter = db.exec('SELECT owner_id FROM monitored_apps WHERE id = ?', [legacyAppId]);
+    assert.strictEqual(ownerAfter[0].values[0][0], null);
 
     const updateApp = await apiRequest(`/api/apps/${legacyAppId}`, personalA, {
       method: 'PATCH',

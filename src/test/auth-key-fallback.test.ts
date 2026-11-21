@@ -144,6 +144,27 @@ describe('Unloadable CLERK_JWT_PUBLIC_KEY (NOC-263 regression)', () => {
 
     before(async () => {
       db = await createDatabase();
+      // The probe uses /api/events, which is tenant-scoped, so the JWKS
+      // fallback must authenticate a principal that actually belongs to a
+      // tenant instead of a teamless caller that would be refused with 403.
+      db.run('INSERT INTO users (id, clerk_user_id, email, name) VALUES (?, ?, ?, ?)', [
+        'fallback-api-user',
+        'fallback-user',
+        'fallback-fixture-identity',
+        'Fallback User',
+      ]);
+      db.run('INSERT INTO teams (id, name, slug, owner_id) VALUES (?, ?, ?, ?)', [
+        'fallback-api-team',
+        'Fallback Team',
+        'fallback-api-team',
+        'fallback-api-user',
+      ]);
+      db.run('INSERT INTO memberships (id, team_id, user_id, role) VALUES (?, ?, ?, ?)', [
+        'fallback-api-membership',
+        'fallback-api-team',
+        'fallback-api-user',
+        'owner',
+      ]);
       server = startApiServer(db, { port: 0 });
       port = (server.address() as any).port;
     });

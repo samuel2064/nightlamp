@@ -5,6 +5,44 @@ import { ChannelType, ChannelConfig } from '../alerting/channels';
 import { processNotification, sendDirectNotification, getChannelType, getChannelConfig, checkRateLimit, logDelivery, markDelivered } from './service';
 import { AuthContext } from '../api/auth';
 import { rowBelongsToScope, scopedTenantFilter } from '../api/tenant';
+import { isBlockedAddress, isBlockedHostname } from '../engine/outbound-safety';
+import * as net from 'net';
+
+function isBlockedHost(host: string): boolean {
+  if (isBlockedHostname(host)) return true;
+  if (net.isIP(host)) return isBlockedAddress(host);
+  return false;
+}
+
+function isBlockedChannelDestination(type: string, config: Record<string, unknown>): boolean {
+  if (type === 'slack-webhook') {
+    let parsed: URL;
+    try {
+      parsed = new URL(String(config.webhookUrl || ''));
+    } catch {
+      return true;
+    }
+    return isBlockedHost(parsed.hostname);
+  }
+
+  if (type === 'in-app-websocket') {
+    let parsed: URL;
+    try {
+      parsed = new URL(String(config.url || ''));
+    } catch {
+      return true;
+    }
+    return isBlockedHost(parsed.hostname);
+  }
+
+  if (type === 'email-smtp') {
+    const host = String(config.smtpHost || '').trim().toLowerCase();
+    if (!host) return true;
+    return isBlockedHost(host);
+  }
+
+  return false;
+}
 
 export class NotificationApi {
   private validTypes: Set<string> = new Set(['slack-webhook', 'email-smtp', 'in-app-websocket']);
@@ -50,10 +88,35 @@ export class NotificationApi {
   }
 
   private handleListChannels(req: IncomingMessage, res: ServerResponse, teamId: string | null, userId: string): void {
+    // The scope never widens to the owner-less bucket, so a caller without a
+    // team membership and without a personal channel sees nothing rather than
+    // another user's rows (finding 5), and a personal channel stays invisible to
+    // other personal users.
+    const channels = this.scopedChannels(teamId, userId);
+
+    // A signed-in caller without a team membership and without a personally
+    // owned channel has no scope to list. Answer 403 rather than an empty list,
+    // so a caller who owns nothing is refused instead of told that nothing
+    // exists anywhere.
+    if (teamId === null && channels.length === 0) {
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: 'Notification channels require an organization or a personal channel', code: 'FORBIDDEN' }));
+      return;
+    }
+
+    res.end(JSON.stringify({ channels, count: channels.length }));
+  }
+
+  private scopedChannels(teamId: string | null, userId: string) {
+    // The scope never widens to the owner-less bucket, so a caller without a
+    // team membership and without a personal channel sees nothing rather than
+    // another user's rows (NOC-303 finding 5).
     const scope = scopedTenantFilter('alert_channels', teamId, userId);
-    const sql = `SELECT id, name, type, enabled, team_id, created_at, updated_at FROM alert_channels WHERE ${scope.clause} ORDER BY created_at DESC`;
-    const result = this.db.exec(sql, scope.params);
-    const channels = result.length > 0 ? result[0].values.map((row: any) => ({
+    const result = this.db.exec(
+      `SELECT id, name, type, enabled, team_id, created_at, updated_at FROM alert_channels WHERE ${scope.clause} ORDER BY created_at DESC`,
+      scope.params,
+    );
+    return result.length > 0 ? result[0].values.map((row: any) => ({
       id: row[0],
       name: row[1],
       type: row[2],
@@ -62,8 +125,6 @@ export class NotificationApi {
       createdAt: row[5],
       updatedAt: row[6],
     })) : [];
-
-    res.end(JSON.stringify({ channels, count: channels.length }));
   }
 
   private handleCreateChannel(req: IncomingMessage, res: ServerResponse, teamId: string | null, userId: string): void {
@@ -85,6 +146,12 @@ export class NotificationApi {
         }
 
         const mappedType = type === 'slack-webhook' ? 'slack' : type === 'email-smtp' ? 'email' : type;
+
+        if (isBlockedChannelDestination(type, config)) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'config must target a public destination' }));
+          return;
+        }
 
         const id = uuidv4();
         this.db.run(
@@ -121,6 +188,8 @@ export class NotificationApi {
 
         updates.push("updated_at = datetime('now')");
         const scope = scopedTenantFilter('alert_channels', teamId, userId);
+        // A caller that owns nothing has no write predicate, so the update
+        // matches no row and is refused rather than silently succeeding.
         this.db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${scope.clause}`, [...params, channelId, ...scope.params]);
         if (this.db.getRowsModified() === 0) {
           res.writeHead(404);

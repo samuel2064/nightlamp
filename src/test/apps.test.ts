@@ -191,8 +191,8 @@ describe('tenant-scoped app registry', () => {
 
     personalChannelId = uuidv4();
     db.run(
-      'INSERT INTO alert_channels (id, name, type, config, team_id) VALUES (?, ?, ?, ?, NULL)',
-      [personalChannelId, 'Personal alerts', 'slack', '{}'],
+      'INSERT INTO alert_channels (id, name, type, config, team_id, owner_id) VALUES (?, ?, ?, ?, NULL, ?)',
+      [personalChannelId, 'Personal alerts', 'slack', '{}', 'personal-user'],
     );
   });
 

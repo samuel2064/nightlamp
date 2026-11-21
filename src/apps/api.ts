@@ -332,7 +332,42 @@ export class AppsApi {
     return parsed;
   }
 
+  /**
+   * Attribute ownership for application rows that predate the ownership column.
+   *
+   * A legacy row carries `team_id` NULL and `owner_id` NULL, and the only
+   * ownership signal left on it is the alert channel it is attached to. Where
+   * that channel has an owner, the row takes it, so the personal scope can
+   * resolve it instead of refusing the caller who does own it. The update is
+   * additive and idempotent: it never removes an owner, never rebuilds the
+   * table, and after it runs the rows no longer match the predicate.
+   *
+   * It runs on the read path rather than only in a migration, because rows can
+   * still be written with a null owner by a deployment that predates the
+   * column, and an owner-less row belongs to nobody.
+   */
+  private attributeLegacyOwnership(): void {
+    this.db.run(`
+      UPDATE monitored_apps
+      SET owner_id = (
+        SELECT alert_channels.owner_id
+        FROM alert_channels
+        WHERE alert_channels.id = monitored_apps.alert_channel_id
+      )
+      WHERE team_id IS NULL
+        AND owner_id IS NULL
+        AND alert_channel_id IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM alert_channels
+          WHERE alert_channels.id = monitored_apps.alert_channel_id
+            AND alert_channels.owner_id IS NOT NULL
+        )
+    `);
+  }
+
   private handleList(res: ServerResponse, auth: AuthContext): void {
+    this.attributeLegacyOwnership();
     const scope = scopedTenantFilter('monitored_apps', auth.teamId, auth.userId, true);
     const result = this.db.exec(
       `SELECT id, team_id, name, url, platform, check_type, check_target, check_interval_sec, check_timeout_sec, keyword, enabled, alert_channel_id, created_at, updated_at
@@ -341,10 +376,21 @@ export class AppsApi {
     );
     const records = result.length > 0 ? result[0].values.map((row: any) => this.mapApp(row)) : [];
     const apps = records.map((record) => this.toResponse(record));
+
+    // A signed-in caller without a team membership and without any personally
+    // owned application has no scope to list. Answer 403 rather than an empty
+    // list, so a caller who owns nothing is refused instead of told that nothing
+    // exists anywhere.
+    if (auth.teamId === null && apps.length === 0) {
+      this.send(res, 403, { error: 'Applications require an organization or a personal application', code: 'FORBIDDEN' });
+      return;
+    }
+
     this.send(res, 200, { apps, count: apps.length });
   }
 
   private handleGet(appId: string, res: ServerResponse, auth: AuthContext): void {
+    this.attributeLegacyOwnership();
     if (!this.appInScope(auth, appId)) {
       this.send(res, 404, { error: 'App not found' });
       return;
@@ -711,6 +757,14 @@ const scope = scopedTenantFilter('monitored_apps', auth.teamId, auth.userId, fal
   private assertMutable(auth: AuthContext, appId: string, res: ServerResponse): boolean {
     if (this.appInScope(auth, appId)) {
       return true;
+    }
+    // A caller without a team membership and without a personally owned
+    // application has no write scope at all, so the mutation is refused. A
+    // caller with a team asking for a row that is not its own is told the row
+    // does not exist, which does not leak another tenant's rows.
+    if (auth.teamId === null) {
+      this.send(res, 403, { error: 'Applications require an organization or a personal application', code: 'FORBIDDEN' });
+      return false;
     }
     this.send(res, 404, { error: 'App not found' });
     return false;

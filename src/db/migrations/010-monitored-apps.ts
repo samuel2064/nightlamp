@@ -15,6 +15,7 @@ export function up(db: Database): void {
       keyword TEXT,
       enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
       alert_channel_id TEXT NOT NULL,
+      owner_id TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (team_id) REFERENCES teams(id),

@@ -763,21 +763,21 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
                 return;
               }
 const id = uuidv4();
-              db.run(
-                `INSERT INTO alert_channels (id, name, type, config, team_id, owner_id) VALUES (?, ?, ?, ?, ?, ?)`,
-                [id, name, type, JSON.stringify(config), teamId, auth?.userId ?? null]
-              );
-              res.end(JSON.stringify({ success: true, id, name, type }));
-            } catch (err: any) {
-              res.writeHead(400);
-              res.end(JSON.stringify({ error: err.message }));
-            }
-          });
-          return;
+          db.run(
+            `INSERT INTO alert_channels (id, name, type, config, team_id, owner_id) VALUES (?, ?, ?, ?, ?, ?)`,
+            [id, name, type, JSON.stringify(config), teamId, auth?.userId ?? null]
+          );
+          res.end(JSON.stringify({ success: true, id, name, type }));
+        } catch (err: any) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: err.message }));
         }
-        if (!requireTenantScope(res, teamId)) {
-          return;
-        }
+      });
+      return;
+    }
+    if (!requireTenantScope(res, teamId)) {
+      return;
+    }
         const tenantScope = tenantOwnedFilter('team_id', teamId);
         const result = db.exec(`SELECT id, name, type, enabled, team_id, created_at FROM alert_channels WHERE ${tenantScope.clause} ORDER BY created_at DESC`, tenantScope.params);
         const channels = result.length > 0 ? result[0].values.map((row: any) => ({
@@ -789,10 +789,25 @@ const id = uuidv4();
 
       if (path.startsWith('/api/alerting/channels/') && req.method === 'DELETE') {
         const channelId = path.split('/').pop();
-        if (!channelId) { res.writeHead(400); res.end(JSON.stringify({ error: 'Channel ID required' })); return; }
+        if (!channelId) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'Channel ID required' }));
+          return;
+        }
         if (teamId === null || !rowBelongsToTenant(db, 'alert_channels', channelId, teamId)) {
           res.writeHead(404);
           res.end(JSON.stringify({ error: 'Channel not found' }));
+          return;
+        }
+        // A monitored application is unusable without its alert channel, so the
+        // channel is refused while one still references it and nothing is
+        // deleted. The foreign key in the apps migration does not protect this
+        // path, because foreign-key enforcement is only enabled inside the apps
+        // API's own transaction helper.
+        const attached = db.exec('SELECT id FROM monitored_apps WHERE alert_channel_id = ? LIMIT 1', [channelId]);
+        if (attached.length > 0 && attached[0].values.length > 0) {
+          res.writeHead(409);
+          res.end(JSON.stringify({ error: 'Channel is referenced by a monitored application', code: 'CHANNEL_IN_USE' }));
           return;
         }
         db.run('DELETE FROM alert_rules WHERE channel_id = ?', [channelId]);

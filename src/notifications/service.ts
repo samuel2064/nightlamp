@@ -155,12 +155,21 @@ export function checkDedup(db: Database, channelId: string, fingerprint: string)
   return { suppressed: false, suppressUntil: null };
 }
 
+const DEDUP_MINUTE_LIMIT = 1440;
+
+function normalizeDedupMinutes(durationMinutes: number): number {
+  const parsed = typeof durationMinutes === 'number' ? durationMinutes : Number(durationMinutes);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.min(Math.max(Math.trunc(parsed), 0), DEDUP_MINUTE_LIMIT);
+}
+
 export function setDedupSuppression(db: Database, channelId: string, fingerprint: string, durationMinutes: number): void {
+  const minutes = normalizeDedupMinutes(durationMinutes);
   db.run(
     `UPDATE notification_deduplication
-     SET suppress_until = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+${durationMinutes} minutes')
+     SET suppress_until = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+' || CAST(? AS TEXT) || ' minutes')
      WHERE channel_id = ? AND fingerprint = ?`,
-    [channelId, fingerprint]
+    [minutes, channelId, fingerprint]
   );
 }
 

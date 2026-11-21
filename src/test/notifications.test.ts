@@ -386,7 +386,7 @@ describe('Notification Service', function () {
     it('POST /api/notifications/channels should create in-app-websocket channel', async function () {
       const result = await fetchFromApi('/api/notifications/channels', {
         method: 'POST',
-        body: { name: 'Real-time WS', type: 'in-app-websocket', config: { url: 'http://localhost:9090/notify', reconnect: true } },
+        body: { name: 'Real-time WS', type: 'in-app-websocket', config: { url: 'https://sockets.example.com/notify', reconnect: true } },
       });
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.type, 'in-app-websocket');
