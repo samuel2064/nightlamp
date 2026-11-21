@@ -63,8 +63,9 @@ describe('Billing - NOC-313 catalogue dry run', () => {
 
   it('documents the env vars a creation run would set', () => {
     const output = renderObjectList();
-    expect(output).to.include('STRIPE_PRICE_PRO_MONTHLY');
-    expect(output).to.include('STRIPE_PRICE_TEAM_YEARLY');
+    expect(output).to.include('STRIPE_PRICE_BASIC');
+    expect(output).to.include('STRIPE_PRICE_ADVANCED');
+    expect(output).to.include('STRIPE_PRICE_WHITE_GLOVE');
   });
 });
 

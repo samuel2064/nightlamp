@@ -77,7 +77,7 @@ export function renderObjectList(
     lines.push('');
   }
   lines.push('After a reviewed creation run, set the price env vars to the created ids:');
-  lines.push('  STRIPE_PRICE_PRO_MONTHLY, STRIPE_PRICE_PRO_YEARLY, STRIPE_PRICE_TEAM_MONTHLY, STRIPE_PRICE_TEAM_YEARLY');
+  lines.push('  STRIPE_PRICE_BASIC, STRIPE_PRICE_ADVANCED, STRIPE_PRICE_WHITE_GLOVE');
   return lines.join('\n');
 }
 
