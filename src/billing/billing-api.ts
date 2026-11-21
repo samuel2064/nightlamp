@@ -188,14 +188,21 @@ export class BillingApi {
       let priceId: string | null = null;
       // white_glove is withdrawn from sale (CEO ratified on NOC-327); existing
       // subscriptions are honoured but new signups and plan changes to white_glove
-      // are not allowed.
-      const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'enterprise', 'basic', 'advanced'];
+      // are not allowed. enterprise is not sold to new customers; free has no
+      // Stripe price and uses a different creation path.
+      const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
       if (!cancel && (typeof input.planTier !== 'string' || !allowedPlanTiers.includes(input.planTier as PlanTier))) {
         res.writeHead(400);
         res.end(JSON.stringify({ error: 'Invalid plan tier' }));
         return;
       }
       if (!cancel) {
+        // Free plan has no Stripe price; it cannot be selected via checkout.
+        if (input.planTier === 'free') {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'Free plan does not require a Stripe checkout' }));
+          return;
+        }
         // Fail closed before any Stripe call: a missing price id refuses with
         // the missing variable named instead of reaching Stripe (NOC-318).
         try {
@@ -292,10 +299,19 @@ export class BillingApi {
 
         // white_glove is withdrawn from sale (CEO ratified on NOC-327); existing
         // subscriptions are honoured but new signups to white_glove are not allowed.
-        const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'enterprise', 'basic', 'advanced'];
+        // enterprise is not sold to new customers; free has no Stripe price and
+        // uses a different creation path.
+        const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
         if (!allowedPlanTiers.includes(planTier as PlanTier)) {
           res.writeHead(400);
           res.end(JSON.stringify({ error: `Invalid plan tier: ${planTier}` }));
+          return;
+        }
+
+        // Free plan has no Stripe price; it cannot be selected via checkout.
+        if (planTier === 'free') {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'Free plan does not require a Stripe checkout' }));
           return;
         }
 

@@ -345,7 +345,7 @@ describe('Billing - BillingApi', () => {
 
   });
 
-  it('GET /api/billing/plans returns all catalogue plans', async () => {
+  it('GET /api/billing/plans returns all self-serve plans', async () => {
     const res = await handleRequest(api, 'GET', '/api/billing/plans');
     const data = JSON.parse(res.body);
     expect(data.plans).to.have.lengthOf(5);
