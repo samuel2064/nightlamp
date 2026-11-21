@@ -100,7 +100,7 @@ test('a null subscription stays null and is not turned into a zero plan', async 
   assert.equal(subscription, null)
 })
 
-test('invoices keep the customer-visible number and drop the Stripe row id', async () => {
+test('invoices drop every identifier: the Stripe row id and the invoice number', async () => {
   stubFetch(200, {
     invoices: [
       {
@@ -120,7 +120,6 @@ test('invoices keep the customer-visible number and drop the Stripe row id', asy
   const invoices = await createBackendClient('token-abc').billing.invoices()
   assert.equal(invoices.length, 1)
   assert.deepEqual(Object.keys(invoices[0]), [
-    'number',
     'status',
     'currency',
     'amountDue',
@@ -129,10 +128,39 @@ test('invoices keep the customer-visible number and drop the Stripe row id', asy
     'invoiceUrl',
     'pdfUrl',
   ])
-  assert.equal(JSON.stringify(invoices).includes('in_stripe_id'), false)
+  const serialized = JSON.stringify(invoices)
+  assert.equal(serialized.includes('in_stripe_id'), false)
+  // The plan prohibits invoice identifiers in the browser, so the number the
+  // server sent never leaves the server hop.
+  assert.equal(serialized.includes('AB-0001'), false)
 })
 
-test('a non-2xx response is a code, and the upstream body is not carried', async () => {
+test('a malformed invoice entry fails the read instead of rendering a zero-amount invoice', async () => {
+  stubFetch(200, {
+    invoices: [
+      {
+        id: 'in_stripe_id',
+        status: 'paid',
+        currency: 'usd',
+        amountDue: 'not-a-number',
+        amountPaid: 29900,
+        created: 1761955200,
+        invoiceUrl: null,
+        pdfUrl: null,
+      },
+    ],
+  })
+  const err = await createBackendClient('token-abc')
+    .billing.invoices()
+    .then(
+      () => null,
+      (e: unknown) => e
+    )
+  assert.ok(isBillingRequestError(err))
+  assert.equal((err as BillingRequestError).code, 'provider_failure')
+})
+
+test('a 502 is a provider failure, and the upstream body is not carried', async () => {
   stubFetch(502, { error: 'Unable to load billing history' })
   const err = await createBackendClient('token-abc')
     .billing.invoices()
@@ -141,10 +169,45 @@ test('a non-2xx response is a code, and the upstream body is not carried', async
       (e: unknown) => e
     )
   assert.ok(isBillingRequestError(err))
-  assert.equal((err as BillingRequestError).code, 'unavailable')
+  assert.equal((err as BillingRequestError).code, 'provider_failure')
   assert.equal((err as BillingRequestError).status, 502)
-  assert.equal((err as Error).message, 'Billing request failed (unavailable)')
+  assert.equal((err as Error).message, 'Billing request failed (provider_failure)')
   assert.equal((err as Error).message.includes('Unable to load billing history'), false)
+})
+
+test('a network-level failure is unavailable, never a zero or an empty list', async () => {
+  globalThis.fetch = (async () => {
+    throw new TypeError('fetch failed')
+  }) as typeof fetch
+  const err = await createBackendClient('token-abc')
+    .billing.plans()
+    .then(
+      () => null,
+      (e: unknown) => e
+    )
+  assert.ok(isBillingRequestError(err))
+  assert.equal((err as BillingRequestError).code, 'unavailable')
+})
+
+test('a 2xx body that is not usable JSON is a provider failure, not an empty payload', async () => {
+  globalThis.fetch = (async () => {
+    return {
+      ok: true,
+      status: 200,
+      text: async () => '<html>gateway splash</html>',
+      json: async () => {
+        throw new SyntaxError('Unexpected token < in JSON')
+      },
+    } as unknown as Response
+  }) as typeof fetch
+  const err = await createBackendClient('token-abc')
+    .billing.usage()
+    .then(
+      () => null,
+      (e: unknown) => e
+    )
+  assert.ok(isBillingRequestError(err))
+  assert.equal((err as BillingRequestError).code, 'provider_failure')
 })
 
 test('billing status codes map to truthful failure codes', () => {
@@ -152,11 +215,83 @@ test('billing status codes map to truthful failure codes', () => {
   assert.equal(billingErrorCode(401), 'unauthenticated')
   assert.equal(billingErrorCode(403), 'forbidden')
   assert.equal(billingErrorCode(404), 'not_found')
-  assert.equal(billingErrorCode(502), 'unavailable')
+  // The billing service answered with a failure: its provider step did not
+  // complete. This is a different truth from a service that never answered.
+  assert.equal(billingErrorCode(500), 'provider_failure')
+  assert.equal(billingErrorCode(502), 'provider_failure')
   assert.equal(billingErrorCode(503), 'unavailable')
-  assert.equal(billingErrorCode(500), 'unavailable')
+  assert.equal(billingErrorCode(504), 'unavailable')
   assert.equal(billingErrorCode(418), 'unknown')
   assert.equal(billingErrorCode(null), 'unknown')
+})
+
+test('a malformed success payload is a provider failure, never a silent zero', async () => {
+  const cases: Array<[string, () => Promise<unknown>]> = [
+    [
+      'plans payload is not an array',
+      () => {
+        stubFetch(200, { plans: { id: 'advanced' } })
+        return createBackendClient('token-abc').billing.plans()
+      },
+    ],
+    [
+      'plan entry is missing its price',
+      () => {
+        stubFetch(200, { plans: [{ id: 'advanced', name: 'Advanced', monitors: 20, reports: 500, storageMb: 500 }] })
+        return createBackendClient('token-abc').billing.plans()
+      },
+    ],
+    [
+      'subscription object is missing planTier',
+      () => {
+        stubFetch(200, { subscription: { status: 'active', limits: {}, price: 1, currency: 'usd', billingPeriod: 'month', cancelAtPeriodEnd: false } })
+        return createBackendClient('token-abc').billing.subscription()
+      },
+    ],
+    [
+      'usage payload is missing limits',
+      () => {
+        stubFetch(200, { usage: { monitors: 0, reports: 0, storageMb: 0 }, remaining: { monitors: 0, reports: 0, storageMb: 0 } })
+        return createBackendClient('token-abc').billing.usage()
+      },
+    ],
+    [
+      'subscription key is absent entirely',
+      () => {
+        stubFetch(200, {})
+        return createBackendClient('token-abc').billing.subscription()
+      },
+    ],
+  ]
+  for (const [name, run] of cases) {
+    const err = await run().then(
+      () => null,
+      (e: unknown) => e
+    )
+    assert.ok(isBillingRequestError(err), `expected a billing failure for: ${name}`)
+    assert.equal((err as BillingRequestError).code, 'provider_failure', name)
+  }
+})
+
+test('an explicit null subscription stays a no-subscription read', async () => {
+  stubFetch(200, { subscription: null })
+  const subscription = await createBackendClient('token-abc').billing.subscription()
+  assert.equal(subscription, null)
+})
+
+test('the access role is validated against the roles the server can declare', async () => {
+  stubFetch(200, { role: 'owner' })
+  assert.equal(await createBackendClient('token-abc').billing.access(), 'owner')
+
+  stubFetch(200, { role: 'none' })
+  assert.equal(await createBackendClient('token-abc').billing.access(), 'none')
+
+  // An unexpected role value fails closed instead of being trusted.
+  stubFetch(200, { role: 'superadmin' })
+  assert.equal(await createBackendClient('token-abc').billing.access(), null)
+
+  stubFetch(200, { role: 42 })
+  assert.equal(await createBackendClient('token-abc').billing.access(), null)
 })
 
 test('a member is refused by the server with 403 and the page is told forbidden', async () => {
@@ -172,7 +307,24 @@ test('a member is refused by the server with 403 and the page is told forbidden'
 })
 
 test('a plan change posts only the server-declared tier and no identity selector', async () => {
-  stubFetch(200, { subscription: { planTier: 'advanced', status: 'active' } })
+  stubFetch(200, {
+    subscription: {
+      id: 'sub-uuid',
+      customerId: 'cus-uuid',
+      stripeSubscriptionId: 'sub_stripe',
+      planTier: 'advanced',
+      status: 'active',
+      currentPeriodStart: '2026-11-01T00:00:00.000Z',
+      currentPeriodEnd: '2026-12-01T00:00:00.000Z',
+      cancelAtPeriodEnd: false,
+      createdAt: '2026-11-01T00:00:00.000Z',
+      limits: { monitors: 20, reports: 500, storageMb: 500 },
+      price: 299,
+      currency: 'usd',
+      billingPeriod: 'month',
+      nextBillingDate: '2026-12-01T00:00:00.000Z',
+    },
+  })
   await createBackendClient('token-abc').billing.changePlan('advanced')
   assert.equal(calls[0].method, 'POST')
   assert.equal(calls[0].url.endsWith('/api/billing/change-plan'), true)
@@ -181,7 +333,22 @@ test('a plan change posts only the server-declared tier and no identity selector
 
 test('cancellation posts an empty body and returns the updated subscription', async () => {
   stubFetch(200, {
-    subscription: { planTier: 'advanced', status: 'active', cancelAtPeriodEnd: true, nextBillingDate: null },
+    subscription: {
+      id: 'sub-uuid',
+      customerId: 'cus-uuid',
+      stripeSubscriptionId: 'sub_stripe',
+      planTier: 'advanced',
+      status: 'active',
+      currentPeriodStart: '2026-11-01T00:00:00.000Z',
+      currentPeriodEnd: '2026-12-01T00:00:00.000Z',
+      cancelAtPeriodEnd: true,
+      createdAt: '2026-11-01T00:00:00.000Z',
+      limits: { monitors: 20, reports: 500, storageMb: 500 },
+      price: 299,
+      currency: 'usd',
+      billingPeriod: 'month',
+      nextBillingDate: null,
+    },
   })
   const subscription = await createBackendClient('token-abc').billing.cancel()
   assert.equal(calls[0].url.endsWith('/api/billing/cancel'), true)

@@ -7,12 +7,19 @@ import {
   type BillingRole,
 } from '../services/backend'
 
+/**
+ * tRPC error codes are a closed enum, so the provider-failure and
+ * unavailable-service distinction is carried by the pair (code, stable message
+ * suffix): the browser reads `data.code` plus the suffix on the sanitized
+ * message, never an upstream body.
+ */
 const TRPC_CODE_BY_BILLING_CODE = {
   unauthenticated: 'UNAUTHORIZED',
   forbidden: 'FORBIDDEN',
   not_found: 'NOT_FOUND',
   invalid_request: 'BAD_REQUEST',
   unavailable: 'SERVICE_UNAVAILABLE',
+  provider_failure: 'INTERNAL_SERVER_ERROR',
   unknown: 'INTERNAL_SERVER_ERROR',
 } as const
 
@@ -24,10 +31,10 @@ const TRPC_CODE_BY_BILLING_CODE = {
 function toTRPCError(err: unknown): TRPCError {
   if (err instanceof TRPCError) throw err
   if (isBillingRequestError(err)) {
-    return new TRPCError({
-      code: TRPC_CODE_BY_BILLING_CODE[err.code],
-      message: 'Billing request failed',
-    })
+    const code = TRPC_CODE_BY_BILLING_CODE[err.code]
+    const message =
+      err.code === 'provider_failure' ? 'Billing request failed (provider)' : 'Billing request failed'
+    return new TRPCError({ code, message })
   }
   return new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Billing request failed' })
 }

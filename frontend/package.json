@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "node --import ./test/support/ts-resolver.mjs --test \"test/**/*.test.ts\""
+    "test": "node --import ./test/support/ts-resolver.mjs --test test/billing-client.test.ts test/billing-router.test.ts test/billing-view-model.test.ts test/billing-responsive.test.ts"
   },
   "dependencies": {
     "@clerk/nextjs": "^6.0.0",

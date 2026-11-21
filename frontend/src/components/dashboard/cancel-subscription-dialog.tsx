@@ -8,13 +8,12 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { formatDate } from '@/lib/billing'
 
 interface CancelSubscriptionDialogProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
   /** Local, server-declared period end. The copy never promises a different date. */
   periodEnd: string | null
   pending: boolean
@@ -22,14 +21,17 @@ interface CancelSubscriptionDialogProps {
 }
 
 export function CancelSubscriptionDialog({
-  open,
-  onOpenChange,
   periodEnd,
   pending,
   onConfirm,
 }: CancelSubscriptionDialogProps) {
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="outline" className="min-h-11" disabled={pending}>
+          Cancel at period end
+        </Button>
+      </AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Cancel your subscription?</AlertDialogTitle>

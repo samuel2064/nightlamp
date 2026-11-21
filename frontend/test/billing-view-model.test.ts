@@ -7,17 +7,21 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   accessLevelFor,
+  currencyExponent,
   formatInvoiceAmount,
   formatInvoiceDate,
   formatPlanPrice,
   formatStorageMb,
   formatUsageValue,
   hasRenderableInvoiceLink,
+  hasScheduledCancellation,
   isElevatedRole,
   isSafeInvoiceUrl,
   limitsAreKnown,
   limitsDeclareNoPlan,
+  mutationOutcomeFor,
   pastDueCopy,
+  subscriptionActionable,
   subscriptionLevelFor,
   usageRows,
 } from '../src/lib/billing.ts'
@@ -126,10 +130,24 @@ test('plan prices keep the server amount and the server currency', () => {
   assert.equal(formatPlanPrice(299, 'us'), '299')
 })
 
-test('invoice amounts are Stripe minor units and are scaled for display', () => {
+test('invoice amounts are Stripe minor units scaled by the currency exponent', () => {
+  // Two-decimal currency.
   assert.equal(formatInvoiceAmount(29900, 'usd'), '$299.00')
   assert.equal(formatInvoiceAmount(0, 'usd'), '$0.00')
-  // A minor-unit amount with no server currency cannot be scaled honestly.
+  // Zero-decimal currency: JPY has no minor-unit scaling, so 500000 stays 500000.
+  // The currency symbol varies between ICU versions, so the numeric part is
+  // what is asserted; a two-decimal mis-scale would end in ',000.00'.
+  assert.equal(currencyExponent('jpy'), 0)
+  assert.equal(formatInvoiceAmount(500000, 'jpy').replace(/[^\d,]/g, ''), '500,000')
+  // Three-decimal currency: KWD minor units are thousandths. The separator
+  // between code and amount is ICU's narrow space, so the amount is compared
+  // without symbol or spacing.
+  assert.equal(currencyExponent('kwd'), 3)
+  assert.equal(formatInvoiceAmount(12345, 'kwd').replace(/[^\d.,]/g, ''), '12.345')
+  // A minor-unit amount with no usable server currency cannot be scaled honestly.
+  assert.equal(currencyExponent(''), null)
+  assert.equal(currencyExponent('us'), null)
+  assert.equal(currencyExponent('usdd'), null)
   assert.equal(formatInvoiceAmount(29900, ''), 'Unknown currency')
   assert.equal(formatInvoiceAmount(29900, 'us'), 'Unknown currency')
   assert.equal(formatInvoiceAmount(29900, 'usdd'), 'Unknown currency')
@@ -149,6 +167,54 @@ test('storage formatting switches to GB and never renders a bare zero unit', () 
   assert.equal(formatUsageValue(500, 'storageMb'), '500 MB')
 })
 
+test('scheduled cancellation is reported independently of the subscription status', () => {
+  assert.equal(hasScheduledCancellation(ACTIVE_SUBSCRIPTION), false)
+  assert.equal(hasScheduledCancellation({ ...ACTIVE_SUBSCRIPTION, cancelAtPeriodEnd: true }), true)
+  // A trialing or past-due plan can also be scheduled to end at period close.
+  assert.equal(
+    hasScheduledCancellation({ ...ACTIVE_SUBSCRIPTION, status: 'trialing', cancelAtPeriodEnd: true }),
+    true
+  )
+  assert.equal(hasScheduledCancellation({ ...ACTIVE_SUBSCRIPTION, status: 'canceled' }), false)
+  assert.equal(hasScheduledCancellation(null), false)
+})
+
+test('mutation-worthy states are exactly the statuses the billing service accepts', () => {
+  assert.equal(subscriptionActionable(ACTIVE_SUBSCRIPTION), true)
+  assert.equal(
+    subscriptionActionable({ ...ACTIVE_SUBSCRIPTION, cancelAtPeriodEnd: true }),
+    true
+  )
+  assert.equal(subscriptionActionable({ ...ACTIVE_SUBSCRIPTION, status: 'trialing' }), true)
+  assert.equal(subscriptionActionable({ ...ACTIVE_SUBSCRIPTION, status: 'past_due' }), true)
+  // The backend refuses mutations for these, so the page offers no control.
+  assert.equal(subscriptionActionable({ ...ACTIVE_SUBSCRIPTION, status: 'canceled' }), false)
+  assert.equal(subscriptionActionable({ ...ACTIVE_SUBSCRIPTION, status: 'incomplete' }), false)
+  assert.equal(
+    subscriptionActionable({ ...ACTIVE_SUBSCRIPTION, status: 'incomplete_expired' }),
+    false
+  )
+  assert.equal(
+    subscriptionActionable({ ...ACTIVE_SUBSCRIPTION, status: 'some_new_status' }),
+    false
+  )
+  assert.equal(subscriptionActionable(null), false)
+})
+
+test('a failed mutation is definitive only when the server refused it outright', () => {
+  assert.equal(mutationOutcomeFor('BAD_REQUEST'), 'rejected')
+  assert.equal(mutationOutcomeFor('FORBIDDEN'), 'rejected')
+  assert.equal(mutationOutcomeFor('NOT_FOUND'), 'rejected')
+  assert.equal(mutationOutcomeFor('UNAUTHORIZED'), 'rejected')
+  // A timeout, a 5xx, or an unparseable reply may have committed server-side.
+  assert.equal(mutationOutcomeFor('INTERNAL_SERVER_ERROR'), 'indeterminate')
+  assert.equal(mutationOutcomeFor('SERVICE_UNAVAILABLE'), 'indeterminate')
+  assert.equal(mutationOutcomeFor('TIMEOUT'), 'indeterminate')
+  assert.equal(mutationOutcomeFor('PARSE_ERROR'), 'indeterminate')
+  assert.equal(mutationOutcomeFor(undefined), 'indeterminate')
+  assert.equal(mutationOutcomeFor(null), 'indeterminate')
+})
+
 test('only absolute https invoice links are rendered as links', () => {
   assert.equal(isSafeInvoiceUrl('https://invoice.stripe.com/i/abc'), true)
   assert.equal(isSafeInvoiceUrl('http://invoice.stripe.com/i/abc'), false)
@@ -157,7 +223,6 @@ test('only absolute https invoice links are rendered as links', () => {
   assert.equal(isSafeInvoiceUrl(null), false)
 
   const withLink = {
-    number: 'AB-0001',
     status: 'paid',
     currency: 'usd',
     amountDue: 29900,

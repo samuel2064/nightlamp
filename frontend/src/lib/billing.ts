@@ -167,20 +167,36 @@ export function formatPlanPrice(price: number, currency: string): string {
 }
 
 /**
- * Stripe invoice amounts arrive in minor units, so the scaling factor is a
- * property of the currency the server declared. Without that currency the amount
- * cannot be scaled honestly and is reported as unknown instead of guessed.
+ * The number of minor units per major unit is a property of the currency, not
+ * a constant: USD has two decimals, JPY none, KWD three. The exponent is taken
+ * from the runtime's own ICU tables for the server-declared code, so no
+ * per-currency belief is hard-coded here. Without a usable currency code the
+ * amount cannot be scaled honestly and is reported as unknown instead of
+ * guessed.
  */
+export function currencyExponent(currency: string): number | null {
+  if (!/^[A-Za-z]{3}$/.test(currency)) return null
+  try {
+    const resolved = new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency,
+    }).resolvedOptions()
+    const digits = resolved.minimumFractionDigits
+    return typeof digits === 'number' && Number.isFinite(digits) ? digits : null
+  } catch {
+    return null
+  }
+}
+
 export function formatInvoiceAmount(amount: number, currency: string): string {
   if (!Number.isFinite(amount)) return '-'
-  if (currency.length !== 3) return 'Unknown currency'
+  const exponent = currencyExponent(currency)
+  if (exponent === null) return 'Unknown currency'
   try {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency,
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(amount / 100)
+    }).format(amount / 10 ** exponent)
   } catch {
     // An unrecognised ISO code is still an unknown amount, not a smaller one.
     return 'Unknown currency'
@@ -227,6 +243,57 @@ export function isSafeInvoiceUrl(url: string | null | undefined): url is string 
 
 export function hasRenderableInvoiceLink(invoice: BillingInvoice): boolean {
   return isSafeInvoiceUrl(invoice.invoiceUrl) || isSafeInvoiceUrl(invoice.pdfUrl)
+}
+
+/**
+ * Scheduled cancellation is a fact of its own, independent of the status the
+ * server declares: a trialing or past-due subscription can also be set to end
+ * at the period close, and the page must say so.
+ */
+export function hasScheduledCancellation(
+  subscription: BillingSubscription | null | undefined
+): boolean {
+  return subscription?.cancelAtPeriodEnd === true
+}
+
+/**
+ * Mutation-worthy subscription states: exactly the statuses the billing
+ * service accepts for portal-adjacent writes (active, trialing, past due, and
+ * an active plan with a scheduled cancellation). A canceled or incomplete
+ * subscription would be refused by the server, so the page offers no control
+ * that the backend would reject.
+ */
+export function subscriptionActionable(
+  subscription: BillingSubscription | null | undefined
+): boolean {
+  const level = subscriptionLevelFor(subscription)
+  return (
+    level === 'active' ||
+    level === 'trialing' ||
+    level === 'past_due' ||
+    level === 'scheduled_cancel'
+  )
+}
+
+export type MutationOutcome = 'rejected' | 'indeterminate'
+
+/**
+ * Classifies a failed mutation. Definitive rejections are the codes the
+ * server returns when it refused the write before anything was committed.
+ * Everything else - a timeout, a 5xx, an unparseable reply - is indeterminate:
+ * the write may have committed, so the page refetches and says so instead of
+ * claiming the plan is unchanged.
+ */
+export function mutationOutcomeFor(code: string | null | undefined): MutationOutcome {
+  switch (code) {
+    case 'BAD_REQUEST':
+    case 'FORBIDDEN':
+    case 'NOT_FOUND':
+    case 'UNAUTHORIZED':
+      return 'rejected'
+    default:
+      return 'indeterminate'
+  }
 }
 
 /** Status copy for a past-due subscription: never silent, never a fake success. */

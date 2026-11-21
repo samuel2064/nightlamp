@@ -14,12 +14,15 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
+// Sources are read EOL-agnostically: the same checkout with core.autocrlf=true
+// must produce the same verdicts as an LF worktree.
 const read = (relative: string) =>
-  readFileSync(join(here, '..', relative), 'utf8')
+  readFileSync(join(here, '..', relative), 'utf8').replace(/\r\n/g, '\n')
 
 const PAGE = read('src/app/dashboard/billing/page.tsx')
 const PLAN_DIALOG = read('src/components/dashboard/plan-change-dialog.tsx')
 const CANCEL_DIALOG = read('src/components/dashboard/cancel-subscription-dialog.tsx')
+const PROGRESS = read('src/components/ui/progress.tsx')
 const GLOBALS = read('src/app/globals.css')
 
 /** Split on an opening tag so multi-line JSX props are checked together. */
@@ -82,6 +85,26 @@ test('both confirmation dialogs are named for assistive technology', () => {
   }
 })
 
+test('both confirmation dialogs own their trigger so focus can return to it', () => {
+  // A real Radix trigger inside the dialog root is what lets the dialog
+  // restore focus to the control that opened it on close and on Escape.
+  for (const source of [PLAN_DIALOG, CANCEL_DIALOG]) {
+    assert.match(source, /<AlertDialogTrigger asChild>/)
+    assert.match(source, /<AlertDialogCancel/)
+  }
+})
+
+test('plan select rows meet the 44px touch-target contract', () => {
+  assert.match(PLAN_DIALOG, /<SelectItem[^>]*min-h-11/)
+})
+
+test('the progress bar forwards its numeric value to the Radix root', () => {
+  // Radix derives aria-valuenow/valuemax from the root value; a progress bar
+  // that never passes the value exposes no information to assistive tech.
+  assert.match(PROGRESS, /<ProgressPrimitive\.Root[\s\S]{0,400}value=/)
+  assert.match(PROGRESS, /value=\{indeterminate \? null :/)
+})
+
 test('confirmation copy never claims immediate cancellation', () => {
   assert.match(CANCEL_DIALOG, /end of the current billing period/)
   assert.match(CANCEL_DIALOG, /nothing is\s+cancelled immediately/i)
@@ -103,10 +126,23 @@ test('no hard-coded commercial value, tier alias or limit is declared in the sur
   assert.doesNotMatch(surface, /formatPeriod\(['"](month|year|week|day)['"]\)/)
 })
 
-test('no raw Stripe identifier is rendered', () => {
+test('no raw Stripe identifier or invoice identifier is rendered', () => {
   const surface = [PAGE, PLAN_DIALOG, CANCEL_DIALOG].join('\n')
   assert.doesNotMatch(surface, /stripeSubscriptionId|stripeCustomerId|customerId/)
-  // The invoice number is customer-visible; the invoice row id is not.
-  assert.match(PAGE, /invoice\.number/)
+  // The plan prohibits invoice identifiers in the browser: neither the Stripe
+  // row id nor the customer-visible invoice number may be rendered.
+  assert.doesNotMatch(PAGE, /invoice\.number/)
+  assert.doesNotMatch(PAGE, /Not numbered/)
   assert.doesNotMatch(PAGE, /invoice\.id\b/)
+})
+
+test('mutation controls follow the server-derived role and the subscription state', () => {
+  // The page fails closed unless the access query has a current successful
+  // read, and a canceled or incomplete subscription renders no control the
+  // backend would refuse.
+  assert.match(PAGE, /isSuccess && !accessQuery\.isRefetching/)
+  assert.match(PAGE, /subscriptionActionable\(subscription\)/)
+  assert.match(PAGE, /hasScheduledCancellation\(subscription\)/)
+  // A failed mutation is classified instead of claiming a quiet no-op.
+  assert.match(PAGE, /mutationOutcomeFor\(errorCodeOf\(err\)\)/)
 })

@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { trpc } from '@/lib/trpc'
 import {
   Card,
@@ -34,8 +34,10 @@ import {
   formatPeriod,
   formatUsageValue,
   hasRenderableInvoiceLink,
+  hasScheduledCancellation,
   isSafeInvoiceUrl,
-  pastDueCopy,
+  mutationOutcomeFor,
+  subscriptionActionable,
   subscriptionLevelFor,
   usageRows,
   type AccessLevel,
@@ -63,9 +65,21 @@ const SUBSCRIPTION_COPY: Record<SubscriptionLevel, { label: string; tone: BadgeT
   trialing: { label: 'Trial', tone: 'info', note: 'Your trial is running. Add a payment method before the trial ends to keep monitoring on.' },
   scheduled_cancel: { label: 'Cancellation scheduled', tone: 'warning', note: 'Your plan is set to end at the close of the current billing period.' },
   past_due: { label: 'Past due', tone: 'destructive', note: 'Payment is past due. Update your payment method in the Stripe portal to keep monitoring active.' },
-  canceled: { label: 'Canceled', tone: 'secondary', note: null },
-  incomplete: { label: 'Payment incomplete', tone: 'warning', note: 'The last payment attempt did not complete. Finish it in the Stripe portal.' },
-  unknown: { label: 'Status reported by the server', tone: 'secondary', note: null },
+  canceled: {
+    label: 'Canceled',
+    tone: 'secondary',
+    note: 'This subscription is canceled. It is not billed, and no new period is scheduled. The details below are the last state the billing service reported.',
+  },
+  incomplete: {
+    label: 'Payment incomplete',
+    tone: 'warning',
+    note: 'The last payment attempt did not complete, so this subscription is not active. Finish it in the Stripe portal.',
+  },
+  unknown: {
+    label: 'Status reported by the server',
+    tone: 'secondary',
+    note: 'The billing service reported a status this page does not recognise. The details below are the last state it declared.',
+  },
 }
 
 const READ_COPY: Record<string, { title: string; description: string }> = {
@@ -84,6 +98,11 @@ const READ_COPY: Record<string, { title: string; description: string }> = {
   SERVICE_UNAVAILABLE: {
     title: 'Billing service unavailable',
     description: 'The billing service did not answer. Nothing on this page should be read as a current plan or amount.',
+  },
+  INTERNAL_SERVER_ERROR: {
+    title: 'Billing reported a failure',
+    description:
+      'The billing service returned a failure response while handling this request. Nothing on this page should be read as a current plan or amount. Retry, and contact support if it persists.',
   },
 }
 
@@ -135,8 +154,6 @@ function SectionSkeleton({ rows = 3 }: { rows?: number }) {
 
 export default function BillingPage() {
   const utils = trpc.useUtils()
-  const [planDialogOpen, setPlanDialogOpen] = useState(false)
-  const [cancelDialogOpen, setCancelDialogOpen] = useState(false)
 
   const accessQuery = trpc.billing.access.useQuery()
   const subscriptionQuery = trpc.billing.subscription.useQuery()
@@ -145,10 +162,18 @@ export default function BillingPage() {
   const invoicesQuery = trpc.billing.invoices.useQuery()
 
   const subscription = subscriptionQuery.data ?? null
-  const accessLevel = accessLevelFor((accessQuery.data ?? null) as BillingRole | null)
-  const canManage = accessLevel === 'owner_admin'
+  /**
+   * Mutation controls require a current successful access read. A cached role
+   * is not a current one: while the access query is loading, refetching, or
+   * has just failed, the page fails closed and offers no control.
+   */
+  const roleConfirmed = accessQuery.isSuccess && !accessQuery.isRefetching
+  const accessLevel = accessLevelFor(roleConfirmed ? ((accessQuery.data ?? null) as BillingRole | null) : null)
+  const canManage = roleConfirmed && accessLevel === 'owner_admin'
   const level = subscriptionLevelFor(subscription)
   const statusCopy = SUBSCRIPTION_COPY[level]
+  const actionable = subscriptionActionable(subscription)
+  const scheduledCancel = hasScheduledCancellation(subscription)
   const rows = useMemo(() => usageRows(usageQuery.data ?? null), [usageQuery.data])
   const plans = plansQuery.data ?? []
   const invoices = invoicesQuery.data ?? []
@@ -176,10 +201,24 @@ export default function BillingPage() {
       void utils.billing.usage.invalidate()
       void utils.billing.invoices.invalidate()
     },
-    onError: () => {
-      toast.error('Plan change was not applied', {
-        description: 'The billing service did not accept the change. Your current plan is unchanged.',
-      })
+    onError: (err) => {
+      // A failed mutation is never reported as a quiet "plan unchanged": a
+      // timeout or lost response can follow a committed change, so affected
+      // state is refetched and a definitive rejection is told apart from an
+      // indeterminate result.
+      void utils.billing.subscription.invalidate()
+      void utils.billing.usage.invalidate()
+      void utils.billing.invoices.invalidate()
+      if (mutationOutcomeFor(errorCodeOf(err)) === 'rejected') {
+        toast.error('Plan change was not applied', {
+          description: 'The billing service rejected the change. Your current plan is unchanged.',
+        })
+      } else {
+        toast.warning('Plan change result unknown', {
+          description:
+            'The billing service did not confirm the change before the request ended. The page is loading the latest state from the server - check the plan shown below.',
+        })
+      }
     },
   })
 
@@ -189,10 +228,20 @@ export default function BillingPage() {
       void utils.billing.usage.invalidate()
       void utils.billing.invoices.invalidate()
     },
-    onError: () => {
-      toast.error('Cancellation was not scheduled', {
-        description: 'The billing service did not accept the cancellation. Your plan continues unchanged.',
-      })
+    onError: (err) => {
+      void utils.billing.subscription.invalidate()
+      void utils.billing.usage.invalidate()
+      void utils.billing.invoices.invalidate()
+      if (mutationOutcomeFor(errorCodeOf(err)) === 'rejected') {
+        toast.error('Cancellation was not scheduled', {
+          description: 'The billing service rejected the cancellation. Your plan continues unchanged.',
+        })
+      } else {
+        toast.warning('Cancellation result unknown', {
+          description:
+            'The billing service did not confirm the cancellation before the request ended. The page is loading the latest state from the server - check the plan shown below.',
+        })
+      }
     },
   })
 
@@ -207,7 +256,7 @@ export default function BillingPage() {
             Your plan, usage against plan limits, invoices and cancellation
           </p>
         </div>
-        {canManage && (
+        {canManage && actionable && (
           <Button
             variant="outline"
             className="min-h-11 w-full gap-2 sm:w-auto"
@@ -221,7 +270,10 @@ export default function BillingPage() {
         )}
       </div>
 
-      <AccessNotice level={accessLevel} loading={accessQuery.isLoading} />
+      <AccessNotice
+        level={accessLevel}
+        loading={accessQuery.isPending || accessQuery.isRefetching}
+      />
 
       <Card>
         <CardHeader>
@@ -268,12 +320,17 @@ export default function BillingPage() {
                   {level === 'unknown' ? subscription.status : statusCopy.label}
                 </Badge>
               </div>
-              <p className="text-sm text-muted-foreground">
-                {formatPlanPrice(subscription.price, currency)}
-                {formatPeriod(subscription.billingPeriod)
-                  ? ` ${formatPeriod(subscription.billingPeriod)}`
-                  : ''}
-              </p>
+              {(level === 'active' ||
+                level === 'trialing' ||
+                level === 'scheduled_cancel' ||
+                level === 'past_due') && (
+                <p className="text-sm text-muted-foreground">
+                  {formatPlanPrice(subscription.price, currency)}
+                  {formatPeriod(subscription.billingPeriod)
+                    ? ` ${formatPeriod(subscription.billingPeriod)}`
+                    : ''}
+                </p>
+              )}
               <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
                   <dt className="text-xs text-muted-foreground">Next billing date</dt>
@@ -293,27 +350,59 @@ export default function BillingPage() {
                   <AlertDescription>{statusCopy.note}</AlertDescription>
                 </Alert>
               )}
-              {pastDueCopy(subscription) && level !== 'past_due' && (
-                <p className="text-sm text-muted-foreground">{pastDueCopy(subscription)}</p>
+              {scheduledCancel && level !== 'scheduled_cancel' && (
+                <Alert variant="warning">
+                  <AlertTriangle className="size-4" aria-hidden />
+                  <AlertTitle>Cancellation scheduled</AlertTitle>
+                  <AlertDescription>
+                    Your plan is set to end at the close of the current billing period
+                    {subscription.currentPeriodEnd ? ` (${formatDate(subscription.currentPeriodEnd)})` : ''}. Access
+                    continues until then.
+                  </AlertDescription>
+                </Alert>
               )}
-              {canManage && (
+              {canManage && actionable && (
                 <div className="flex flex-col gap-2 pt-1 sm:flex-row">
-                  <Button
-                    variant="outline"
-                    className="min-h-11"
-                    onClick={() => setPlanDialogOpen(true)}
-                    disabled={changePlan.isPending}
-                  >
-                    Change plan
-                  </Button>
-                  <Button
-                    variant="outline"
-                    className="min-h-11"
-                    onClick={() => setCancelDialogOpen(true)}
-                    disabled={cancelSubscription.isPending}
-                  >
-                    Cancel at period end
-                  </Button>
+                  <PlanChangeDialog
+                    plans={plans}
+                    currentTier={subscription.planTier}
+                    currency={currency}
+                    period={subscription.billingPeriod}
+                    loading={plansQuery.isLoading}
+                    error={plansQuery.isError ? readError(plansQuery.error) : null}
+                    pending={changePlan.isPending}
+                    onConfirm={(planTier) =>
+                      changePlan.mutate(
+                        { planTier },
+                        {
+                          onSuccess: (updated) => {
+                            toast.success('Plan changed', {
+                              description: updated
+                                ? `Your plan is now ${updated.planTier}. The billing service accepted the change.`
+                                : 'The billing service accepted the change.',
+                            })
+                          },
+                        }
+                      )
+                    }
+                  />
+                  {!scheduledCancel && (
+                    <CancelSubscriptionDialog
+                      periodEnd={subscription.currentPeriodEnd}
+                      pending={cancelSubscription.isPending}
+                      onConfirm={() =>
+                        cancelSubscription.mutate(undefined, {
+                          onSuccess: (updated) => {
+                            toast.success('Cancellation scheduled', {
+                              description: updated?.nextBillingDate
+                                ? `Access continues until ${formatDate(updated.nextBillingDate)}. The billing service accepted the cancellation.`
+                                : 'The billing service accepted the cancellation at period end.',
+                            })
+                          },
+                        })
+                      }
+                    />
+                  )}
                 </div>
               )}
             </div>
@@ -385,56 +474,6 @@ export default function BillingPage() {
         </CardContent>
       </Card>
 
-      {canManage && (
-        <PlanChangeDialog
-          open={planDialogOpen}
-          onOpenChange={setPlanDialogOpen}
-          plans={plans}
-          currentTier={subscription?.planTier ?? ''}
-          currency={currency}
-          period={subscription?.billingPeriod ?? ''}
-          loading={plansQuery.isLoading}
-          error={plansQuery.isError ? readError(plansQuery.error) : null}
-          pending={changePlan.isPending}
-          onConfirm={(planTier) =>
-            changePlan.mutate(
-              { planTier },
-              {
-                onSuccess: (updated) => {
-                  setPlanDialogOpen(false)
-                  toast.success('Plan changed', {
-                    description: updated
-                      ? `Your plan is now ${updated.planTier}. The billing service accepted the change.`
-                      : 'The billing service accepted the change.',
-                  })
-                },
-              }
-            )
-          }
-        />
-      )}
-
-      {canManage && (
-        <CancelSubscriptionDialog
-          open={cancelDialogOpen}
-          onOpenChange={setCancelDialogOpen}
-          periodEnd={subscription?.currentPeriodEnd ?? null}
-          pending={cancelSubscription.isPending}
-          onConfirm={() =>
-            cancelSubscription.mutate(undefined, {
-              onSuccess: (updated) => {
-                setCancelDialogOpen(false)
-                toast.success('Cancellation scheduled', {
-                  description: updated?.nextBillingDate
-                    ? `Access continues until ${formatDate(updated.nextBillingDate)}. The billing service accepted the cancellation.`
-                    : 'The billing service accepted the cancellation at period end.',
-                })
-              },
-            })
-          }
-        />
-      )}
-
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">Invoices</CardTitle>
@@ -471,7 +510,6 @@ export default function BillingPage() {
                 <caption className="sr-only">Invoice history for the signed-in account</caption>
                 <thead>
                   <tr className="border-b text-left text-xs text-muted-foreground">
-                    <th scope="col" className="py-2 pr-3 font-medium">Invoice</th>
                     <th scope="col" className="py-2 pr-3 font-medium">Date</th>
                     <th scope="col" className="py-2 pr-3 font-medium">Status</th>
                     <th scope="col" className="py-2 pr-3 font-medium text-right">Amount</th>
@@ -480,8 +518,7 @@ export default function BillingPage() {
                 </thead>
                 <tbody>
                   {invoices.map((invoice, index) => (
-                    <tr key={`${invoice.number ?? 'invoice'}-${invoice.created}-${index}`} className="border-b last:border-0">
-                      <td className="py-2 pr-3 font-medium">{invoice.number ?? 'Not numbered'}</td>
+                    <tr key={`${invoice.created}-${index}`} className="border-b last:border-0">
                       <td className="py-2 pr-3 whitespace-nowrap">{formatInvoiceDate(invoice.created)}</td>
                       <td className="py-2 pr-3">
                         <span className="inline-flex items-center gap-1">

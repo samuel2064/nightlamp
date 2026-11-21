@@ -9,6 +9,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -24,8 +25,6 @@ import { formatPlanPrice, formatPeriod } from '@/lib/billing'
 import type { BillingPlan } from '@/server/services/backend'
 
 interface PlanChangeDialogProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
   plans: BillingPlan[]
   currentTier: string
   /** Currency and period declared by the subscription response; never hard-coded here. */
@@ -38,8 +37,6 @@ interface PlanChangeDialogProps {
 }
 
 export function PlanChangeDialog({
-  open,
-  onOpenChange,
   plans,
   currentTier,
   currency,
@@ -57,12 +54,17 @@ export function PlanChangeDialog({
 
   return (
     <AlertDialog
-      open={open}
       onOpenChange={(next) => {
+        // The selection resets to the server-declared current tier each time
+        // the dialog opens, so a stale choice never survives a reopen.
         if (next) setSelectedTier(currentTier)
-        onOpenChange(next)
       }}
     >
+      <AlertDialogTrigger asChild>
+        <Button variant="outline" className="min-h-11" disabled={pending}>
+          Change plan
+        </Button>
+      </AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Change plan</AlertDialogTitle>
@@ -93,7 +95,7 @@ export function PlanChangeDialog({
               </SelectTrigger>
               <SelectContent>
                 {plans.map((plan) => (
-                  <SelectItem key={plan.id} value={plan.id}>
+                  <SelectItem key={plan.id} value={plan.id} className="min-h-11">
                     {plan.name}
                   </SelectItem>
                 ))}

@@ -1,5 +1,8 @@
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'
 
+/** A billing call that hangs is unavailable, never a success. */
+const BILLING_TIMEOUT_MS = 15_000
+
 import type { DiagnosticEntry, PlaybookExecution } from '@/components/playbook/types'
 
 export interface FailureEvent {
@@ -75,10 +78,9 @@ export interface BillingUsage {
 }
 
 export interface BillingInvoice {
-  number: string | null
   status: string
   currency: string
-  /** Stripe minor units, converted for display with `formatMinorUnits`. */
+  /** Stripe minor units, converted for display with `formatInvoiceAmount`. */
   amountDue: number
   amountPaid: number
   /** Unix seconds. */
@@ -92,6 +94,7 @@ export type BillingErrorCode =
   | 'forbidden'
   | 'not_found'
   | 'unavailable'
+  | 'provider_failure'
   | 'invalid_request'
   | 'unknown'
 
@@ -104,14 +107,21 @@ export class BillingRequestError extends Error {
   readonly status: number | null
   readonly code: BillingErrorCode
 
-  constructor(status: number | null, code: BillingErrorCode) {
-    super(`Billing request failed (${code})`)
+  constructor(status: number | null, code: BillingErrorCode, message?: string) {
+    super(message ?? `Billing request failed (${code})`)
     this.name = 'BillingRequestError'
     this.status = status
     this.code = code
   }
 }
 
+/**
+ * Maps a failure status to a stable code. The two 5xx families stay distinct
+ * because the page must show different truths: 500/502 is the billing service
+ * answering with a failure (its provider step did not complete), while 503/504
+ * - like a network-level failure - means the billing service did not do the
+ * work at all.
+ */
 export function billingErrorCode(status: number | null): BillingErrorCode {
   switch (status) {
     case 400:
@@ -125,6 +135,7 @@ export function billingErrorCode(status: number | null): BillingErrorCode {
       return 'not_found'
     case 500:
     case 502:
+      return 'provider_failure'
     case 503:
     case 504:
       return 'unavailable'
@@ -137,52 +148,92 @@ export function isBillingRequestError(err: unknown): err is BillingRequestError 
   return err instanceof BillingRequestError
 }
 
-const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
-const str = (value: unknown, fallback: string): string =>
-  typeof value === 'string' && value.length > 0 ? value : fallback
-const optStr = (value: unknown): string | null =>
-  typeof value === 'string' && value.length > 0 ? value : null
-const bool = (value: unknown): boolean => value === true
+/**
+ * A successful billing payload is validated before it is shaped for the
+ * browser. A malformed success payload is a provider failure, never a silent
+ * zero, an empty list, or an empty plan: coercing it would let the page claim
+ * a plan, an amount or a limit the server never declared.
+ */
+function invalidPayload(what: string): BillingRequestError {
+  return new BillingRequestError(null, 'provider_failure', `Billing payload was not usable (${what})`)
+}
 
-function toCounters(value: unknown): BillingUsageCounters {
-  const raw = (value ?? {}) as Record<string, unknown>
+function requireObject(value: unknown, what: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalidPayload(what)
+  return value as Record<string, unknown>
+}
+
+function requireFiniteNumber(value: unknown, what: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw invalidPayload(what)
+  return value
+}
+
+function requireNonEmptyString(value: unknown, what: string): string {
+  if (typeof value !== 'string' || value.length === 0) throw invalidPayload(what)
+  return value
+}
+
+function requireBoolean(value: unknown, what: string): boolean {
+  if (typeof value !== 'boolean') throw invalidPayload(what)
+  return value
+}
+
+function optString(value: unknown, what: string): string | null {
+  if (value === null || value === undefined) return null
+  if (typeof value !== 'string' || value.length === 0) throw invalidPayload(what)
+  return value
+}
+
+function requireCounters(value: unknown, what: string): BillingUsageCounters {
+  const raw = requireObject(value, what)
   return {
-    monitors: num(raw.monitors),
-    reports: num(raw.reports),
-    storageMb: num(raw.storageMb),
+    monitors: requireFiniteNumber(raw.monitors, `${what}.monitors`),
+    reports: requireFiniteNumber(raw.reports, `${what}.reports`),
+    storageMb: requireFiniteNumber(raw.storageMb, `${what}.storageMb`),
   }
 }
 
-/** Drops the customer/subscription/Stripe identity fields before they leave the server. */
+/**
+ * Drops the customer/subscription/Stripe identity fields before they leave the
+ * server. Only an explicit null subscription is a no-subscription read; a
+ * present-but-malformed subscription object is a provider failure so the page
+ * can never present a half-declared plan as the truth.
+ */
 export function toBillingSubscription(value: unknown): BillingSubscription | null {
-  const raw = value as Record<string, unknown> | null | undefined
-  if (!raw || typeof raw !== 'object') return null
+  if (value === null || value === undefined) return null
+  const raw = requireObject(value, 'subscription')
   return {
-    planTier: str(raw.planTier, ''),
-    status: str(raw.status, 'unknown'),
-    currentPeriodStart: optStr(raw.currentPeriodStart),
-    currentPeriodEnd: optStr(raw.currentPeriodEnd),
-    cancelAtPeriodEnd: bool(raw.cancelAtPeriodEnd),
-    limits: toCounters(raw.limits),
-    price: num(raw.price),
-    currency: str(raw.currency, ''),
-    billingPeriod: str(raw.billingPeriod, ''),
-    nextBillingDate: optStr(raw.nextBillingDate),
+    planTier: requireNonEmptyString(raw.planTier, 'subscription.planTier'),
+    status: requireNonEmptyString(raw.status, 'subscription.status'),
+    currentPeriodStart: optString(raw.currentPeriodStart, 'subscription.currentPeriodStart'),
+    currentPeriodEnd: optString(raw.currentPeriodEnd, 'subscription.currentPeriodEnd'),
+    cancelAtPeriodEnd: requireBoolean(raw.cancelAtPeriodEnd, 'subscription.cancelAtPeriodEnd'),
+    limits: requireCounters(raw.limits, 'subscription.limits'),
+    price: requireFiniteNumber(raw.price, 'subscription.price'),
+    currency: requireNonEmptyString(raw.currency, 'subscription.currency'),
+    billingPeriod: requireNonEmptyString(raw.billingPeriod, 'subscription.billingPeriod'),
+    nextBillingDate: optString(raw.nextBillingDate, 'subscription.nextBillingDate'),
   }
 }
 
-/** Keeps the customer-visible invoice number, never the Stripe/invoice row id. */
+/**
+ * Invoice identity fields stay on the server: the plan prohibits invoice
+ * identifiers in the browser, so neither the Stripe row id nor the invoice
+ * number is forwarded. Each entry is validated; a malformed entry fails the
+ * read instead of rendering as a zero-amount invoice.
+ */
 export function toBillingInvoice(value: unknown): BillingInvoice {
-  const raw = (value ?? {}) as Record<string, unknown>
+  const raw = requireObject(value, 'invoice')
+  const currency = requireNonEmptyString(raw.currency, 'invoice.currency')
+  if (currency.length !== 3) throw invalidPayload('invoice.currency')
   return {
-    number: optStr(raw.number),
-    status: str(raw.status, 'unknown'),
-    currency: str(raw.currency, ''),
-    amountDue: num(raw.amountDue),
-    amountPaid: num(raw.amountPaid),
-    created: num(raw.created),
-    invoiceUrl: optStr(raw.invoiceUrl),
-    pdfUrl: optStr(raw.pdfUrl),
+    status: requireNonEmptyString(raw.status, 'invoice.status'),
+    currency,
+    amountDue: requireFiniteNumber(raw.amountDue, 'invoice.amountDue'),
+    amountPaid: requireFiniteNumber(raw.amountPaid, 'invoice.amountPaid'),
+    created: requireFiniteNumber(raw.created, 'invoice.created'),
+    invoiceUrl: optString(raw.invoiceUrl, 'invoice.invoiceUrl'),
+    pdfUrl: optString(raw.pdfUrl, 'invoice.pdfUrl'),
   }
 }
 
@@ -348,7 +399,18 @@ export function createBackendClient(token: string | null): BackendClient {
     if (token) {
       headers.Authorization = `Bearer ${token}`
     }
-    const res = await fetch(`${BACKEND_URL}${path}`, { ...init, headers })
+    let res: Response
+    try {
+      res = await fetch(`${BACKEND_URL}${path}`, {
+        ...init,
+        headers,
+        signal: AbortSignal.timeout(BILLING_TIMEOUT_MS),
+      })
+    } catch {
+      // A network failure or timeout is a service that did not answer. It is
+      // never turned into a zero, an empty list, or a fake success.
+      throw new BillingRequestError(null, 'unavailable')
+    }
     if (!res.ok) {
       try {
         await res.text()
@@ -357,7 +419,13 @@ export function createBackendClient(token: string | null): BackendClient {
       }
       throw new BillingRequestError(res.status, billingErrorCode(res.status))
     }
-    return (await res.json()) as T
+    try {
+      return (await res.json()) as T
+    } catch {
+      // A 2xx response whose body is not usable JSON is a provider failure,
+      // not an empty payload.
+      throw new BillingRequestError(res.status, 'provider_failure')
+    }
   }
 
   const billingPost = <T>(path: string, body: unknown): Promise<T> =>
@@ -416,42 +484,48 @@ export function createBackendClient(token: string | null): BackendClient {
     },
     billing: {
       plans: async () => {
-        const { plans } = await billingFetch<{ plans?: unknown[] }>('/api/billing/plans')
-        return (Array.isArray(plans) ? plans : []).map((plan) => {
-          const raw = (plan ?? {}) as Record<string, unknown>
+        const body = await billingFetch<Record<string, unknown>>('/api/billing/plans')
+        const plans = body.plans
+        if (!Array.isArray(plans)) throw invalidPayload('plans')
+        return plans.map((plan) => {
+          const raw = requireObject(plan, 'plan')
           return {
-            id: str(raw.id, ''),
-            name: str(raw.name, ''),
-            price: num(raw.price),
-            monitors: num(raw.monitors),
-            reports: num(raw.reports),
-            storageMb: num(raw.storageMb),
+            id: requireNonEmptyString(raw.id, 'plan.id'),
+            name: requireNonEmptyString(raw.name, 'plan.name'),
+            price: requireFiniteNumber(raw.price, 'plan.price'),
+            monitors: requireFiniteNumber(raw.monitors, 'plan.monitors'),
+            reports: requireFiniteNumber(raw.reports, 'plan.reports'),
+            storageMb: requireFiniteNumber(raw.storageMb, 'plan.storageMb'),
           }
         })
       },
       subscription: async () => {
-        const { subscription } = await billingFetch<{ subscription?: unknown }>(
-          '/api/billing/subscription'
-        )
-        return toBillingSubscription(subscription)
+        const body = await billingFetch<Record<string, unknown>>('/api/billing/subscription')
+        if (!('subscription' in body)) throw invalidPayload('subscription')
+        return toBillingSubscription(body.subscription)
       },
       usage: async () => {
         const body = await billingFetch<Record<string, unknown>>('/api/billing/usage')
         return {
-          usage: toCounters(body.usage),
-          limits: toCounters(body.limits),
-          remaining: toCounters(body.remaining),
+          usage: requireCounters(body.usage, 'usage'),
+          limits: requireCounters(body.limits, 'limits'),
+          remaining: requireCounters(body.remaining, 'remaining'),
         }
       },
       invoices: async () => {
-        const { invoices } = await billingFetch<{ invoices?: unknown[] }>('/api/billing/invoices')
-        return (Array.isArray(invoices) ? invoices : []).map(toBillingInvoice)
+        const body = await billingFetch<Record<string, unknown>>('/api/billing/invoices')
+        const invoices = body.invoices
+        if (!Array.isArray(invoices)) throw invalidPayload('invoices')
+        return invoices.map(toBillingInvoice)
       },
       // NOC-354 delivers this endpoint. Until it exists the request is a 404 and
       // the caller fails closed to a read-only page.
       access: async () => {
-        const { role } = await billingFetch<{ role?: unknown }>('/api/billing/access')
-        return typeof role === 'string' ? (role as BillingRole) : null
+        const body = await billingFetch<Record<string, unknown>>('/api/billing/access')
+        const role = body.role
+        return role === 'owner' || role === 'admin' || role === 'member' || role === 'none'
+          ? role
+          : null
       },
       portalUrl: async () => {
         const { url } = await billingFetch<{ url?: unknown }>('/api/billing/portal')

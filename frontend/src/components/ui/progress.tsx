@@ -28,6 +28,7 @@ const Progress = React.forwardRef<
   <ProgressPrimitive.Root
     ref={ref}
     className={cn('relative h-4 w-full overflow-hidden rounded-full bg-secondary', className)}
+    value={indeterminate ? null : Math.min(100, Math.max(0, value ?? 0))}
     {...props}
   >
     <ProgressPrimitive.Indicator

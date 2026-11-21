@@ -65,7 +65,11 @@ test('every billing read goes through the token-scoped backend client', async ()
   await callerFor('token-abc').subscription()
   assert.equal(calls[1].url.endsWith('/api/billing/subscription'), true)
 
-  stubFetch(200, { usage: {}, limits: {}, remaining: {} })
+  stubFetch(200, {
+    usage: { monitors: 2, reports: 100, storageMb: 128 },
+    limits: { monitors: 5, reports: 100, storageMb: 100 },
+    remaining: { monitors: 3, reports: 0, storageMb: 0 },
+  })
   await callerFor('token-abc').usage()
   assert.equal(calls[2].url.endsWith('/api/billing/usage'), true)
 
@@ -88,8 +92,22 @@ test('a member is refused by the backend and the router reports FORBIDDEN, not a
   assert.equal(await codeOf(() => callerFor('token-abc').portal()), 'FORBIDDEN')
 })
 
-test('a billing outage is SERVICE_UNAVAILABLE and carries no upstream detail', async () => {
+test('a provider failure is INTERNAL_SERVER_ERROR with the stable provider marker and no upstream detail', async () => {
   stubFetch(502, { error: 'Unable to update subscription' })
+  const err = await callerFor('token-abc')
+    .cancel()
+    .then(
+      () => null,
+      (e: unknown) => e
+    )
+  const trpcErr = err as { code?: string; data?: { code?: string }; message?: string }
+  assert.equal(trpcErr.code, 'INTERNAL_SERVER_ERROR')
+  assert.equal(trpcErr.message, 'Billing request failed (provider)')
+  assert.equal(trpcErr.message?.includes('Unable to update subscription'), false)
+})
+
+test('a service that did not answer stays SERVICE_UNAVAILABLE, distinct from a provider failure', async () => {
+  stubFetch(503, { error: 'Service Unavailable' })
   const err = await callerFor('token-abc')
     .cancel()
     .then(
@@ -99,7 +117,6 @@ test('a billing outage is SERVICE_UNAVAILABLE and carries no upstream detail', a
   const trpcErr = err as { code?: string; data?: { code?: string }; message?: string }
   assert.equal(trpcErr.code, 'SERVICE_UNAVAILABLE')
   assert.equal(trpcErr.message, 'Billing request failed')
-  assert.equal(trpcErr.message?.includes('Unable to update subscription'), false)
 })
 
 test('no current subscription is NOT_FOUND, which the page shows as its own state', async () => {
@@ -121,12 +138,34 @@ test('a delivered access endpoint returns the server role', async () => {
   stubFetch(200, { role: 'member' })
   assert.equal(await callerFor('token-abc').access(), 'member')
 
+  // The billing service answered with a failure: a provider failure, not an
+  // outage, and the page shows the matching state.
   stubFetch(500, { error: 'boom' })
+  assert.equal(await codeOf(() => callerFor('token-abc').access()), 'INTERNAL_SERVER_ERROR')
+
+  stubFetch(503, { error: 'Service Unavailable' })
   assert.equal(await codeOf(() => callerFor('token-abc').access()), 'SERVICE_UNAVAILABLE')
 })
 
 test('a plan change sends one server-declared tier and no identity selector', async () => {
-  stubFetch(200, { subscription: { planTier: 'advanced', status: 'active' } })
+  stubFetch(200, {
+    subscription: {
+      id: 'sub-uuid',
+      customerId: 'cus-uuid',
+      stripeSubscriptionId: 'sub_stripe',
+      planTier: 'advanced',
+      status: 'active',
+      currentPeriodStart: '2026-11-01T00:00:00.000Z',
+      currentPeriodEnd: '2026-12-01T00:00:00.000Z',
+      cancelAtPeriodEnd: false,
+      createdAt: '2026-11-01T00:00:00.000Z',
+      limits: { monitors: 20, reports: 500, storageMb: 500 },
+      price: 299,
+      currency: 'usd',
+      billingPeriod: 'month',
+      nextBillingDate: '2026-12-01T00:00:00.000Z',
+    },
+  })
   await callerFor('token-abc').changePlan({ planTier: 'advanced' })
   assert.equal(calls[0].method, 'POST')
   assert.deepEqual(JSON.parse(calls[0].body ?? '{}'), { planTier: 'advanced' })
@@ -138,14 +177,31 @@ test('an empty or oversized plan tier is rejected before any request is issued',
   assert.equal(calls.length, 0)
 })
 
+test('a malformed mutation reply is a provider failure, not a fake success', async () => {
+  stubFetch(200, { subscription: { planTier: 'advanced' } })
+  assert.equal(
+    await codeOf(() => callerFor('token-abc').changePlan({ planTier: 'advanced' })),
+    'INTERNAL_SERVER_ERROR'
+  )
+})
+
 test('cancellation sends no body and never claims immediate cancellation', async () => {
   stubFetch(200, {
     subscription: {
+      id: 'sub-uuid',
+      customerId: 'cus-uuid',
+      stripeSubscriptionId: 'sub_stripe',
       planTier: 'advanced',
       status: 'active',
-      cancelAtPeriodEnd: true,
-      nextBillingDate: null,
+      currentPeriodStart: '2026-11-01T00:00:00.000Z',
       currentPeriodEnd: '2026-12-01T00:00:00.000Z',
+      cancelAtPeriodEnd: true,
+      createdAt: '2026-11-01T00:00:00.000Z',
+      limits: { monitors: 20, reports: 500, storageMb: 500 },
+      price: 299,
+      currency: 'usd',
+      billingPeriod: 'month',
+      nextBillingDate: null,
     },
   })
   const subscription = await callerFor('token-abc').cancel()
