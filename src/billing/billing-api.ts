@@ -188,28 +188,21 @@ export class BillingApi {
       let priceId: string | null = null;
       // white_glove is withdrawn from sale (CEO ratified on NOC-327); existing
       // subscriptions are honoured but new signups and plan changes to white_glove
-      // are not allowed.
-      // free and enterprise are not self-serve purchasable tiers: free has no
-      // Stripe price, enterprise is custom pricing. They are published in the
-      // plans list but rejected at checkout/change-plan with a clear message.
-      const allowedPlanTiers: PlanTier[] = ['pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
+      // are not allowed. enterprise is not sold to new customers; free has no
+      // Stripe price and uses a different creation path.
+      const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
       if (!cancel && (typeof input.planTier !== 'string' || !allowedPlanTiers.includes(input.planTier as PlanTier))) {
-        const tier = input.planTier as PlanTier;
-        if (tier === 'free') {
-          res.writeHead(400);
-          res.end(JSON.stringify({ error: 'Free plan does not require checkout' }));
-          return;
-        }
-        if (tier === 'enterprise') {
-          res.writeHead(400);
-          res.end(JSON.stringify({ error: 'Enterprise plans require custom pricing; contact sales' }));
-          return;
-        }
         res.writeHead(400);
         res.end(JSON.stringify({ error: 'Invalid plan tier' }));
         return;
       }
       if (!cancel) {
+        // Free plan has no Stripe price; it cannot be selected via checkout.
+        if (input.planTier === 'free') {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'Free plan does not require a Stripe checkout' }));
+          return;
+        }
         // Fail closed before any Stripe call: a missing price id refuses with
         // the missing variable named instead of reaching Stripe (NOC-318).
         try {
@@ -306,22 +299,19 @@ export class BillingApi {
 
         // white_glove is withdrawn from sale (CEO ratified on NOC-327); existing
         // subscriptions are honoured but new signups to white_glove are not allowed.
-        // free and enterprise are not self-serve purchasable tiers: free has no
-        // Stripe price, enterprise is custom pricing.
-        const allowedPlanTiers: PlanTier[] = ['pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
+        // enterprise is not sold to new customers; free has no Stripe price and
+        // uses a different creation path.
+        const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
         if (!allowedPlanTiers.includes(planTier as PlanTier)) {
-          if (planTier === 'free') {
-            res.writeHead(400);
-            res.end(JSON.stringify({ error: 'Free plan does not require checkout' }));
-            return;
-          }
-          if (planTier === 'enterprise') {
-            res.writeHead(400);
-            res.end(JSON.stringify({ error: 'Enterprise plans require custom pricing; contact sales' }));
-            return;
-          }
           res.writeHead(400);
           res.end(JSON.stringify({ error: `Invalid plan tier: ${planTier}` }));
+          return;
+        }
+
+        // Free plan has no Stripe price; it cannot be selected via checkout.
+        if (planTier === 'free') {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'Free plan does not require a Stripe checkout' }));
           return;
         }
 
@@ -614,8 +604,8 @@ export class BillingApi {
   }
 
   private handleListPlans(res: ServerResponse): void {
-    // Return catalogue tiers for new signups, excluding legacy aliases and enterprise (custom pricing)
-    const catalogueTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly'];
+    // Return catalogue tiers for new signups, excluding legacy aliases, enterprise (custom pricing), and free (no Stripe price)
+    const catalogueTiers: PlanTier[] = ['pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly'];
     const plans = catalogueTiers.map(tier => {
       const config = PLAN_TIERS[tier];
       return {
