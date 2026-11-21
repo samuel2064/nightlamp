@@ -129,9 +129,10 @@ const warning = shouldWarnAboutEphemeralStorage(dbConfig);
   if (stripeKey) {
     const stripeClient = createStripeClient({
       secretKey: stripeKey,
-      priceBasic: process.env.STRIPE_PRICE_BASIC,
-      priceAdvanced: process.env.STRIPE_PRICE_ADVANCED,
-      priceWhiteGlove: process.env.STRIPE_PRICE_WHITE_GLOVE,
+      priceProMonthly: process.env.STRIPE_PRICE_PRO_MONTHLY,
+      priceProYearly: process.env.STRIPE_PRICE_PRO_YEARLY,
+      priceTeamMonthly: process.env.STRIPE_PRICE_TEAM_MONTHLY,
+      priceTeamYearly: process.env.STRIPE_PRICE_TEAM_YEARLY,
     });
 
     startApiServer(db, {

@@ -2,14 +2,93 @@ import { Database } from 'sql.js';
 import { v4 as uuid } from 'uuid';
 import { tenantFilter } from '../api/tenant';
 
-export type PlanTier = 'basic' | 'advanced' | 'white_glove';
-export type SubscriptionStatus = 'incomplete' | 'active' | 'past_due' | 'canceled' | 'trialing' | 'incomplete_expired';
+/**
+ * Supported plan tiers. Legacy tiers (basic, advanced, white_glove) are retained
+ * for backward compatibility with existing subscriptions. New signups use the
+ * catalogue tiers: free, pro_monthly, pro_yearly, team_monthly, team_yearly, enterprise.
+ */
+export type PlanTier =
+  | 'free'
+  | 'pro_monthly'
+  | 'pro_yearly'
+  | 'team_monthly'
+  | 'team_yearly'
+  | 'enterprise'
+  | 'basic'
+  | 'advanced'
+  | 'white_glove';
 
+export type SubscriptionStatus =
+  | 'incomplete'
+  | 'active'
+  | 'past_due'
+  | 'canceled'
+  | 'trialing'
+  | 'incomplete_expired';
+
+/**
+ * Maps a plan tier to its display configuration. Legacy tiers map to their
+ * catalogue equivalents for display purposes.
+ */
 export const PLAN_TIERS: Record<PlanTier, { name: string; price: number; monitors: number; reports: number; storageMb: number }> = {
+  free: { name: 'Free', price: 0, monitors: 0, reports: 0, storageMb: 0 },
+  pro_monthly: { name: 'Pro (Monthly)', price: 99, monitors: 5, reports: 100, storageMb: 100 },
+  pro_yearly: { name: 'Pro (Yearly)', price: 990, monitors: 5, reports: 100, storageMb: 100 },
+  team_monthly: { name: 'Team (Monthly)', price: 299, monitors: 20, reports: 500, storageMb: 500 },
+  team_yearly: { name: 'Team (Yearly)', price: 2990, monitors: 20, reports: 500, storageMb: 500 },
+  enterprise: { name: 'Enterprise', price: 0, monitors: 100, reports: 2000, storageMb: 2000 },
+  // Legacy aliases - map to catalogue equivalents for display
   basic: { name: 'Basic Support', price: 99, monitors: 5, reports: 100, storageMb: 100 },
   advanced: { name: 'Advanced Support', price: 299, monitors: 20, reports: 500, storageMb: 500 },
   white_glove: { name: 'White-Glove', price: 499, monitors: 100, reports: 2000, storageMb: 2000 },
 };
+
+/**
+ * Returns the catalogue tier+interval key for a given plan tier (used for
+ * Stripe price lookup). Legacy tiers map to their catalogue equivalents.
+ */
+export function toCatalogueTier(planTier: PlanTier): string {
+  switch (planTier) {
+    case 'basic':
+      return 'pro:month';
+    case 'advanced':
+      return 'team:month';
+    case 'white_glove':
+      return 'white_glove';
+    case 'pro_monthly':
+      return 'pro:month';
+    case 'pro_yearly':
+      return 'pro:year';
+    case 'team_monthly':
+      return 'team:month';
+    case 'team_yearly':
+      return 'team:year';
+    case 'free':
+    case 'enterprise':
+      return planTier;
+    default:
+      return planTier;
+  }
+}
+
+/**
+ * Returns the display name for a plan tier, normalizing legacy tiers to their
+ * catalogue equivalents.
+ */
+export function getPlanDisplayName(planTier: PlanTier): string {
+  return PLAN_TIERS[planTier]?.name || planTier;
+}
+
+/**
+ * Returns the monthly price in dollars for a plan tier (for MRR calculation).
+ * Legacy tiers use their catalogue equivalent pricing.
+ */
+export function getPlanMonthlyPrice(planTier: PlanTier): number {
+  const config = PLAN_TIERS[planTier];
+  if (!config) return 0;
+  // Yearly prices are already in monthly equivalent (990/10 = 99, 2990/10 = 299)
+  return config.price;
+}
 
 export interface Customer {
   id: string;

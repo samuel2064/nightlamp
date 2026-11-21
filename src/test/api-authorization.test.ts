@@ -80,7 +80,7 @@ describe('P0 API authorization', () => {
           },
           webhooks: { constructEvent: (payload: string) => JSON.parse(payload) },
         },
-        priceIds: { basic: 'price_basic', advanced: 'price_advanced', white_glove: 'price_white_glove' },
+        priceIds: { 'pro:month': 'price_pro_monthly', 'pro:year': 'price_pro_yearly', 'team:month': 'price_team_monthly', 'team:year': 'price_team_yearly', basic: 'price_basic', advanced: 'price_advanced', white_glove: 'price_white_glove' },
       } as any,
     });
     const addr = server.address() as any;
@@ -1006,7 +1006,7 @@ describe('P0 API authorization', () => {
         const response = await billingRequest('change-plan', 'POST', { planTier: 'advanced' });
         assert.strictEqual(response.status, 200);
         assert.deepStrictEqual(stripeCalls[1], { operation: 'update', id: 'sub_own', params: {
-          items: [{ id: 'si_own', price: 'price_advanced' }], payment_behavior: 'error_if_incomplete',
+          items: [{ id: 'si_own', price: 'price_team_monthly' }], payment_behavior: 'error_if_incomplete',
         } });
         const body = await response.json() as any;
         assert.strictEqual(body.subscription.price, 299);

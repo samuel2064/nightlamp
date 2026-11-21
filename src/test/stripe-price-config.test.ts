@@ -2,8 +2,9 @@ import { expect } from 'chai';
 import { Database } from 'sql.js';
 import { createDatabase } from '../db/schema';
 import { SubscriptionModel } from '../billing/subscription';
-import { createStripeClient, resolvePriceId, createCheckoutSession, PLAN_TIER_PRICE_ENV } from '../billing/stripe-client';
+import { createStripeClient, resolvePriceId, createCheckoutSession, PLAN_TIER_PRICE_ENV, LEGACY_TIER_MAP } from '../billing/stripe-client';
 import { BillingApi } from '../billing/billing-api';
+import { toCatalogueTier } from '../billing/subscription';
 
 /**
  * NOC-318: the Stripe price configuration must fail closed. A missing price
@@ -12,38 +13,63 @@ import { BillingApi } from '../billing/billing-api';
  * error message.
  */
 describe('Billing - price configuration fails closed (NOC-318)', () => {
-  it('maps each plan tier to the environment variable that must supply its price id', () => {
+  it('maps each catalogue tier+interval to the environment variable that must supply its price id', () => {
     expect(PLAN_TIER_PRICE_ENV).to.deep.equal({
-      basic: 'STRIPE_PRICE_BASIC',
-      advanced: 'STRIPE_PRICE_ADVANCED',
-      white_glove: 'STRIPE_PRICE_WHITE_GLOVE',
+      'pro:month': 'STRIPE_PRICE_PRO_MONTHLY',
+      'pro:year': 'STRIPE_PRICE_PRO_YEARLY',
+      'team:month': 'STRIPE_PRICE_TEAM_MONTHLY',
+      'team:year': 'STRIPE_PRICE_TEAM_YEARLY',
+    });
+  });
+
+  it('maps legacy tier aliases to catalogue tier+interval', () => {
+    expect(LEGACY_TIER_MAP).to.deep.equal({
+      basic: 'pro:month',
+      advanced: 'team:month',
+      white_glove: 'white_glove',
     });
   });
 
   it('keeps only the price ids that were provided', () => {
-    const client = createStripeClient({ secretKey: 'sk_test_fake', priceBasic: 'price_provided' });
-    expect(Object.keys(client.priceIds)).to.deep.equal(['basic']);
-    expect(client.priceIds.basic).to.equal('price_provided');
+    const client = createStripeClient({ secretKey: 'sk_test_fake', priceProMonthly: 'price_provided' });
+    expect(Object.keys(client.priceIds)).to.deep.equal(['pro:month']);
+    expect(client.priceIds['pro:month']).to.equal('price_provided');
   });
 
   it('treats whitespace-only values as missing', () => {
-    const client = createStripeClient({ secretKey: 'sk_test_fake', priceBasic: '   ', priceAdvanced: '' });
+    const client = createStripeClient({ secretKey: 'sk_test_fake', priceProMonthly: '   ', priceProYearly: '' });
     expect(Object.keys(client.priceIds)).to.have.lengthOf(0);
   });
 
-  it('resolves a configured price id', () => {
-    const client = createStripeClient({ secretKey: 'sk_test_fake', priceBasic: 'price_ok' });
+  it('resolves a configured price id for catalogue tier', () => {
+    const client = createStripeClient({ secretKey: 'sk_test_fake', priceProMonthly: 'price_ok' });
+    expect(resolvePriceId(client, 'pro:month')).to.equal('price_ok');
+  });
+
+  it('resolves a configured price id for legacy tier via mapping', () => {
+    const client = createStripeClient({ secretKey: 'sk_test_fake', priceProMonthly: 'price_ok' });
     expect(resolvePriceId(client, 'basic')).to.equal('price_ok');
   });
 
   it('refuses with the missing variable named when the price id is absent', () => {
     const client = createStripeClient({ secretKey: 'sk_test_fake' });
     try {
+      resolvePriceId(client, 'team:month');
+      expect.fail('should have thrown');
+    } catch (err: any) {
+      expect(err.message).to.equal('Missing Stripe price configuration for plan tier "team:month": set STRIPE_PRICE_TEAM_MONTHLY');
+      expect(err.message).to.not.include('price_');
+      expect(err.message).to.not.match(/sk_|whsec_/);
+    }
+  });
+
+  it('refuses with the missing variable named for legacy tier when unmapped', () => {
+    const client = createStripeClient({ secretKey: 'sk_test_fake' });
+    try {
       resolvePriceId(client, 'advanced');
       expect.fail('should have thrown');
     } catch (err: any) {
-      expect(err.message).to.equal('Missing Stripe price configuration for plan tier "advanced": set STRIPE_PRICE_ADVANCED');
-      // The message names the variable but carries no value or secret.
+      expect(err.message).to.equal('Missing Stripe price configuration for plan tier "advanced": set STRIPE_PRICE_TEAM_MONTHLY');
       expect(err.message).to.not.include('price_');
       expect(err.message).to.not.match(/sk_|whsec_/);
     }
@@ -74,11 +100,35 @@ describe('Billing - price configuration fails closed (NOC-318)', () => {
     const client: any = { stripe: mockStripe, priceIds: {} };
 
     try {
+      await createCheckoutSession(client, 'cus_123', 'pro:month', 'https://example.com/success', 'https://example.com/cancel');
+      expect.fail('should have thrown');
+    } catch (err: any) {
+      expect(err.message).to.include('Missing Stripe price configuration');
+      expect(err.message).to.include('STRIPE_PRICE_PRO_MONTHLY');
+    }
+    expect(createCalls).to.equal(0);
+  });
+
+  it('issues no checkout request when the legacy tier price id is missing', async () => {
+    let createCalls = 0;
+    const mockStripe: any = {
+      checkout: {
+        sessions: {
+          create: async (params: any) => {
+            createCalls += 1;
+            return { id: 'cs_test', url: 'https://checkout.stripe.com/test', ...params };
+          },
+        },
+      },
+    };
+    const client: any = { stripe: mockStripe, priceIds: {} };
+
+    try {
       await createCheckoutSession(client, 'cus_123', 'basic', 'https://example.com/success', 'https://example.com/cancel');
       expect.fail('should have thrown');
     } catch (err: any) {
       expect(err.message).to.include('Missing Stripe price configuration');
-      expect(err.message).to.include('STRIPE_PRICE_BASIC');
+      expect(err.message).to.include('STRIPE_PRICE_PRO_MONTHLY');
     }
     expect(createCalls).to.equal(0);
   });
@@ -135,38 +185,79 @@ describe('Billing - API fails closed on missing price configuration (NOC-318)', 
   });
 
   it('POST create-checkout-session refuses a missing price id with 400 naming the variable, no Stripe call', async () => {
-    const { api, createCalls } = buildApi({}, { basic: 'price_basic' }); // advanced is unconfigured
+    const { api, createCalls } = buildApi({}, { 'pro:month': 'price_pro_monthly' }); // pro:year is unconfigured
     const subs = new SubscriptionModel(db);
     const cust = subs.createCustomer('billing@test.com');
     subs.updateStripeCustomerId(cust.id, 'cus_stripe');
 
-    const res = await request(api, 'POST', '/api/billing/create-checkout-session', JSON.stringify({ planTier: 'advanced' }));
+    const res = await request(api, 'POST', '/api/billing/create-checkout-session', JSON.stringify({ planTier: 'pro_yearly' }));
     expect(res.statusCode).to.equal(400);
     const data = JSON.parse(res.body);
-    expect(data.error).to.equal('Missing Stripe price configuration for plan tier "advanced": set STRIPE_PRICE_ADVANCED');
+    expect(data.error).to.equal('Missing Stripe price configuration for plan tier "pro_yearly": set STRIPE_PRICE_PRO_YEARLY');
+    expect(createCalls()).to.equal(0);
+  });
+
+  it('POST create-checkout-session refuses a missing price id for legacy tier with 400 naming the variable, no Stripe call', async () => {
+    const { api, createCalls } = buildApi({}, { 'team:month': 'price_team_monthly' }); // pro:month is unconfigured
+    const subs = new SubscriptionModel(db);
+    const cust = subs.createCustomer('billing@test.com');
+    subs.updateStripeCustomerId(cust.id, 'cus_stripe');
+
+    const res = await request(api, 'POST', '/api/billing/create-checkout-session', JSON.stringify({ planTier: 'basic' }));
+    expect(res.statusCode).to.equal(400);
+    const data = JSON.parse(res.body);
+    expect(data.error).to.equal('Missing Stripe price configuration for plan tier "basic": set STRIPE_PRICE_PRO_MONTHLY');
     expect(createCalls()).to.equal(0);
   });
 
   it('POST change-plan refuses a missing price id with 400 naming the variable, no Stripe update', async () => {
-    const { api, updateCalls } = buildApi({}, { basic: 'price_basic' }); // advanced is unconfigured
+    const { api, updateCalls } = buildApi({}, { 'pro:month': 'price_pro_monthly' }); // pro:year is unconfigured
     const subs = new SubscriptionModel(db);
     const cust = subs.createCustomer('billing@test.com');
     subs.updateStripeCustomerId(cust.id, 'cus_stripe');
-    const sub = subs.createSubscription(cust.id, 'basic');
+    const sub = subs.createSubscription(cust.id, 'pro_monthly');
     subs.updateStripeSubscriptionId(sub.id, 'sub_active', 'active');
 
-    const res = await request(api, 'POST', '/api/billing/change-plan', JSON.stringify({ planTier: 'advanced' }));
+    const res = await request(api, 'POST', '/api/billing/change-plan', JSON.stringify({ planTier: 'pro_yearly' }));
     expect(res.statusCode).to.equal(400);
-    expect(JSON.parse(res.body).error).to.include('set STRIPE_PRICE_ADVANCED');
+    expect(JSON.parse(res.body).error).to.include('set STRIPE_PRICE_PRO_YEARLY');
+    expect(updateCalls()).to.equal(0);
+  });
+
+  it('POST change-plan refuses a missing price id for legacy tier with 400 naming the variable, no Stripe update', async () => {
+    const { api, updateCalls } = buildApi({}, { 'team:month': 'price_team_monthly' }); // pro:month is unconfigured
+    const subs = new SubscriptionModel(db);
+    const cust = subs.createCustomer('billing@test.com');
+    subs.updateStripeCustomerId(cust.id, 'cus_stripe');
+    const sub = subs.createSubscription(cust.id, 'pro_monthly');
+    subs.updateStripeSubscriptionId(sub.id, 'sub_active', 'active');
+
+    const res = await request(api, 'POST', '/api/billing/change-plan', JSON.stringify({ planTier: 'basic' }));
+    expect(res.statusCode).to.equal(400);
+    expect(JSON.parse(res.body).error).to.include('set STRIPE_PRICE_PRO_MONTHLY');
     expect(updateCalls()).to.equal(0);
   });
 
   it('POST change-plan still succeeds when the price id is configured', async () => {
-    const { api, updateCalls } = buildApi({}, { basic: 'price_basic', advanced: 'price_advanced' });
+    const { api, updateCalls } = buildApi({}, { 'pro:month': 'price_pro_monthly', 'pro:year': 'price_pro_yearly' });
     const subs = new SubscriptionModel(db);
     const cust = subs.createCustomer('billing@test.com');
     subs.updateStripeCustomerId(cust.id, 'cus_stripe');
-    const sub = subs.createSubscription(cust.id, 'basic');
+    const sub = subs.createSubscription(cust.id, 'pro_monthly');
+    subs.updateStripeSubscriptionId(sub.id, 'sub_active', 'active');
+
+    const res = await request(api, 'POST', '/api/billing/change-plan', JSON.stringify({ planTier: 'pro_yearly' }));
+    expect(res.statusCode).to.equal(200);
+    expect(updateCalls()).to.equal(1);
+    expect(subs.getSubscription(sub.id)!.planTier).to.equal('pro_yearly');
+  });
+
+  it('POST change-plan still succeeds for legacy tier when the price id is configured', async () => {
+    const { api, updateCalls } = buildApi({}, { 'pro:month': 'price_pro_monthly', 'team:month': 'price_team_monthly' });
+    const subs = new SubscriptionModel(db);
+    const cust = subs.createCustomer('billing@test.com');
+    subs.updateStripeCustomerId(cust.id, 'cus_stripe');
+    const sub = subs.createSubscription(cust.id, 'pro_monthly');
     subs.updateStripeSubscriptionId(sub.id, 'sub_active', 'active');
 
     const res = await request(api, 'POST', '/api/billing/change-plan', JSON.stringify({ planTier: 'advanced' }));

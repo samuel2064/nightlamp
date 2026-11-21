@@ -63,9 +63,10 @@ describe('Billing - NOC-313 catalogue dry run', () => {
 
   it('documents the env vars a creation run would set', () => {
     const output = renderObjectList();
-    expect(output).to.include('STRIPE_PRICE_BASIC');
-    expect(output).to.include('STRIPE_PRICE_ADVANCED');
-    expect(output).to.include('STRIPE_PRICE_WHITE_GLOVE');
+    expect(output).to.include('STRIPE_PRICE_PRO_MONTHLY');
+    expect(output).to.include('STRIPE_PRICE_PRO_YEARLY');
+    expect(output).to.include('STRIPE_PRICE_TEAM_MONTHLY');
+    expect(output).to.include('STRIPE_PRICE_TEAM_YEARLY');
   });
 });
 
@@ -86,7 +87,7 @@ describe('Billing - NOC-313 webhook signature rejection', () => {
           },
         },
       },
-      priceIds: { advanced: 'price_advanced' },
+      priceIds: { 'team:month': 'price_team_monthly' },
     };
     api = new BillingApi({ db, stripeClient: mockStripe, webhookSecret: 'whsec_test', baseUrl: 'http://localhost:3001' });
   });
@@ -136,10 +137,8 @@ describe('Billing - NOC-313 replay idempotency', () => {
   beforeEach(async () => {
     db = await createDatabase();
     const mockStripe: any = {
-      stripe: {
-        webhooks: { constructEvent: (payload: string) => JSON.parse(payload) },
-      },
-      priceIds: { advanced: 'price_advanced' },
+      stripe: { webhooks: { constructEvent: (payload: string) => JSON.parse(payload) } },
+      priceIds: { 'team:month': 'price_team_monthly' },
     };
     api = new BillingApi({ db, stripeClient: mockStripe, webhookSecret: 'whsec_test', baseUrl: 'http://localhost:3001' });
     subs = new SubscriptionModel(db);
@@ -167,7 +166,7 @@ describe('Billing - NOC-313 replay idempotency', () => {
 
   it('acknowledges a replayed event id without re-applying side effects', async () => {
     const cust = subs.createCustomer('replay@test.com');
-    const sub = subs.createSubscription(cust.id, 'advanced');
+    const sub = subs.createSubscription(cust.id, 'team_monthly');
     subs.updateStripeSubscriptionId(sub.id, 'sub_replay', 'incomplete');
 
     const payload = JSON.stringify({
@@ -206,7 +205,7 @@ describe('Billing - NOC-313 missing customer refusal', () => {
           },
         },
       },
-      priceIds: { advanced: 'price_advanced' },
+      priceIds: { 'team:month': 'price_team_monthly' },
     };
     api = new BillingApi({ db, stripeClient: mockStripe, webhookSecret: 'whsec_test', baseUrl: 'http://localhost:3001' });
     subs = new SubscriptionModel(db);

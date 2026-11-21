@@ -12,6 +12,7 @@
  * Usage: npm run stripe:catalogue:dry-run
  */
 import { BILLING_CATALOGUE, BILLING_CURRENCY, CataloguePrice, CatalogueProduct } from '../src/billing/catalogue';
+import { PLAN_TIER_PRICE_ENV } from '../src/billing/stripe-client';
 
 export interface PlannedPrice {
   lookupKey: string;
@@ -77,7 +78,8 @@ export function renderObjectList(
     lines.push('');
   }
   lines.push('After a reviewed creation run, set the price env vars to the created ids:');
-  lines.push('  STRIPE_PRICE_BASIC, STRIPE_PRICE_ADVANCED, STRIPE_PRICE_WHITE_GLOVE');
+  const envVars = Object.values(PLAN_TIER_PRICE_ENV).sort();
+  lines.push(`  ${envVars.join(', ')}`);
   return lines.join('\n');
 }
 
