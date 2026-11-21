@@ -47,6 +47,8 @@ export const CATALOGUE_TIER_MAP: Record<string, string> = {
 /**
  * Returns the env var name for a given tier (catalogue or legacy).
  * For error messages, we want to show the original tier name.
+ * white_glove is withdrawn from sale (CEO ratified on NOC-327) and has no
+ * Stripe price configuration; it is honoured only for existing subscriptions.
  */
 export function getEnvVarForTier(tier: string): string {
   if (Object.hasOwn(PLAN_TIER_PRICE_ENV, tier)) {
@@ -56,8 +58,12 @@ export function getEnvVarForTier(tier: string): string {
   if (legacyMapped && legacyMapped !== 'white_glove' && Object.hasOwn(PLAN_TIER_PRICE_ENV, legacyMapped)) {
     return PLAN_TIER_PRICE_ENV[legacyMapped];
   }
+  // white_glove is withdrawn from sale (CEO ratified on NOC-327) and has no
+  // Stripe price configuration; it is honoured only for existing subscriptions.
+  // Return empty string so resolvePriceId reports "unknown plan tier" instead
+  // of naming a non-existent env var.
   if (legacyMapped === 'white_glove') {
-    return 'STRIPE_PRICE_WHITE_GLOVE';
+    return '';
   }
   const catalogueMapped = CATALOGUE_TIER_MAP[tier];
   if (catalogueMapped && catalogueMapped !== 'free' && catalogueMapped !== 'enterprise' && Object.hasOwn(PLAN_TIER_PRICE_ENV, catalogueMapped)) {

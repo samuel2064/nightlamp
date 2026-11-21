@@ -91,7 +91,7 @@ export async function up(pool: Pool): Promise<void> {
         id TEXT PRIMARY KEY,
         customer_id TEXT NOT NULL,
         stripe_subscription_id TEXT UNIQUE,
-        plan_tier TEXT NOT NULL CHECK(plan_tier IN ('basic', 'advanced', 'white_glove')),
+        plan_tier TEXT NOT NULL CHECK(plan_tier IN ('free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'enterprise', 'basic', 'advanced', 'white_glove')),
         status TEXT NOT NULL DEFAULT 'incomplete' CHECK(status IN ('incomplete', 'active', 'past_due', 'canceled', 'trialing', 'incomplete_expired')),
         current_period_start TEXT,
         current_period_end TEXT,

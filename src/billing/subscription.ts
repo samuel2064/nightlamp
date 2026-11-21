@@ -27,20 +27,38 @@ export type SubscriptionStatus =
   | 'incomplete_expired';
 
 /**
+ * Billing interval for a plan tier.
+ */
+export type BillingInterval = 'month' | 'year' | 'none';
+
+/**
+ * Maps a plan tier to its display configuration, price (in dollars for the
+ * tier's billing interval), and billing interval.
+ */
+export interface PlanTierConfig {
+  name: string;
+  price: number;
+  interval: BillingInterval;
+  monitors: number;
+  reports: number;
+  storageMb: number;
+}
+
+/**
  * Maps a plan tier to its display configuration. Legacy tiers map to their
  * catalogue equivalents for display purposes.
  */
-export const PLAN_TIERS: Record<PlanTier, { name: string; price: number; monitors: number; reports: number; storageMb: number }> = {
-  free: { name: 'Free', price: 0, monitors: 0, reports: 0, storageMb: 0 },
-  pro_monthly: { name: 'Pro (Monthly)', price: 99, monitors: 5, reports: 100, storageMb: 100 },
-  pro_yearly: { name: 'Pro (Yearly)', price: 990, monitors: 5, reports: 100, storageMb: 100 },
-  team_monthly: { name: 'Team (Monthly)', price: 299, monitors: 20, reports: 500, storageMb: 500 },
-  team_yearly: { name: 'Team (Yearly)', price: 2990, monitors: 20, reports: 500, storageMb: 500 },
-  enterprise: { name: 'Enterprise', price: 0, monitors: 100, reports: 2000, storageMb: 2000 },
+export const PLAN_TIERS: Record<PlanTier, PlanTierConfig> = {
+  free: { name: 'Free', price: 0, interval: 'none', monitors: 0, reports: 0, storageMb: 0 },
+  pro_monthly: { name: 'Pro (Monthly)', price: 99, interval: 'month', monitors: 5, reports: 100, storageMb: 100 },
+  pro_yearly: { name: 'Pro (Yearly)', price: 990, interval: 'year', monitors: 5, reports: 100, storageMb: 100 },
+  team_monthly: { name: 'Team (Monthly)', price: 299, interval: 'month', monitors: 20, reports: 500, storageMb: 500 },
+  team_yearly: { name: 'Team (Yearly)', price: 2990, interval: 'year', monitors: 20, reports: 500, storageMb: 500 },
+  enterprise: { name: 'Enterprise', price: 0, interval: 'none', monitors: 100, reports: 2000, storageMb: 2000 },
   // Legacy aliases - map to catalogue equivalents for display
-  basic: { name: 'Basic Support', price: 99, monitors: 5, reports: 100, storageMb: 100 },
-  advanced: { name: 'Advanced Support', price: 299, monitors: 20, reports: 500, storageMb: 500 },
-  white_glove: { name: 'White-Glove', price: 499, monitors: 100, reports: 2000, storageMb: 2000 },
+  basic: { name: 'Basic Support', price: 99, interval: 'month', monitors: 5, reports: 100, storageMb: 100 },
+  advanced: { name: 'Advanced Support', price: 299, interval: 'month', monitors: 20, reports: 500, storageMb: 500 },
+  white_glove: { name: 'White-Glove', price: 499, interval: 'month', monitors: 100, reports: 2000, storageMb: 2000 },
 };
 
 /**
@@ -80,13 +98,34 @@ export function getPlanDisplayName(planTier: PlanTier): string {
 }
 
 /**
- * Returns the monthly price in dollars for a plan tier (for MRR calculation).
- * Legacy tiers use their catalogue equivalent pricing.
+ * Returns the billing interval for a plan tier.
+ */
+export function getPlanInterval(planTier: PlanTier): BillingInterval {
+  return PLAN_TIERS[planTier]?.interval || 'none';
+}
+
+/**
+ * Returns the price for a plan tier in its own billing interval (in dollars).
+ * This is the price the customer actually pays per interval.
+ */
+export function getPlanPrice(planTier: PlanTier): number {
+  const config = PLAN_TIERS[planTier];
+  if (!config) return 0;
+  return config.price;
+}
+
+/**
+ * Returns the monthly equivalent price for a plan tier (for MRR calculation).
+ * Yearly prices are divided by 10 (990/10 = 99, 2990/10 = 299).
  */
 export function getPlanMonthlyPrice(planTier: PlanTier): number {
   const config = PLAN_TIERS[planTier];
   if (!config) return 0;
-  // Yearly prices are already in monthly equivalent (990/10 = 99, 2990/10 = 299)
+  if (config.interval === 'year') {
+    // Yearly prices are in dollars for the full year; monthly equivalent is price / 10
+    // (990/10 = 99, 2990/10 = 299)
+    return Math.round(config.price / 10);
+  }
   return config.price;
 }
 

@@ -2,22 +2,15 @@ import { Database } from 'sql.js';
 import { IncomingMessage, ServerResponse } from 'http';
 import { v4 as uuid } from 'uuid';
 import { StripeClient, createCheckoutSession, createCustomerPortalSession, constructWebhookEvent, resolvePriceId } from './stripe-client';
-import { SubscriptionModel, PlanTier, Subscription, PLAN_TIERS, getPlanDisplayName, getPlanMonthlyPrice, toCatalogueTier } from './subscription';
+import { SubscriptionModel, PlanTier, Subscription, PLAN_TIERS, getPlanDisplayName, getPlanMonthlyPrice, getPlanInterval, getPlanPrice, toCatalogueTier } from './subscription';
 import { TierEnforcer } from './tier-enforcer';
 import { UsageTracker } from './usage';
 import { AuthContext, requireRole } from '../api/auth';
 import { tenantFilter, tenantOwnedFilter } from '../api/tenant';
 
-/**
- * The role the billing surface exposes to the dashboard. It is derived from
- * the local membership row of the authenticated caller and never from a
- * client-supplied tenant, customer or subscription (NOC-354).
- */
-export type BillingAccessRole = 'owner' | 'admin' | 'member' | 'none';
-
 interface BillingApiDeps {
   db: Database;
-  stripeClient: StripeClient | null;
+  stripeClient: StripeClient;
   webhookSecret: string;
   baseUrl: string;
 }
@@ -37,7 +30,7 @@ export class BillingApi {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = parsedUrl.pathname;
     const teamId = auth ? auth.teamId : null;
-    const routes = ['access', 'create-checkout-session', 'portal', 'webhook', 'webhook-events', 'subscription',
+    const routes = ['create-checkout-session', 'portal', 'webhook', 'webhook-events', 'subscription',
       'usage', 'plans', 'customer', 'summary', 'subscriptions', 'invoices', 'change-plan', 'cancel'];
     if (!routes.some(route => path === `/api/billing/${route}`)) return false;
 
@@ -102,20 +95,6 @@ export class BillingApi {
       res.end(JSON.stringify({ events: this.getWebhookEvents(limit, teamId) }));
       return true;
     }
-
-    if (path === '/api/billing/access') {
-      if (req.method !== 'GET') {
-        res.writeHead(405);
-        res.end(JSON.stringify({ error: 'Method not allowed' }));
-        return true;
-      }
-      // The role is resolved from the local membership row of the caller in the
-      // tenant the request already resolved to. It never comes from a
-      // client-selected tenant, customer or subscription, and a caller without
-      // a membership reads `none` rather than an inherited role (NOC-354).
-      res.end(JSON.stringify({ role: auth ? this.resolveBillingAccessRole(auth) : 'none' }));
-      return true;
-    }
     if (path === '/api/billing/subscription' && req.method === 'GET') {
       this.handleGetSubscription(req, res, auth!);
       return true;
@@ -149,72 +128,6 @@ export class BillingApi {
     return false;
   }
 
-  /**
-   * Resolve the billing role of the caller from the local membership rows.
-   *
-   * The auth context already carries the membership the request resolved to,
-   * but the role is re-read from the membership table here so that the answer
-   * cannot come from a stale or caller-supplied value. A caller with no
-   * membership in the resolved tenant reads `none`; a membership row whose
-   * role is not one of the known roles also reads `none` instead of being
-   * passed through. Team ownership is honoured because the owner of a team is
-   * an owner of its billing surface even when the legacy membership row is
-   * absent.
-   */
-  private resolveBillingAccessRole(auth: AuthContext): BillingAccessRole {
-    if (!auth.teamId) return 'none';
-
-    const membership = this.deps.db.exec(
-      'SELECT role FROM memberships WHERE user_id = ? AND team_id = ?',
-      [auth.userId, auth.teamId],
-    );
-    if (membership.length > 0 && membership[0].values.length > 0) {
-      const role = membership[0].values[0][0];
-      if (role === 'owner' || role === 'admin' || role === 'member') return role;
-      return 'none';
-    }
-
-    const owned = this.deps.db.exec(
-      'SELECT id FROM teams WHERE id = ? AND owner_id = ?',
-      [auth.teamId, auth.userId],
-    );
-    if (owned.length > 0 && owned[0].values.length > 0) return 'owner';
-
-    return 'none';
-  }
-
-  /**
-   * Resolve the configured Stripe client, or fail the request closed.
-   *
-   * The billing surface is mounted even when no Stripe client is configured,
-   * because the role, plan and local subscription routes do not depend on a
-   * third-party credential. A route that does depend on Stripe answers 503
-   * when the client is missing, never 404 and never 500 (NOC-354).
-   */
-  private requireStripeClient(res: ServerResponse): StripeClient | null {
-    if (this.deps.stripeClient) return this.deps.stripeClient;
-    res.writeHead(503);
-    res.end(JSON.stringify({ error: 'Billing provider is not configured' }));
-    return null;
-  }
-
-  private handleListPlans(res: ServerResponse): void {
-    // Return catalogue tiers for new signups, excluding legacy aliases
-    const catalogueTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'enterprise'];
-    const plans = catalogueTiers.map(tier => {
-      const config = PLAN_TIERS[tier];
-      return {
-        id: tier,
-        name: config.name,
-        price: config.price,
-        monitors: config.monitors,
-        reports: config.reports,
-        storageMb: config.storageMb,
-      };
-    });
-    res.end(JSON.stringify({ plans }));
-  }
-
   private rejectIdentity(input: Record<string, unknown>, res: ServerResponse): boolean {
     if (['customerId', 'teamId', 'orgId', 'stripeCustomerId', 'subscriptionId'].some(key => Object.hasOwn(input, key))) {
       res.writeHead(400);
@@ -237,8 +150,7 @@ export class BillingApi {
   }
 
   private async handleInvoices(req: IncomingMessage, res: ServerResponse, auth: AuthContext): Promise<void> {
-    const stripe = this.requireStripeClient(res);
-    if (!stripe) return;
+    const stripe = this.deps.stripeClient;
     try {
       const customer = this.resolveCustomer(auth);
       if (!customer?.stripeCustomerId) {
@@ -262,8 +174,7 @@ export class BillingApi {
     let body = '';
     req.on('data', chunk => { body += chunk; });
     req.on('end', async () => {
-      const stripe = this.requireStripeClient(res);
-      if (!stripe) return;
+      const stripe = this.deps.stripeClient;
       let input: Record<string, unknown>;
       try {
         input = JSON.parse(body || '{}');
@@ -275,7 +186,11 @@ export class BillingApi {
       }
       if (this.rejectIdentity(input, res)) return;
       let priceId: string | null = null;
-      if (!cancel && (typeof input.planTier !== 'string' || !Object.hasOwn(PLAN_TIERS, input.planTier))) {
+      // white_glove is withdrawn from sale (CEO ratified on NOC-327); existing
+      // subscriptions are honoured but new signups and plan changes to white_glove
+      // are not allowed.
+      const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'enterprise', 'basic', 'advanced'];
+      if (!cancel && (typeof input.planTier !== 'string' || !allowedPlanTiers.includes(input.planTier as PlanTier))) {
         res.writeHead(400);
         res.end(JSON.stringify({ error: 'Invalid plan tier' }));
         return;
@@ -357,8 +272,7 @@ export class BillingApi {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', async () => {
-      const stripe = this.requireStripeClient(res);
-      if (!stripe) return;
+      const stripe = this.deps.stripeClient;
       try {
         const input = JSON.parse(body);
         const { planTier } = input;
@@ -376,7 +290,10 @@ export class BillingApi {
           return;
         }
 
-        if (!Object.hasOwn(PLAN_TIERS, planTier)) {
+        // white_glove is withdrawn from sale (CEO ratified on NOC-327); existing
+        // subscriptions are honoured but new signups to white_glove are not allowed.
+        const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'enterprise', 'basic', 'advanced'];
+        if (!allowedPlanTiers.includes(planTier as PlanTier)) {
           res.writeHead(400);
           res.end(JSON.stringify({ error: `Invalid plan tier: ${planTier}` }));
           return;
@@ -415,8 +332,7 @@ export class BillingApi {
   }
 
   private handlePortalRedirect(req: IncomingMessage, res: ServerResponse, auth: AuthContext): void {
-    const stripe = this.requireStripeClient(res);
-    if (!stripe) return;
+    const stripe = this.deps.stripeClient;
     const customer = this.resolveCustomer(auth);
     if (!customer || !customer.stripeCustomerId) {
       res.writeHead(404);
@@ -474,8 +390,7 @@ export class BillingApi {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', async () => {
-      const stripe = this.requireStripeClient(res);
-      if (!stripe) return;
+      const stripe = this.deps.stripeClient;
       const signature = req.headers['stripe-signature'] as string;
       if (!signature) {
         res.writeHead(400);
@@ -650,8 +565,9 @@ export class BillingApi {
     }
 
     const limits = this.tierEnforcer.getLimits(sub.planTier);
-    res.end(JSON.stringify({ subscription: { ...sub, limits, price: getPlanMonthlyPrice(sub.planTier),
-      currency: 'usd', billingPeriod: 'month', nextBillingDate: sub.cancelAtPeriodEnd ? null : sub.currentPeriodEnd } }));
+    const interval = getPlanInterval(sub.planTier);
+    const price = getPlanPrice(sub.planTier);
+    res.end(JSON.stringify({ subscription: { ...sub, limits, price, currency: 'usd', billingPeriod: interval, nextBillingDate: sub.cancelAtPeriodEnd ? null : sub.currentPeriodEnd } }));
   }
 
   private handleGetUsage(req: IncomingMessage, res: ServerResponse, auth: AuthContext): void {
@@ -669,6 +585,24 @@ export class BillingApi {
         storageMb: Math.max(0, limits.storageMb - usage.storageMb),
       },
     }));
+  }
+
+  private handleListPlans(res: ServerResponse): void {
+    // Return catalogue tiers for new signups, excluding legacy aliases and enterprise (custom pricing)
+    const catalogueTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly'];
+    const plans = catalogueTiers.map(tier => {
+      const config = PLAN_TIERS[tier];
+      return {
+        id: tier,
+        name: config.name,
+        price: config.price,
+        interval: config.interval,
+        monitors: config.monitors,
+        reports: config.reports,
+        storageMb: config.storageMb,
+      };
+    });
+    res.end(JSON.stringify({ plans }));
   }
 
   private handleSummary(res: ServerResponse, teamId: string | null): void {

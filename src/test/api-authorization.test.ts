@@ -985,10 +985,11 @@ describe('P0 API authorization', () => {
         });
       }
 
-      it('leaves local billing state unchanged when Stripe rejects a plan change', async () => {
-        stripeFailure = true;
+      it('leaves local billing state unchanged when plan change is refused before Stripe', async () => {
+        // white_glove is withdrawn from sale (CEO ratified on NOC-327); the
+        // change-plan endpoint refuses it with 400 before reaching Stripe.
         const response = await billingRequest('change-plan', 'POST', { planTier: 'white_glove' });
-        assert.strictEqual(response.status, 502);
+        assert.strictEqual(response.status, 400);
         assert.strictEqual(db.exec('SELECT plan_tier FROM subscriptions WHERE id = ?', [ownSubscriptionId])[0].values[0][0], 'basic');
       });
 
