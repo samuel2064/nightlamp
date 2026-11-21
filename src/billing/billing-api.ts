@@ -604,8 +604,8 @@ export class BillingApi {
   }
 
   private handleListPlans(res: ServerResponse): void {
-    // Return catalogue tiers for new signups, excluding legacy aliases and enterprise (custom pricing)
-    const catalogueTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly'];
+    // Return catalogue tiers for new signups, excluding legacy aliases, enterprise (custom pricing), and free (no Stripe price)
+    const catalogueTiers: PlanTier[] = ['pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly'];
     const plans = catalogueTiers.map(tier => {
       const config = PLAN_TIERS[tier];
       return {
