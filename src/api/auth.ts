@@ -194,11 +194,11 @@ function verifySignature(parsed: ParsedToken, config: JwtVerificationConfig, jwk
     return verifyHs256(signingInput, signature, config.secret);
   }
   if (header.alg === 'RS256') {
-    if (config.publicKey) {
-      return verifyRs256(signingInput, signature, config.publicKey);
-    }
     if (jwksKey) {
       return verifyRs256(signingInput, signature, jwksKey);
+    }
+    if (config.publicKey) {
+      return verifyRs256(signingInput, signature, config.publicKey);
     }
   }
   return false;
@@ -254,7 +254,7 @@ export async function verifyAccessTokenAsync(token: string): Promise<VerifiedTok
     return validateClaims(parsed.claims, config);
   }
 
-  if (parsed.header.alg === 'RS256' && !config.publicKey && config.issuer && parsed.header.kid) {
+  if (parsed.header.alg === 'RS256' && config.issuer && parsed.header.kid) {
     const key = await resolveJwksKey(config.issuer, parsed.header.kid);
     if (key && verifySignature(parsed, config, key)) {
       return validateClaims(parsed.claims, config);
