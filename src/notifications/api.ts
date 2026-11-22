@@ -205,9 +205,20 @@ export class NotificationApi {
   }
 
   private handleDeleteChannel(channelId: string, res: ServerResponse, teamId: string | null, userId: string): void {
+    // First guard: channel must belong to caller's scope (team or personal)
     if (!rowBelongsToScope(this.db, 'alert_channels', channelId, teamId, userId)) {
       res.writeHead(404);
       res.end(JSON.stringify({ error: 'Channel not found' }));
+      return;
+    }
+    // Second guard: caller must be the channel owner
+    const channel = this.db.exec(
+      'SELECT owner_id FROM alert_channels WHERE id = ?',
+      [channelId]
+    );
+    if (channel.length === 0 || channel[0].values.length === 0 || channel[0].values[0][0] !== userId) {
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: 'Only the channel owner can delete this channel', code: 'FORBIDDEN' }));
       return;
     }
     this.db.run('DELETE FROM alert_rules WHERE channel_id = ?', [channelId]);

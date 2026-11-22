@@ -235,7 +235,7 @@ export class AnalyticsApi {
       properties,
     });
 
-    markAnalyticsForward(this.db, auth.teamId, event.event_id, {
+    markAnalyticsForward(this.db, auth.teamId, event.event_id, auth.userId, {
       forwarded: outcome.forwarded,
       error: outcome.error,
     });

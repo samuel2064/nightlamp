@@ -1,8 +1,11 @@
 import { expect } from 'chai';
 import { Database } from 'sql.js';
 import { createDatabase } from '../db/schema';
-import { parsePackageJson, analyzeVersionChange, pollNpmRegistry } from '../connectors/npm-registry';
+import { parsePackageJson, analyzeVersionChange, pollNpmRegistry as realPollNpmRegistry } from '../connectors/npm-registry';
 import { DependencyModel, DependencyInfo } from '../models/dependency';
+import { mockNpmRegistry, mockPollNpmRegistry, resetMockNpmRegistry } from './support/npm-mock';
+
+const pollNpmRegistry = mockPollNpmRegistry;
 
 describe('Dependency Detection - Package.json Parser', () => {
   it('parses dependencies from package.json', () => {
@@ -90,6 +93,10 @@ describe('Dependency Detection - Version Analysis', () => {
 });
 
 describe('Dependency Detection - Npm Registry Poller', () => {
+  beforeEach(() => {
+    resetMockNpmRegistry();
+  });
+
   it('polls npm registry for a real package', async () => {
     const info = await pollNpmRegistry('express');
     if (info) {
@@ -113,6 +120,7 @@ describe('Dependency Detection - Model', () => {
   beforeEach(async () => {
     db = await createDatabase();
     model = new DependencyModel(db);
+    resetMockNpmRegistry();
   });
 
   it('upserts a new dependency', () => {
