@@ -190,7 +190,8 @@ export class BillingApi {
       // subscriptions are honoured but new signups and plan changes to white_glove
       // are not allowed.
       // Legacy aliases basic and advanced are honoured (map to pro_monthly and team_monthly).
-      // Free is $0/month recurring; enterprise is custom pricing (not purchasable).
+      // free has a $0 Stripe price and is purchasable via checkout.
+      // enterprise has no Stripe price and is not purchasable.
       const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
       if (!cancel && (typeof input.planTier !== 'string' || !allowedPlanTiers.includes(input.planTier as PlanTier))) {
         res.writeHead(400);
@@ -293,10 +294,11 @@ export class BillingApi {
         }
 
         // Legacy aliases basic and advanced are honoured (map to pro_monthly and team_monthly).
+        // free has a $0 Stripe price and is purchasable via checkout.
+        // enterprise has no Stripe price and is not purchasable.
         // white_glove is withdrawn from sale (CEO ratified on NOC-327); existing
         // subscriptions are honoured but new signups to white_glove are not allowed.
-        // Free is $0/month recurring; enterprise is custom pricing (not purchasable).
-        const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
+const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
         if (!allowedPlanTiers.includes(planTier as PlanTier)) {
           res.writeHead(400);
           res.end(JSON.stringify({ error: `Invalid plan tier: ${planTier}` }));
@@ -593,7 +595,8 @@ export class BillingApi {
 
   private handleListPlans(res: ServerResponse): void {
     // Return self-serve purchasable plans only (catalogue tiers with Stripe prices).
-    // Free is $0/month; enterprise is custom pricing (not purchasable via checkout).
+    // free has a $0 Stripe price and is purchasable via checkout.
+    // enterprise has no Stripe price and is not purchasable via checkout.
     // Legacy aliases basic and advanced are honoured (map to pro_monthly and team_monthly).
     // white_glove is withdrawn (CEO ratified NOC-327).
     const selfServeTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly'];

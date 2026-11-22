@@ -37,7 +37,7 @@ export const BILLING_CATALOGUE: CatalogueProduct[] = [
     prices: [
       { lookupKey: 'nightlamp_free_monthly', interval: 'month', intervalCount: 1, unitAmount: 0 },
     ],
-    metadata: { tier: 'free', billing: 'free' },
+    metadata: { tier: 'free', billing: 'subscription' },
   },
   {
     tier: 'pro',

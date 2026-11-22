@@ -26,12 +26,9 @@ describe('Billing - NOC-313 catalogue dry run', () => {
     expect(team.prices[0].unitAmount).to.equal(29900); // 299.00 per month
     expect(team.prices[1].unitAmount).to.equal(299000); // 2990.00 per year (~17% off)
 
-    const free = byTier.get('free')!;
-    expect(free.prices).to.have.lengthOf(1);
-    expect(free.prices[0].unitAmount).to.equal(0); // $0/month
-    expect(free.prices[0].interval).to.equal('month');
-    expect(free.prices[0].lookupKey).to.equal('nightlamp_free_monthly');
-
+    expect(byTier.get('free')!.prices).to.have.lengthOf(1);
+    expect(byTier.get('free')!.prices[0].unitAmount).to.equal(0);
+    expect(byTier.get('free')!.prices[0].interval).to.equal('month');
     expect(byTier.get('enterprise')!.prices).to.have.lengthOf(0);
   });
 

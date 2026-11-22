@@ -234,14 +234,16 @@ describe('Billing - Stripe Client', () => {
     expect(Object.keys(client.priceIds)).to.have.lengthOf(0);
   });
 
-  it('creates a stripe client with custom price IDs', () => {
+  it('creates a stripe client with custom price IDs including free', () => {
     const client = createStripeClient({
       secretKey: 'sk_test_fake',
+      priceFreeMonthly: 'price_free_monthly_custom',
       priceProMonthly: 'price_pro_monthly_custom',
       priceProYearly: 'price_pro_yearly_custom',
       priceTeamMonthly: 'price_team_monthly_custom',
       priceTeamYearly: 'price_team_yearly_custom',
     });
+    expect(client.priceIds['free:month']).to.equal('price_free_monthly_custom');
     expect(client.priceIds['pro:month']).to.equal('price_pro_monthly_custom');
     expect(client.priceIds['pro:year']).to.equal('price_pro_yearly_custom');
     expect(client.priceIds['team:month']).to.equal('price_team_monthly_custom');
@@ -266,6 +268,15 @@ describe('Billing - Stripe Client', () => {
     const session = await createCheckoutSession(client, 'cus_123', 'basic', 'https://example.com/success', 'https://example.com/cancel');
     expect(session.id).to.equal('cs_test_123');
     expect(session.line_items[0].price).to.equal('price_pro_monthly');
+  });
+
+  it('creates a checkout session with free tier', async () => {
+    const mockStripe = { checkout: { sessions: { create: async (params: any) => ({ id: 'cs_test_123', url: 'https://checkout.stripe.com/test', ...params }) } } };
+    const client: any = { stripe: mockStripe, priceIds: { 'free:month': 'price_free_monthly' } };
+
+    const session = await createCheckoutSession(client, 'cus_123', 'free', 'https://example.com/success', 'https://example.com/cancel');
+    expect(session.id).to.equal('cs_test_123');
+    expect(session.line_items[0].price).to.equal('price_free_monthly');
   });
 
   it('throws on unknown plan tier for checkout session', async () => {
@@ -333,7 +344,7 @@ describe('Billing - BillingApi', () => {
           constructEvent: (payload: string, signature: string, secret: string) => JSON.parse(payload),
         },
       },
-      priceIds: { 'pro:month': 'price_pro_monthly', 'team:month': 'price_team_monthly', 'pro:year': 'price_pro_yearly' },
+      priceIds: { 'free:month': 'price_free_monthly', 'pro:month': 'price_pro_monthly', 'team:month': 'price_team_monthly', 'pro:year': 'price_pro_yearly' },
     };
 
     api = new BillingApi({
@@ -403,6 +414,17 @@ describe('Billing - BillingApi', () => {
     expect(res.statusCode).to.equal(400);
     const data = JSON.parse(res.body);
     expect(data.error).to.include('Invalid plan tier');
+  });
+
+  it('POST /api/billing/create-checkout-session creates checkout with free tier', async () => {
+    const subs = new SubscriptionModel(db);
+    const cust = subs.createCustomer('billing@test.com');
+    subs.updateStripeCustomerId(cust.id, 'cus_test');
+    const res = await handleRequest(api, 'POST', '/api/billing/create-checkout-session', JSON.stringify({ planTier: 'free' }));
+    const data = JSON.parse(res.body);
+    expect(data.url).to.be.a('string');
+    expect(data.sessionId).to.be.a('string');
+    expect(data.subscriptionId).to.be.a('string');
   });
 
   it('POST /api/billing/create-checkout-session rejects unknown customer', async () => {
@@ -486,7 +508,7 @@ describe('Billing - Webhook Processing', () => {
         billingPortal: { sessions: { create: async (p: any) => ({ id: 'bps_test_' + Date.now(), url: 'https://billing.stripe.com/test', ...p }) } },
         webhooks: { constructEvent: (payload: string, sig: string, secret: string) => JSON.parse(payload) },
       },
-      priceIds: { 'pro:month': 'price_pro_monthly' },
+      priceIds: { 'free:month': 'price_free_monthly', 'pro:month': 'price_pro_monthly' },
     };
 
     api = new BillingApi({ db, stripeClient: mockStripe, webhookSecret: 'whsec_test', baseUrl: 'http://localhost:3001' });
@@ -620,7 +642,7 @@ describe('Billing - Webhook Idempotency, Audit & Lifecycle (NOC-183)', () => {
       stripe: {
         webhooks: { constructEvent: (payload: string) => JSON.parse(payload) },
       },
-      priceIds: { 'pro:month': 'price_pro_monthly' },
+      priceIds: { 'free:month': 'price_free_monthly', 'pro:month': 'price_pro_monthly' },
     };
     api = new BillingApi({ db, stripeClient: mockStripe, webhookSecret: 'whsec_test', baseUrl: 'http://localhost:3001' });
     subs = new SubscriptionModel(db);
