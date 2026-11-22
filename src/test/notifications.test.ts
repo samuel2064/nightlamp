@@ -155,29 +155,38 @@ describe('Notification Service', function () {
   });
 
   describe('Delivery Retry', function () {
-    let server: http.Server;
+    let originalFetch: typeof fetch;
     let webhookUrl: string;
     let responseStatus = 200;
     let requestCount = 0;
 
-    before(async function () {
-      server = http.createServer((_req, res) => {
-        requestCount++;
-        res.writeHead(responseStatus, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: responseStatus < 400 }));
-      });
-      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-      const address = server.address() as any;
-      webhookUrl = `http://127.0.0.1:${address.port}/webhook`;
+    before(function () {
+      originalFetch = globalThis.fetch;
+      webhookUrl = 'http://example.com/webhook';
     });
 
-    after(async function () {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+    after(function () {
+      globalThis.fetch = originalFetch;
     });
 
     beforeEach(function () {
       responseStatus = 200;
       requestCount = 0;
+      globalThis.fetch = async (input: any, init?: any) => {
+        requestCount++;
+        const url = typeof input === 'string' ? input : input?.url;
+        if (url === webhookUrl) {
+          return new Response(JSON.stringify({ ok: responseStatus < 400 }), {
+            status: responseStatus,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return originalFetch(input, init);
+      };
+    });
+
+    afterEach(function () {
+      globalThis.fetch = originalFetch;
     });
 
     it('should succeed on first attempt for valid channel', async function () {

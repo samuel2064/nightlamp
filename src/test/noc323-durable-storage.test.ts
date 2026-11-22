@@ -382,27 +382,108 @@ describe('NOC-323 durable storage', () => {
       const mainDb = await createDatabase();
       const mainTables = mainDb.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
       const mainTableNames = mainTables[0].values.map((r: any) => r[0]).sort();
+
+      // Extract column info from SQLite schema
+      const mainColumns = new Map<string, string[]>();
+      for (const table of mainTableNames) {
+        const cols = mainDb.exec(`PRAGMA table_info(${table})`);
+        if (cols.length > 0 && cols[0].values.length > 0) {
+          mainColumns.set(table, cols[0].values.map((row: any) => row[1]).sort());
+        }
+      }
       mainDb.close();
 
-      // Read the Postgres migration file and parse CREATE TABLE statements
+      // Read the Postgres migration files and parse CREATE TABLE statements
       const fs = require('fs');
       const path = require('path');
+
+      // Parse 009-postgres-setup.ts (base schema)
       const migrationPath = path.join(__dirname, '..', 'db', 'migrations', '009-postgres-setup.ts');
       const migrationContent = fs.readFileSync(migrationPath, 'utf8');
 
-      // Extract table names from Postgres migration
-      const pgTableMatches = migrationContent.match(/CREATE TABLE IF NOT EXISTS\s+(\w+)\s*\(/g);
-      const pgTableNames = pgTableMatches ? pgTableMatches.map(m => m.match(/CREATE TABLE IF NOT EXISTS\s+(\w+)\s*\(/)[1]).sort() : [];
+      // Parse postgres-runner.ts for 008-tenant-isolation (adds team_id to base tables)
+      const runnerPath = path.join(__dirname, '..', 'db', 'migrations', 'postgres-runner.ts');
+      const runnerContent = fs.readFileSync(runnerPath, 'utf8');
+
+      // Extract table names and column definitions from Postgres migrations
+      const pgTableNames: string[] = [];
+      const pgColumns = new Map<string, string[]>();
+
+      function parseCreateTable(content: string, source: string) {
+        const createTableRegex = /CREATE TABLE IF NOT EXISTS\s+(\w+)\s*\(([\s\S]*?)\);/g;
+        let match;
+        while ((match = createTableRegex.exec(content)) !== null) {
+          const tableName = match[1];
+          const tableDef = match[2];
+          if (!pgTableNames.includes(tableName)) {
+            pgTableNames.push(tableName);
+          }
+
+          const colLines = tableDef.split(',').map((line: string) => line.trim());
+          const colNames: string[] = [];
+          for (const line of colLines) {
+            if (line.startsWith('CONSTRAINT') || line.startsWith('PRIMARY KEY') || line.startsWith('FOREIGN KEY') ||
+                line.startsWith('UNIQUE') || line.startsWith('CHECK') || line.startsWith('INDEX')) {
+              continue;
+            }
+            const parts = line.trim().split(/\s+/);
+            if (parts.length >= 1) {
+              colNames.push(parts[0]);
+            }
+          }
+          const existing = pgColumns.get(tableName) ?? [];
+          pgColumns.set(tableName, [...new Set([...existing, ...colNames])].sort());
+        }
+      }
+
+      // Parse base schema (009)
+      parseCreateTable(migrationContent, '009-postgres-setup');
+
+      // Parse runner migration (008-tenant-isolation) - adds team_id to base tables
+      const runnerTableMatches = runnerContent.match(/const tables = \[([\s\S]*?)\];/);
+      if (runnerTableMatches) {
+        const tablesList = runnerTableMatches[1];
+        const tableNames = tablesList.match(/'(\w+)'/g)?.map(t => t.replace(/'/g, '')) ?? [];
+        for (const table of tableNames) {
+          if (!pgTableNames.includes(table)) {
+            pgTableNames.push(table);
+          }
+          const existing = pgColumns.get(table) ?? [];
+          pgColumns.set(table, [...new Set([...existing, 'team_id'])].sort());
+        }
+      }
+
+      // Also parse branch-owned Postgres migrations (010, 011, 012)
+      const branchMigrations = [
+        '010-monitored-apps-postgres.ts',
+        '011-analytics-events-postgres.ts',
+        '012-personal-ownership-postgres.ts',
+      ];
+      for (const migFile of branchMigrations) {
+        const migPath = path.join(__dirname, '..', 'db', 'migrations', migFile);
+        if (fs.existsSync(migPath)) {
+          const migContent = fs.readFileSync(migPath, 'utf8');
+          parseCreateTable(migContent, migFile);
+        }
+      }
+
+      pgTableNames.sort();
 
       // Check that all main tables exist in Postgres migration
       for (const table of mainTableNames) {
         assert.ok(pgTableNames.includes(table), `Postgres migration missing table: ${table}`);
       }
 
-      // Verify column parity for a few critical tables
-      for (const criticalTable of ['teams', 'memberships', 'invitations', 'usage_records', 'team_workspaces', 'checks', 'check_results', 'failure_events', 'playbook_entries']) {
-        if (mainTableNames.includes(criticalTable)) {
-          assert.ok(pgTableNames.includes(criticalTable), `Critical table ${criticalTable} must exist in Postgres migration`);
+      // Verify column parity for all tables
+      for (const table of mainTableNames) {
+        const sqliteCols = mainColumns.get(table) ?? [];
+        const pgCols = pgColumns.get(table) ?? [];
+
+        // Filter out columns that are SQLite-specific (like rowid)
+        const relevantSqliteCols = sqliteCols.filter(c => c !== 'rowid');
+
+        for (const col of relevantSqliteCols) {
+          assert.ok(pgCols.includes(col), `Postgres migration missing column ${table}.${col}`);
         }
       }
 

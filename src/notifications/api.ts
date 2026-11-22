@@ -221,6 +221,13 @@ export class NotificationApi {
       res.end(JSON.stringify({ error: 'Only the channel owner can delete this channel', code: 'FORBIDDEN' }));
       return;
     }
+    // Third guard (shared referenced-channel delete guard): refuse if a monitored app references this channel
+    const attached = this.db.exec('SELECT id FROM monitored_apps WHERE alert_channel_id = ? LIMIT 1', [channelId]);
+    if (attached.length > 0 && attached[0].values.length > 0) {
+      res.writeHead(409);
+      res.end(JSON.stringify({ error: 'Channel is referenced by a monitored application', code: 'CHANNEL_IN_USE' }));
+      return;
+    }
     this.db.run('DELETE FROM alert_rules WHERE channel_id = ?', [channelId]);
     this.db.run('DELETE FROM notification_deduplication WHERE channel_id = ?', [channelId]);
     this.db.run('DELETE FROM notification_rate_limits WHERE channel_id = ?', [channelId]);
