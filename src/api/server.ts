@@ -36,7 +36,7 @@ import { handleSSERequest } from './sse';
 import { createPlaybookEngine } from '../playbook/engine';
 import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
 import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership, authenticateRequestAsync, requireRole } from './auth';
-import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant } from './tenant';
+import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant, rowBelongsToScope, scopedTenantFilter } from './tenant';
 import { getDatabaseConfig, getBootId } from '../db';
 
 export interface ApiConfig {
@@ -318,6 +318,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
       const scope = auth ? `${auth.userId}:${auth.teamId || 'personal'}` : 'public';
       const teamId = auth ? auth.teamId : null;
+      const userId = auth ? auth.userId : '';
 
       // The monitored application registry owns its own tenant scoping, so it
       // runs before the generic route chain and never falls through to it.
@@ -794,7 +795,7 @@ const id = uuidv4();
           res.end(JSON.stringify({ error: 'Channel ID required' }));
           return;
         }
-        if (teamId === null || !rowBelongsToTenant(db, 'alert_channels', channelId, teamId)) {
+        if (!rowBelongsToScope(db, 'alert_channels', channelId, teamId, userId)) {
           res.writeHead(404);
           res.end(JSON.stringify({ error: 'Channel not found' }));
           return;
@@ -835,8 +836,8 @@ const id = uuidv4();
               return;
             }
             updates.push("updated_at = datetime('now')");
-            const tenantScope = tenantOwnedFilter('team_id', teamId);
-            db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${tenantScope.clause}`, [...params, channelId, ...tenantScope.params]);
+            const channelScope = scopedTenantFilter('alert_channels', teamId, userId);
+            db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${channelScope.clause}`, [...params, channelId, ...channelScope.params]);
             if (db.getRowsModified() === 0) {
               res.writeHead(404);
               res.end(JSON.stringify({ error: 'Channel not found' }));
@@ -863,7 +864,7 @@ const id = uuidv4();
                 res.end(JSON.stringify({ error: 'name, channelId, and failureTypes are required' }));
                 return;
               }
-              if (teamId === null || !rowBelongsToTenant(db, 'alert_channels', channelId, teamId)) {
+              if (!rowBelongsToScope(db, 'alert_channels', channelId, teamId, userId)) {
                 res.writeHead(404);
                 res.end(JSON.stringify({ error: 'Channel not found' }));
                 return;
@@ -931,7 +932,7 @@ const id = uuidv4();
         req.on('end', () => {
           try {
             const { name, channelId, failureTypes, minSeverity, enabled } = JSON.parse(body);
-            if (channelId !== undefined && (teamId === null || !rowBelongsToTenant(db, 'alert_channels', channelId, teamId))) {
+            if (channelId !== undefined && !rowBelongsToScope(db, 'alert_channels', channelId, teamId, userId)) {
               res.writeHead(404);
               res.end(JSON.stringify({ error: 'Channel not found' }));
               return;
