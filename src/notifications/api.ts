@@ -191,13 +191,14 @@ export class NotificationApi {
           eventId,
         };
 
+        const dedupWindow = Math.max(1, dedupMinutes || 5);
         const result = await processNotification(
           this.db,
           channelId,
           channelType,
           channelConfig,
           payload,
-          dedupMinutes || 5
+          dedupWindow
         );
 
         res.end(JSON.stringify({

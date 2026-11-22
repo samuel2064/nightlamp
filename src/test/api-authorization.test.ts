@@ -1,7 +1,7 @@
 import { createDatabase } from '../db/schema';
 import { startApiServer } from '../api/server';
 import { appRouter, createTRPCContext, createTRPCContextFromNodeRequest } from '../api/trpc';
-import { ApiAuthError, authenticateRequestAsync, verifyAccessTokenAsync } from '../api/auth';
+import { ApiAuthError, authenticateRequestAsync, verifyAccessTokenAsync, warnIfClerkJwtAudienceConfigured } from '../api/auth';
 import { createPlaybookEngine } from '../playbook/engine';
 import initSqlJs, { Database } from 'sql.js';
 import { Server } from 'http';
@@ -115,6 +115,79 @@ describe('P0 API authorization', () => {
     it('rejects a token whose subject is a non-string', async () => {
       const malformed = createTestToken({ sub: 42 });
       await assert.rejects(verifyAccessTokenAsync(malformed), (err: any) => err instanceof ApiAuthError && err.statusCode === 401);
+    });
+  });
+
+  describe('Clerk JWT audience lockout guard', () => {
+    const tokenWithoutAudience = createTestToken({ sub: TEST_CLERK_USER_ID });
+    let originalAudience: string | undefined;
+
+    beforeEach(() => {
+      originalAudience = process.env.CLERK_JWT_AUDIENCE;
+      delete process.env.CLERK_JWT_AUDIENCE;
+    });
+
+    afterEach(() => {
+      if (originalAudience === undefined) {
+        delete process.env.CLERK_JWT_AUDIENCE;
+      } else {
+        process.env.CLERK_JWT_AUDIENCE = originalAudience;
+      }
+    });
+
+    it('answers 401 when an audience is configured and the token has no aud claim', async () => {
+      process.env.CLERK_JWT_AUDIENCE = 'configured-audience';
+
+      const res = await fetchWithoutAuth(`http://127.0.0.1:${port}/api/events`, {
+        headers: { Authorization: `Bearer ${tokenWithoutAudience}` },
+      });
+
+      assert.strictEqual(res.status, 401);
+    });
+
+    it('accepts the same token without an aud claim when the audience is unset', async () => {
+      const res = await fetchWithoutAuth(`http://127.0.0.1:${port}/api/events`, {
+        headers: { Authorization: `Bearer ${tokenWithoutAudience}` },
+      });
+
+      assert.strictEqual(res.status, 200);
+    });
+
+    it('warns at startup when an audience is configured', () => {
+      process.env.CLERK_JWT_AUDIENCE = 'configured-audience';
+      const warnings: string[] = [];
+
+      warnIfClerkJwtAudienceConfigured((message) => warnings.push(message));
+
+      assert.strictEqual(warnings.length, 1);
+      assert.match(warnings[0], /CLERK_JWT_AUDIENCE is set.*tokens without an .aud. claim.*401/i);
+      assert.ok(!warnings[0].includes('\n'));
+    });
+
+    it('stays quiet when the audience is unset', () => {
+      delete process.env.CLERK_JWT_AUDIENCE;
+      const warnings: string[] = [];
+
+      warnIfClerkJwtAudienceConfigured((message) => warnings.push(message));
+
+      assert.deepStrictEqual(
+        warnings,
+        [],
+        'the guard must stay silent in the configuration production runs',
+      );
+    });
+
+    it('stays quiet when the audience is whitespace only', () => {
+      process.env.CLERK_JWT_AUDIENCE = '   \t\n  ';
+      const warnings: string[] = [];
+
+      warnIfClerkJwtAudienceConfigured((message) => warnings.push(message));
+
+      assert.deepStrictEqual(
+        warnings,
+        [],
+        'a whitespace only value is the same as unset and must not warn',
+      );
     });
   });
 

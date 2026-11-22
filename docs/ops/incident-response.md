@@ -98,10 +98,12 @@ Production endpoints:
 1. Check `CLERK_SECRET_KEY` and `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` in Render envs.
 2. Verify `POST /api/webhooks/clerk` is receiving events (log).
 3. Confirm Clerk app published + signing keys valid.
+4. Confirm `CLERK_JWT_AUDIENCE` is unset; this instance's tokens omit `aud`, so setting it rejects every authenticated request with 401.
 
 **Resolution:**
 1. Rotate Clerk keys, update Render env, redeploy.
 2. Re-sync webhook URL in Clerk dashboard.
+3. Remove `CLERK_JWT_AUDIENCE`, redeploy, and verify signed-in requests succeed.
 
 **Escalation:** P2.
 
