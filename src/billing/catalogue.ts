@@ -33,9 +33,11 @@ export const BILLING_CATALOGUE: CatalogueProduct[] = [
   {
     tier: 'free',
     name: 'Free',
-    description: 'Free tier - no Stripe price objects',
-    prices: [],
-    metadata: { tier: 'free', billing: 'free' },
+    description: 'Free tier - $0/month recurring',
+    prices: [
+      { lookupKey: 'nightlamp_free_monthly', interval: 'month', intervalCount: 1, unitAmount: 0 },
+    ],
+    metadata: { tier: 'free', billing: 'subscription' },
   },
   {
     tier: 'pro',

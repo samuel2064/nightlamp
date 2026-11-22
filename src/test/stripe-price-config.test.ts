@@ -15,6 +15,7 @@ import { toCatalogueTier } from '../billing/subscription';
 describe('Billing - price configuration fails closed (NOC-318)', () => {
   it('maps each catalogue tier+interval to the environment variable that must supply its price id', () => {
     expect(PLAN_TIER_PRICE_ENV).to.deep.equal({
+      'free:month': 'STRIPE_PRICE_FREE_MONTHLY',
       'pro:month': 'STRIPE_PRICE_PRO_MONTHLY',
       'pro:year': 'STRIPE_PRICE_PRO_YEARLY',
       'team:month': 'STRIPE_PRICE_TEAM_MONTHLY',
