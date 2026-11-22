@@ -49,7 +49,7 @@ export interface PlanTierConfig {
  * catalogue equivalents for display purposes.
  */
 export const PLAN_TIERS: Record<PlanTier, PlanTierConfig> = {
-  free: { name: 'Free', price: 0, interval: 'none', monitors: 0, reports: 0, storageMb: 0 },
+  free: { name: 'Free', price: 0, interval: 'month', monitors: 0, reports: 0, storageMb: 0 },
   pro_monthly: { name: 'Pro (Monthly)', price: 99, interval: 'month', monitors: 5, reports: 100, storageMb: 100 },
   pro_yearly: { name: 'Pro (Yearly)', price: 990, interval: 'year', monitors: 5, reports: 100, storageMb: 100 },
   team_monthly: { name: 'Team (Monthly)', price: 299, interval: 'month', monitors: 20, reports: 500, storageMb: 500 },

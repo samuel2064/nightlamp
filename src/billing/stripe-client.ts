@@ -15,6 +15,7 @@ export interface StripeClient {
  * via resolvePriceIdLegacy.
  */
 export const PLAN_TIER_PRICE_ENV: Record<string, string> = {
+  'free:month': 'STRIPE_PRICE_FREE_MONTHLY',
   'pro:month': 'STRIPE_PRICE_PRO_MONTHLY',
   'pro:year': 'STRIPE_PRICE_PRO_YEARLY',
   'team:month': 'STRIPE_PRICE_TEAM_MONTHLY',
@@ -36,7 +37,7 @@ export const LEGACY_TIER_MAP: Record<string, string> = {
  * Used for Stripe price lookup.
  */
 export const CATALOGUE_TIER_MAP: Record<string, string> = {
-  free: 'free',
+  free: 'free:month',
   pro_monthly: 'pro:month',
   pro_yearly: 'pro:year',
   team_monthly: 'team:month',
@@ -66,7 +67,7 @@ export function getEnvVarForTier(tier: string): string {
     return '';
   }
   const catalogueMapped = CATALOGUE_TIER_MAP[tier];
-  if (catalogueMapped && catalogueMapped !== 'free' && catalogueMapped !== 'enterprise' && Object.hasOwn(PLAN_TIER_PRICE_ENV, catalogueMapped)) {
+  if (catalogueMapped && catalogueMapped !== 'enterprise' && Object.hasOwn(PLAN_TIER_PRICE_ENV, catalogueMapped)) {
     return PLAN_TIER_PRICE_ENV[catalogueMapped];
   }
   return '';
@@ -88,15 +89,16 @@ export function toPriceLookupKey(planTier: string): string {
   }
   // Check catalogue mapping
   const catalogueMapped = CATALOGUE_TIER_MAP[planTier];
-  if (catalogueMapped && catalogueMapped !== 'free' && catalogueMapped !== 'enterprise') {
+  if (catalogueMapped && catalogueMapped !== 'enterprise') {
     return catalogueMapped;
   }
-  // Return as-is for free/enterprise/white_glove
+  // Return as-is for enterprise/white_glove
   return planTier;
 }
 
 export function createStripeClient(config: {
   secretKey: string;
+  priceFreeMonthly?: string;
   priceProMonthly?: string;
   priceProYearly?: string;
   priceTeamMonthly?: string;
@@ -105,6 +107,7 @@ export function createStripeClient(config: {
   const stripe = new Stripe(config.secretKey);
 
   const provided: Record<string, string | undefined> = {
+    'free:month': config.priceFreeMonthly,
     'pro:month': config.priceProMonthly,
     'pro:year': config.priceProYearly,
     'team:month': config.priceTeamMonthly,

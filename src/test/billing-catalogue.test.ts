@@ -26,7 +26,12 @@ describe('Billing - NOC-313 catalogue dry run', () => {
     expect(team.prices[0].unitAmount).to.equal(29900); // 299.00 per month
     expect(team.prices[1].unitAmount).to.equal(299000); // 2990.00 per year (~17% off)
 
-    expect(byTier.get('free')!.prices).to.have.lengthOf(0);
+    const free = byTier.get('free')!;
+    expect(free.prices).to.have.lengthOf(1);
+    expect(free.prices[0].unitAmount).to.equal(0); // $0/month
+    expect(free.prices[0].interval).to.equal('month');
+    expect(free.prices[0].lookupKey).to.equal('nightlamp_free_monthly');
+
     expect(byTier.get('enterprise')!.prices).to.have.lengthOf(0);
   });
 
@@ -54,7 +59,7 @@ describe('Billing - NOC-313 catalogue dry run', () => {
     const products = buildObjectList();
     for (const product of products) {
       for (const price of product.prices) {
-        expect(price.lookupKey).to.match(/^nightlamp_(pro|team)_(monthly|yearly)$/);
+        expect(price.lookupKey).to.match(/^nightlamp_(free|pro|team)_(monthly|yearly)$/);
         expect(price.currency).to.equal('USD');
         expect(price.unitAmount % 100).to.equal(0);
       }
@@ -63,6 +68,7 @@ describe('Billing - NOC-313 catalogue dry run', () => {
 
   it('documents the env vars a creation run would set', () => {
     const output = renderObjectList();
+    expect(output).to.include('STRIPE_PRICE_FREE_MONTHLY');
     expect(output).to.include('STRIPE_PRICE_PRO_MONTHLY');
     expect(output).to.include('STRIPE_PRICE_PRO_YEARLY');
     expect(output).to.include('STRIPE_PRICE_TEAM_MONTHLY');
