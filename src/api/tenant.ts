@@ -153,13 +153,22 @@ export function requireChannelOwnership(
   teamId: string | null,
   userId: string,
 ): ChannelDeleteGuardResult | null {
-  // First: verify the caller owns this channel (team scope or personal ownership)
+  // First: verify the caller is in scope (team scope or personal ownership)
   if (!rowBelongsToScope(db, 'alert_channels', channelId, teamId, userId)) {
     // Fail closed: return 404 for any unauthorized access (teamless or wrong owner)
     return { error: 'Channel not found', code: 'NOT_FOUND', status: 404 };
   }
 
-  // Second: shared referenced-channel delete guard - refuse if a monitored app references this channel
+  // Second: for team channels, verify the caller is the channel owner
+  // (personal channels already enforce ownership via rowBelongsToScope)
+  if (teamId !== null) {
+    const channel = db.exec('SELECT owner_id FROM alert_channels WHERE id = ?', [channelId]);
+    if (channel.length === 0 || channel[0].values.length === 0 || channel[0].values[0][0] !== userId) {
+      return { error: 'Only the channel owner can delete this channel', code: 'FORBIDDEN', status: 403 };
+    }
+  }
+
+  // Third: shared referenced-channel delete guard - refuse if a monitored app references this channel
   const attached = db.exec('SELECT id FROM monitored_apps WHERE alert_channel_id = ? LIMIT 1', [channelId]);
   if (attached.length > 0 && attached[0].values.length > 0) {
     return { error: 'Channel is referenced by a monitored application', code: 'CHANNEL_IN_USE', status: 409 };

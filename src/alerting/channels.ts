@@ -1,6 +1,5 @@
 import * as nodemailer from 'nodemailer';
 import { resolvePublicTarget, BlockedTargetError, TargetResolutionError, defaultHostResolver } from '../engine/outbound-safety';
-import * as net from 'net';
 
 export type ChannelType = 'slack' | 'email' | 'pagerduty' | 'in-app-websocket';
 
@@ -240,7 +239,7 @@ export async function sendNotification(
   payload: NotificationPayload
 ): Promise<void> {
   // Validate destination at delivery time (defense in depth: also checked at channel creation)
-  validateDeliveryDestination(channelType, config);
+  await validateDeliveryDestination(channelType, config);
 
   switch (channelType) {
     case 'slack':
