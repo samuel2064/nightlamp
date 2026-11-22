@@ -29,6 +29,7 @@ describe('Billing - NOC-313 catalogue dry run', () => {
     expect(byTier.get('free')!.prices).to.have.lengthOf(1);
     expect(byTier.get('free')!.prices[0].unitAmount).to.equal(0);
     expect(byTier.get('free')!.prices[0].interval).to.equal('month');
+    expect(byTier.get('free')!.prices[0].lookupKey).to.equal('nightlamp_free_monthly');
     expect(byTier.get('enterprise')!.prices).to.have.lengthOf(0);
   });
 

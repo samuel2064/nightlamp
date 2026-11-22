@@ -298,7 +298,7 @@ export class BillingApi {
         // enterprise has no Stripe price and is not purchasable.
         // white_glove is withdrawn from sale (CEO ratified on NOC-327); existing
         // subscriptions are honoured but new signups to white_glove are not allowed.
-const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
+        const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
         if (!allowedPlanTiers.includes(planTier as PlanTier)) {
           res.writeHead(400);
           res.end(JSON.stringify({ error: `Invalid plan tier: ${planTier}` }));
