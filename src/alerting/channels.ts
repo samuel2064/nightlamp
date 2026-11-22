@@ -1,5 +1,5 @@
 import * as nodemailer from 'nodemailer';
-import { isBlockedAddress, isBlockedHostname } from '../engine/outbound-safety';
+import { resolvePublicTarget, BlockedTargetError, TargetResolutionError, defaultHostResolver } from '../engine/outbound-safety';
 import * as net from 'net';
 
 export type ChannelType = 'slack' | 'email' | 'pagerduty' | 'in-app-websocket';
@@ -38,13 +38,7 @@ export interface NotificationPayload {
   eventId?: string;
 }
 
-function isBlockedHost(host: string): boolean {
-  if (isBlockedHostname(host)) return true;
-  if (net.isIP(host)) return isBlockedAddress(host);
-  return false;
-}
-
-function validateDeliveryDestination(channelType: ChannelType, config: ChannelConfig): void {
+async function validateDeliveryDestination(channelType: ChannelType, config: ChannelConfig): Promise<void> {
   if (channelType === 'slack') {
     const slackConfig = config as SlackConfig;
     let parsed: URL;
@@ -53,8 +47,16 @@ function validateDeliveryDestination(channelType: ChannelType, config: ChannelCo
     } catch {
       throw new Error('Invalid webhook URL');
     }
-    if (isBlockedHost(parsed.hostname)) {
-      throw new Error('Slack webhook destination is not a public endpoint');
+    try {
+      await resolvePublicTarget(parsed.hostname, defaultHostResolver);
+    } catch (err) {
+      if (err instanceof BlockedTargetError) {
+        throw new Error('Slack webhook destination is not a public endpoint');
+      }
+      if (err instanceof TargetResolutionError) {
+        throw new Error('Slack webhook destination DNS resolution failed');
+      }
+      throw err;
     }
   }
   if (channelType === 'in-app-websocket') {
@@ -65,15 +67,34 @@ function validateDeliveryDestination(channelType: ChannelType, config: ChannelCo
     } catch {
       throw new Error('Invalid WebSocket URL');
     }
-    if (isBlockedHost(parsed.hostname)) {
-      throw new Error('In-app WebSocket destination is not a public endpoint');
+    try {
+      await resolvePublicTarget(parsed.hostname, defaultHostResolver);
+    } catch (err) {
+      if (err instanceof BlockedTargetError) {
+        throw new Error('In-app WebSocket destination is not a public endpoint');
+      }
+      if (err instanceof TargetResolutionError) {
+        throw new Error('In-app WebSocket destination DNS resolution failed');
+      }
+      throw err;
     }
   }
   if (channelType === 'email') {
     const emailConfig = config as EmailConfig;
     const host = emailConfig.smtpHost.trim().toLowerCase();
-    if (!host || isBlockedHost(host)) {
+    if (!host) {
       throw new Error('Email SMTP destination is not a public endpoint');
+    }
+    try {
+      await resolvePublicTarget(host, defaultHostResolver);
+    } catch (err) {
+      if (err instanceof BlockedTargetError) {
+        throw new Error('Email SMTP destination is not a public endpoint');
+      }
+      if (err instanceof TargetResolutionError) {
+        throw new Error('Email SMTP destination DNS resolution failed');
+      }
+      throw err;
     }
   }
   // PagerDuty uses a fixed public endpoint (events.pagerduty.com), no validation needed

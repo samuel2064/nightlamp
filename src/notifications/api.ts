@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { ChannelType, ChannelConfig } from '../alerting/channels';
 import { processNotification, sendDirectNotification, getChannelType, getChannelConfig, checkRateLimit, logDelivery, markDelivered } from './service';
 import { AuthContext } from '../api/auth';
-import { rowBelongsToScope, scopedTenantFilter } from '../api/tenant';
+import { rowBelongsToScope, scopedTenantFilter, requireChannelOwnership } from '../api/tenant';
 import { isBlockedAddress, isBlockedHostname } from '../engine/outbound-safety';
 import * as net from 'net';
 
@@ -205,27 +205,11 @@ export class NotificationApi {
   }
 
   private handleDeleteChannel(channelId: string, res: ServerResponse, teamId: string | null, userId: string): void {
-    // First guard: channel must belong to caller's scope (team or personal)
-    if (!rowBelongsToScope(this.db, 'alert_channels', channelId, teamId, userId)) {
-      res.writeHead(404);
-      res.end(JSON.stringify({ error: 'Channel not found' }));
-      return;
-    }
-    // Second guard: caller must be the channel owner
-    const channel = this.db.exec(
-      'SELECT owner_id FROM alert_channels WHERE id = ?',
-      [channelId]
-    );
-    if (channel.length === 0 || channel[0].values.length === 0 || channel[0].values[0][0] !== userId) {
-      res.writeHead(403);
-      res.end(JSON.stringify({ error: 'Only the channel owner can delete this channel', code: 'FORBIDDEN' }));
-      return;
-    }
-    // Third guard (shared referenced-channel delete guard): refuse if a monitored app references this channel
-    const attached = this.db.exec('SELECT id FROM monitored_apps WHERE alert_channel_id = ? LIMIT 1', [channelId]);
-    if (attached.length > 0 && attached[0].values.length > 0) {
-      res.writeHead(409);
-      res.end(JSON.stringify({ error: 'Channel is referenced by a monitored application', code: 'CHANNEL_IN_USE' }));
+    // Shared referenced-channel delete guard: scope ownership + monitored app reference check
+    const guard = requireChannelOwnership(this.db, channelId, teamId, userId);
+    if (guard) {
+      res.writeHead(guard.status);
+      res.end(JSON.stringify({ error: guard.error, code: guard.code }));
       return;
     }
     this.db.run('DELETE FROM alert_rules WHERE channel_id = ?', [channelId]);

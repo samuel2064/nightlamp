@@ -7,7 +7,6 @@ import { up as personalOwnershipUp } from './012-personal-ownership';
 interface MigrationDefinition {
   id: string;
   up: (db: Database) => void;
-  isApplied: (db: Database) => boolean;
 }
 
 function tableExists(db: Database, table: string): boolean {
@@ -25,22 +24,18 @@ const MIGRATIONS: MigrationDefinition[] = [
   {
     id: '008-tenant-isolation',
     up: tenantIsolationUp,
-    isApplied: (db) => hasColumn(db, 'checks', 'team_id') && hasColumn(db, 'alert_rules', 'team_id'),
   },
   {
     id: '010-monitored-apps',
     up: monitoredAppsUp,
-    isApplied: (db) => tableExists(db, 'monitored_apps') && tableExists(db, 'health_snapshots'),
   },
   {
     id: '011-analytics-events',
     up: analyticsEventsUp,
-    isApplied: (db) => tableExists(db, 'analytics_events') && tableExists(db, 'feedback_responses'),
   },
   {
     id: '012-personal-ownership',
     up: personalOwnershipUp,
-    isApplied: (db) => hasColumn(db, 'alert_channels', 'owner_id') && hasColumn(db, 'monitored_apps', 'owner_id'),
   },
 ];
 
@@ -58,9 +53,9 @@ export function runMigrations(db: Database): void {
   `);
 
   for (const migration of MIGRATIONS) {
-    const alreadyApplied = migration.isApplied(db);
+    const alreadyInLedger = ledgerContains(db, migration.id);
 
-    if (!alreadyApplied) {
+    if (!alreadyInLedger) {
       db.exec('BEGIN IMMEDIATE');
       try {
         migration.up(db);
@@ -77,8 +72,18 @@ export function runMigrations(db: Database): void {
       continue;
     }
 
-    if (!ledgerContains(db, migration.id)) {
-      db.run('INSERT OR IGNORE INTO schema_migrations (migration_id) VALUES (?)', [migration.id]);
+    const stillApplied = migration.id === '008-tenant-isolation'
+      ? hasColumn(db, 'checks', 'team_id') && hasColumn(db, 'alert_rules', 'team_id')
+      : migration.id === '010-monitored-apps'
+        ? tableExists(db, 'monitored_apps') && tableExists(db, 'health_snapshots')
+        : migration.id === '011-analytics-events'
+          ? tableExists(db, 'analytics_events') && tableExists(db, 'feedback_responses')
+          : migration.id === '012-personal-ownership'
+            ? hasColumn(db, 'alert_channels', 'owner_id') && hasColumn(db, 'monitored_apps', 'owner_id')
+            : false;
+
+    if (!stillApplied) {
+      throw new Error(`Migration ${migration.id} recorded in ledger but schema not present - manual intervention required`);
     }
   }
 }

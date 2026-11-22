@@ -36,7 +36,7 @@ import { handleSSERequest } from './sse';
 import { createPlaybookEngine } from '../playbook/engine';
 import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
 import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership, authenticateRequestAsync, requireRole } from './auth';
-import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant, rowBelongsToScope, scopedTenantFilter } from './tenant';
+import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant, rowBelongsToScope, scopedTenantFilter, requireChannelOwnership } from './tenant';
 import { getDatabaseConfig, getBootId } from '../db';
 
 export interface ApiConfig {
@@ -795,20 +795,11 @@ const id = uuidv4();
           res.end(JSON.stringify({ error: 'Channel ID required' }));
           return;
         }
-        if (!rowBelongsToScope(db, 'alert_channels', channelId, teamId, userId)) {
-          res.writeHead(404);
-          res.end(JSON.stringify({ error: 'Channel not found' }));
-          return;
-        }
-        // A monitored application is unusable without its alert channel, so the
-        // channel is refused while one still references it and nothing is
-        // deleted. The foreign key in the apps migration does not protect this
-        // path, because foreign-key enforcement is only enabled inside the apps
-        // API's own transaction helper.
-        const attached = db.exec('SELECT id FROM monitored_apps WHERE alert_channel_id = ? LIMIT 1', [channelId]);
-        if (attached.length > 0 && attached[0].values.length > 0) {
-          res.writeHead(409);
-          res.end(JSON.stringify({ error: 'Channel is referenced by a monitored application', code: 'CHANNEL_IN_USE' }));
+        // Shared referenced-channel delete guard: scope ownership + monitored app reference check
+        const guard = requireChannelOwnership(db, channelId, teamId, userId);
+        if (guard) {
+          res.writeHead(guard.status);
+          res.end(JSON.stringify({ error: guard.error, code: guard.code }));
           return;
         }
         db.run('DELETE FROM alert_rules WHERE channel_id = ?', [channelId]);

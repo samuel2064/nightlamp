@@ -131,3 +131,39 @@ export function rowBelongsToScope(
   );
   return result.length > 0 && result[0].values.length > 0;
 }
+
+/**
+ * Shared referenced-channel delete guard.
+ *
+ * Refuses to delete an alert channel if any monitored application references it.
+ * Used by both the notifications API and the alerting API channel delete routes.
+ *
+ * Returns an error response object if the channel cannot be deleted, or null if
+ * the deletion can proceed. The caller is responsible for sending the response.
+ */
+export interface ChannelDeleteGuardResult {
+  error: string;
+  code: string;
+  status: number;
+}
+
+export function requireChannelOwnership(
+  db: { exec(sql: string, params?: any[]): any[] },
+  channelId: string,
+  teamId: string | null,
+  userId: string,
+): ChannelDeleteGuardResult | null {
+  // First: verify the caller owns this channel (team scope or personal ownership)
+  if (!rowBelongsToScope(db, 'alert_channels', channelId, teamId, userId)) {
+    // Fail closed: return 404 for any unauthorized access (teamless or wrong owner)
+    return { error: 'Channel not found', code: 'NOT_FOUND', status: 404 };
+  }
+
+  // Second: shared referenced-channel delete guard - refuse if a monitored app references this channel
+  const attached = db.exec('SELECT id FROM monitored_apps WHERE alert_channel_id = ? LIMIT 1', [channelId]);
+  if (attached.length > 0 && attached[0].values.length > 0) {
+    return { error: 'Channel is referenced by a monitored application', code: 'CHANNEL_IN_USE', status: 409 };
+  }
+
+  return null;
+}

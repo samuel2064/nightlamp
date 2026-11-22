@@ -3,7 +3,6 @@ import { Pool } from 'pg';
 interface PostgresMigrationDefinition {
   id: string;
   up: (pool: Pool) => Promise<void>;
-  isApplied: (pool: Pool) => Promise<boolean>;
 }
 
 async function tableExists(pool: Pool, table: string): Promise<boolean> {
@@ -90,11 +89,6 @@ const POSTGRES_MIGRATIONS: PostgresMigrationDefinition[] = [
         client.release();
       }
     },
-    isApplied: async (pool: Pool) => {
-      const checks = await hasColumn(pool, 'checks', 'team_id');
-      const alerts = await hasColumn(pool, 'alert_rules', 'team_id');
-      return checks && alerts;
-    },
   },
   {
     id: '010-monitored-apps',
@@ -168,11 +162,6 @@ const POSTGRES_MIGRATIONS: PostgresMigrationDefinition[] = [
         client.release();
       }
     },
-    isApplied: async (pool: Pool) => {
-      const monitored = await tableExists(pool, 'monitored_apps');
-      const health = await tableExists(pool, 'health_snapshots');
-      return monitored && health;
-    },
   },
   {
     id: '011-analytics-events',
@@ -241,11 +230,6 @@ const POSTGRES_MIGRATIONS: PostgresMigrationDefinition[] = [
         client.release();
       }
     },
-    isApplied: async (pool: Pool) => {
-      const analytics = await tableExists(pool, 'analytics_events');
-      const feedback = await tableExists(pool, 'feedback_responses');
-      return analytics && feedback;
-    },
   },
   {
     id: '012-personal-ownership',
@@ -296,11 +280,6 @@ const POSTGRES_MIGRATIONS: PostgresMigrationDefinition[] = [
         client.release();
       }
     },
-    isApplied: async (pool: Pool) => {
-      const alert = await hasColumn(pool, 'alert_channels', 'owner_id');
-      const monitored = await hasColumn(pool, 'monitored_apps', 'owner_id');
-      return alert && monitored;
-    },
   },
 ];
 
@@ -312,6 +291,30 @@ async function ledgerContains(pool: Pool, migrationId: string): Promise<boolean>
   return (result.rowCount ?? 0) > 0;
 }
 
+async function checkSchemaStillApplied(pool: Pool, migrationId: string): Promise<boolean> {
+  if (migrationId === '008-tenant-isolation') {
+    const checks = await hasColumn(pool, 'checks', 'team_id');
+    const alerts = await hasColumn(pool, 'alert_rules', 'team_id');
+    return checks && alerts;
+  }
+  if (migrationId === '010-monitored-apps') {
+    const monitored = await tableExists(pool, 'monitored_apps');
+    const health = await tableExists(pool, 'health_snapshots');
+    return monitored && health;
+  }
+  if (migrationId === '011-analytics-events') {
+    const analytics = await tableExists(pool, 'analytics_events');
+    const feedback = await tableExists(pool, 'feedback_responses');
+    return analytics && feedback;
+  }
+  if (migrationId === '012-personal-ownership') {
+    const alert = await hasColumn(pool, 'alert_channels', 'owner_id');
+    const monitored = await hasColumn(pool, 'monitored_apps', 'owner_id');
+    return alert && monitored;
+  }
+  return false;
+}
+
 export async function runPostgresMigrations(pool: Pool): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -321,9 +324,9 @@ export async function runPostgresMigrations(pool: Pool): Promise<void> {
   `);
 
   for (const migration of POSTGRES_MIGRATIONS) {
-    const alreadyApplied = await migration.isApplied(pool);
+    const alreadyInLedger = await ledgerContains(pool, migration.id);
 
-    if (!alreadyApplied) {
+    if (!alreadyInLedger) {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -343,8 +346,10 @@ export async function runPostgresMigrations(pool: Pool): Promise<void> {
       continue;
     }
 
-    if (!(await ledgerContains(pool, migration.id))) {
-      await pool.query('INSERT OR IGNORE INTO schema_migrations (migration_id) VALUES ($1)', [migration.id]);
+    const stillApplied = await checkSchemaStillApplied(pool, migration.id);
+
+    if (!stillApplied) {
+      throw new Error(`Migration ${migration.id} recorded in ledger but schema not present - manual intervention required`);
     }
   }
 }
