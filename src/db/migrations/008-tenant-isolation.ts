@@ -1,5 +1,5 @@
 import type { Database } from 'sql.js';
-import { up as extendPlanTierCheck } from './010-extend-plan-tier-check-sqlite';
+import { up as extendPlanTierCheck } from './011-extend-plan-tier-check-sqlite';
 
 const TENANT_TABLES = [
   'checks',

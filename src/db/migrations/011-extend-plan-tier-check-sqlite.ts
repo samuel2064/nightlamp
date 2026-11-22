@@ -1,11 +1,3 @@
-/**
- * Migration 010 (SQLite): Extend plan_tier CHECK constraint on subscriptions table
- * to include the new catalogue tiers (free, pro_monthly, pro_yearly,
- * team_monthly, team_yearly, enterprise) alongside legacy aliases.
- *
- * SQLite does not support ALTER CHECK constraint, so we rebuild the table.
- * Applied at boot by src/db/migrations/008-tenant-isolation.ts.
- */
 import type { Database } from 'sql.js';
 
 const EXTENDED_PLAN_TIERS = [
@@ -27,26 +19,23 @@ function tableExists(db: Database, table: string): boolean {
   return result.length > 0 && result[0].values.length > 0;
 }
 
-function getConstraint(db: Database, table: string): string | null {
+function hasConstraint(db: Database, table: string, constraintPattern: string): boolean {
   const result = db.exec(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, [table]);
-  if (result.length === 0 || result[0].values.length === 0) return null;
+  if (result.length === 0 || result[0].values.length === 0) return false;
   const sql = result[0].values[0][0] as string;
-  const match = sql.match(/CHECK\(plan_tier\s+IN\s+\([^)]+\)\)/i);
-  return match ? match[0] : null;
+  return sql.includes(constraintPattern);
 }
 
 export function up(db: Database): void {
   if (!tableExists(db, 'subscriptions')) return;
 
-  const currentConstraint = getConstraint(db, 'subscriptions');
-  const expectedConstraint = EXTENDED_CHECK;
+  // Check if the extended CHECK constraint is already present
+  if (hasConstraint(db, 'subscriptions', "plan_tier IN ('free'")) {
+    return; // Already migrated
+  }
 
-  // If the constraint already matches, nothing to do
-  if (currentConstraint === expectedConstraint) return;
-
-  // Rebuild the subscriptions table with the extended CHECK constraint
+  // Rebuild subscriptions table with extended CHECK constraint
   db.run('DROP TABLE IF EXISTS subscriptions_tenant');
-
   db.run(`
     CREATE TABLE subscriptions_tenant (
       id TEXT PRIMARY KEY,
@@ -61,34 +50,41 @@ export function up(db: Database): void {
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       team_id TEXT,
       FOREIGN KEY (customer_id) REFERENCES customers(id)
-    );
+    )
   `);
 
-  // Copy data from old table to new table
+  // Check if team_id column exists in old table
+  const hasTeamId = db.exec("PRAGMA table_info(subscriptions)").length > 0 &&
+    db.exec("PRAGMA table_info(subscriptions)")[0].values.some((row: any) => row[1] === 'team_id');
+
+  const teamIdCol = hasTeamId ? 'team_id' : 'NULL AS team_id';
+
   db.run(`
-    INSERT INTO subscriptions_tenant (id, customer_id, stripe_subscription_id, plan_tier, status,
-      current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at, team_id)
-    SELECT id, customer_id, stripe_subscription_id, plan_tier, status,
-      current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at,
-      COALESCE(team_id, '')
-    FROM subscriptions;
+    INSERT INTO subscriptions_tenant (id, customer_id, stripe_subscription_id, plan_tier, status, current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at, team_id)
+    SELECT id, customer_id, stripe_subscription_id, plan_tier, status, current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at, ${teamIdCol}
+    FROM subscriptions
   `);
 
   db.run('DROP TABLE subscriptions');
   db.run('ALTER TABLE subscriptions_tenant RENAME TO subscriptions');
 
-  // Recreate the customer index
+  // Recreate indexes
   db.run('CREATE INDEX IF NOT EXISTS idx_subscriptions_customer ON subscriptions(customer_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_subscriptions_team ON subscriptions(team_id)');
 }
 
 export function down(db: Database): void {
   if (!tableExists(db, 'subscriptions')) return;
 
-  // Revert to the original CHECK constraint with only legacy tiers
-  db.run('DROP TABLE IF EXISTS subscriptions_tenant');
+  // Check if we're already at the legacy constraint
+  if (hasConstraint(db, 'subscriptions', "plan_tier IN ('basic'")) {
+    return; // Already at legacy
+  }
 
+  // Rebuild with legacy CHECK constraint
+  db.run('DROP TABLE IF EXISTS subscriptions_legacy');
   db.run(`
-    CREATE TABLE subscriptions_tenant (
+    CREATE TABLE subscriptions_legacy (
       id TEXT PRIMARY KEY,
       customer_id TEXT NOT NULL,
       stripe_subscription_id TEXT UNIQUE,
@@ -101,20 +97,24 @@ export function down(db: Database): void {
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       team_id TEXT,
       FOREIGN KEY (customer_id) REFERENCES customers(id)
-    );
+    )
   `);
 
+  const hasTeamId = db.exec("PRAGMA table_info(subscriptions)").length > 0 &&
+    db.exec("PRAGMA table_info(subscriptions)")[0].values.some((row: any) => row[1] === 'team_id');
+
+  const teamIdCol = hasTeamId ? 'team_id' : 'NULL AS team_id';
+
   db.run(`
-    INSERT INTO subscriptions_tenant (id, customer_id, stripe_subscription_id, plan_tier, status,
-      current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at, team_id)
-    SELECT id, customer_id, stripe_subscription_id, plan_tier, status,
-      current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at,
-      COALESCE(team_id, '')
-    FROM subscriptions;
+    INSERT INTO subscriptions_legacy (id, customer_id, stripe_subscription_id, plan_tier, status, current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at, team_id)
+    SELECT id, customer_id, stripe_subscription_id, plan_tier, status, current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at, ${teamIdCol}
+    FROM subscriptions
   `);
 
   db.run('DROP TABLE subscriptions');
-  db.run('ALTER TABLE subscriptions_tenant RENAME TO subscriptions');
+  db.run('ALTER TABLE subscriptions_legacy RENAME TO subscriptions');
 
+  // Recreate indexes
   db.run('CREATE INDEX IF NOT EXISTS idx_subscriptions_customer ON subscriptions(customer_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_subscriptions_team ON subscriptions(team_id)');
 }

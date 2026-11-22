@@ -630,7 +630,7 @@ export class BillingApi {
     const pastDue = pastDueResult.length > 0 ? (pastDueResult[0].values[0][0] as number) : 0;
 
     const canceledResult = this.deps.db.exec(`SELECT COUNT(*) FROM subscriptions WHERE ${subscriptionScope.clause} AND status = 'canceled'`, subscriptionScope.params);
-    const canceled = canceledResult.length > 0 ? (canceledResult[0].values[0][0] as number) : 0;
+    const canceled = canceledResult.length > 0 ? (canceledResult[0].values[0][0] as number) : 0.
 
     const planResult = this.deps.db.exec(`SELECT plan_tier, COUNT(*) FROM subscriptions WHERE ${subscriptionScope.clause} AND status = 'active' GROUP BY plan_tier`, subscriptionScope.params);
     let mrr = 0;
