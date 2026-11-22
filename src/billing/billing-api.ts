@@ -189,7 +189,9 @@ export class BillingApi {
       // white_glove is withdrawn from sale (CEO ratified on NOC-327); existing
       // subscriptions are honoured but new signups and plan changes to white_glove
       // are not allowed.
-      const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'enterprise', 'basic', 'advanced'];
+      // Legacy aliases basic and advanced are honoured (map to pro_monthly and team_monthly).
+      // free and enterprise have no Stripe prices and are not purchasable.
+      const allowedPlanTiers: PlanTier[] = ['pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
       if (!cancel && (typeof input.planTier !== 'string' || !allowedPlanTiers.includes(input.planTier as PlanTier))) {
         res.writeHead(400);
         res.end(JSON.stringify({ error: 'Invalid plan tier' }));
@@ -290,9 +292,11 @@ export class BillingApi {
           return;
         }
 
+        // Legacy aliases basic and advanced are honoured (map to pro_monthly and team_monthly).
+        // free and enterprise have no Stripe prices and are not purchasable.
         // white_glove is withdrawn from sale (CEO ratified on NOC-327); existing
         // subscriptions are honoured but new signups to white_glove are not allowed.
-        const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'enterprise', 'basic', 'advanced'];
+        const allowedPlanTiers: PlanTier[] = ['pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
         if (!allowedPlanTiers.includes(planTier as PlanTier)) {
           res.writeHead(400);
           res.end(JSON.stringify({ error: `Invalid plan tier: ${planTier}` }));
@@ -588,9 +592,11 @@ export class BillingApi {
   }
 
   private handleListPlans(res: ServerResponse): void {
-    // Return catalogue tiers for new signups, excluding legacy aliases and enterprise (custom pricing)
-    const catalogueTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly'];
-    const plans = catalogueTiers.map(tier => {
+    // Return self-serve purchasable plans only (catalogue tiers with Stripe prices).
+    // free and enterprise have no Stripe prices and are not purchasable via checkout.
+    // Legacy aliases (basic, advanced, white_glove) are withdrawn.
+    const selfServeTiers: PlanTier[] = ['pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly'];
+    const plans = selfServeTiers.map(tier => {
       const config = PLAN_TIERS[tier];
       return {
         id: tier,

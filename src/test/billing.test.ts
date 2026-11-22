@@ -345,12 +345,12 @@ describe('Billing - BillingApi', () => {
 
   });
 
-  it('GET /api/billing/plans returns all catalogue plans', async () => {
+  it('GET /api/billing/plans returns self-serve purchasable plans', async () => {
     const res = await handleRequest(api, 'GET', '/api/billing/plans');
     const data = JSON.parse(res.body);
-    expect(data.plans).to.have.lengthOf(5);
+    expect(data.plans).to.have.lengthOf(4);
     const planIds = data.plans.map((p: any) => p.id).sort();
-    expect(planIds).to.deep.equal(['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly']);
+    expect(planIds).to.deep.equal(['pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly']);
   });
 
   it('POST /api/billing/customer creates a customer', async () => {

@@ -1,4 +1,5 @@
 import type { Database } from 'sql.js';
+import { up as extendPlanTierCheck } from './010-extend-plan-tier-check-sqlite';
 
 const TENANT_TABLES = [
   'checks',
@@ -58,6 +59,9 @@ function rebuildRemediationPolicies(db: Database): void {
 }
 
 export function up(db: Database): void {
+  // First extend the plan_tier CHECK constraint on subscriptions
+  extendPlanTierCheck(db);
+
   for (const table of TENANT_TABLES) {
     if (tableExists(db, table) && !hasColumn(db, table, 'team_id')) {
       db.run(`ALTER TABLE ${table} ADD COLUMN team_id TEXT`);

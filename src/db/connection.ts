@@ -148,9 +148,11 @@ async function createPostgresConnection(databaseUrl: string): Promise<DatabaseCo
 }
 
 async function runPostgresMigrations(pool: any): Promise<void> {
-  // Import and run the postgres migration
-  const { up } = await import('./migrations/009-postgres-setup');
-  await up(pool);
+  // Import and run the postgres migrations in order
+  const { up: up009 } = await import('./migrations/009-postgres-setup');
+  await up009(pool);
+  const { up: up010 } = await import('./migrations/010-extend-plan-tier-check');
+  await up010(pool);
 }
 
 export function getStorageMode(config: DatabaseConfig): StorageMode {
