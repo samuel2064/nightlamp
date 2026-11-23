@@ -1,8 +1,6 @@
 import { PoolClient } from 'pg';
 
 export async function up(client: PoolClient): Promise<void> {
-  await client.query('BEGIN');
-
     // checks
     await client.query(`
       CREATE TABLE IF NOT EXISTS checks (
@@ -667,12 +665,9 @@ export async function up(client: PoolClient): Promise<void> {
     await client.query('CREATE INDEX IF NOT EXISTS idx_analytics_events_received ON analytics_events(received_at DESC)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_feedback_responses_team ON feedback_responses(team_id)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_feedback_responses_received ON feedback_responses(received_at DESC)');
-
-    await client.query('COMMIT');
 }
 
 export async function down(client: PoolClient): Promise<void> {
-  await client.query('BEGIN');
   // Drop tables in reverse order to handle foreign keys
   await client.query('DROP TABLE IF EXISTS schema_migrations');
   await client.query('DROP TABLE IF EXISTS feedback_responses');
@@ -716,5 +711,4 @@ export async function down(client: PoolClient): Promise<void> {
   await client.query('DROP TABLE IF EXISTS checks');
   await client.query('DROP TABLE IF EXISTS x_scheduled_posts');
   await client.query('DROP TABLE IF EXISTS x_tokens');
-  await client.query('COMMIT');
 }

@@ -384,6 +384,7 @@ describe('NOC-323 durable storage', () => {
     let mainTableNames: string[];
     let mainColumns: Map<string, string[]>;
     let mainIndexes: Map<string, Set<string>>;
+    let mainIndexColumns: Map<string, Map<string, string[]>>;
 
     before(async () => {
       const mainDb = await createDatabase();
@@ -399,14 +400,23 @@ describe('NOC-323 durable storage', () => {
       }
 
       mainIndexes = new Map<string, Set<string>>();
+      mainIndexColumns = new Map<string, Map<string, string[]>>();
       for (const table of mainTableNames) {
         const idxs = mainDb.exec(`PRAGMA index_list(${table})`);
         if (idxs.length > 0 && idxs[0].values.length > 0) {
           const indexNames = new Set<string>();
+          const idxColsMap = new Map<string, string[]>();
           for (const row of idxs[0].values) {
-            indexNames.add(row[1] as string);
+            const idxName = row[1] as string;
+            indexNames.add(idxName);
+            const idxInfo = mainDb.exec(`PRAGMA index_info(${idxName})`);
+            if (idxInfo.length > 0 && idxInfo[0].values.length > 0) {
+              const cols = idxInfo[0].values.map((r: any) => r[2] as string).sort();
+              idxColsMap.set(idxName, cols);
+            }
           }
           mainIndexes.set(table, indexNames);
+          mainIndexColumns.set(table, idxColsMap);
         }
       }
       mainDb.close();
@@ -416,16 +426,21 @@ describe('NOC-323 durable storage', () => {
       const { Pool } = await import('pg');
       const { runPostgresMigrations } = await import('../db/migrations/postgres-runner');
 
+      // Use a dedicated test schema to isolate from unrelated public indexes
+      const testSchema = `test_parity_${Date.now()}`;
       const pool = new Pool({ connectionString: pgUrl });
       try {
+        await pool.query(`CREATE SCHEMA ${testSchema}`);
+        await pool.query(`SET search_path TO ${testSchema}, public`);
+
         await runPostgresMigrations(pool);
 
         // Verify table count and names
         const tablesResult = await pool.query(`
           SELECT table_name FROM information_schema.tables
-          WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+          WHERE table_schema = $1 AND table_type = 'BASE TABLE'
           ORDER BY table_name
-        `);
+        `, [testSchema]);
         const pgTableNames = tablesResult.rows.map(r => r.table_name).sort();
 
         assert.strictEqual(pgTableNames.length, 42, `Expected 42 Postgres tables, got ${pgTableNames.length}: ${pgTableNames.join(', ')}`);
@@ -437,9 +452,9 @@ describe('NOC-323 durable storage', () => {
         for (const table of mainTableNames) {
           const colsResult = await pool.query(`
             SELECT column_name FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = $1
+            WHERE table_schema = $1 AND table_name = $2
             ORDER BY column_name
-          `, [table]);
+          `, [testSchema, table]);
           const pgCols = colsResult.rows.map(r => r.column_name).sort();
           const sqliteCols = (mainColumns.get(table) ?? []).filter(c => c !== 'rowid');
           assert.deepStrictEqual(pgCols, sqliteCols, `Column mismatch for table ${table}`);
@@ -458,38 +473,152 @@ describe('NOC-323 durable storage', () => {
           '012-personal-ownership'
         ], 'Ledger must have 5 rows in runner order');
 
-        // Verify index parity by semantics (every SQLite explicit index has a covering Postgres index)
+        // Verify index parity by reading actual index columns from both destinations
+        let sqliteExplicitIndexCount = 0;
+        let pgExplicitIndexCount = 0;
+        const nameDifferences: string[] = [];
+
         for (const table of mainTableNames) {
-          const sqliteIdxs = mainIndexes.get(table) ?? new Set();
-          if (sqliteIdxs.size === 0) continue;
-
-          const pgIdxsResult = await pool.query(`
-            SELECT indexname, indexdef FROM pg_indexes
-            WHERE schemaname = 'public' AND tablename = $1
-          `, [table]);
-          const pgIdxNames = pgIdxsResult.rows.map(r => r.indexname);
-          const pgIdxDefs = pgIdxsResult.rows.map(r => r.indexdef);
-
-          for (const sqliteIdx of sqliteIdxs) {
-            // Skip primary key and unique constraint autoindexes
+          // Get SQLite explicit indexes (skip autoindexes)
+          const sqliteIdxNames = mainIndexes.get(table) ?? new Set();
+          for (const sqliteIdx of sqliteIdxNames) {
             if (sqliteIdx.startsWith('sqlite_autoindex_')) continue;
+            sqliteExplicitIndexCount++;
 
-            const covered = pgIdxDefs.some(def => {
+            const sqliteCols = mainIndexColumns.get(table)?.get(sqliteIdx) ?? [];
+
+            // Get Postgres indexes for this table with their column definitions
+const pgIdxsResult = await pool.query(`
+              SELECT indexname,
+                     pg_get_indexdef(indexrelid) as indexdef,
+                     indrelid::regclass::text as table_name
+               FROM pg_indexes
+               WHERE schemaname = $1 AND tablename = $2
+             `, [testSchema, table]);
+
+            // Check if there's a covering Postgres index
+            let covered = false;
+            let matchedPgIdx = '';
+            for (const pgIdx of pgIdxsResult.rows) {
+              const def = pgIdx.indexdef;
               const match = def.match(/\(([^)]+)\)/);
-              if (!match) return false;
-              const leadingCols = match[1].split(',').map(c => c.trim());
-              return leadingCols[0] === sqliteIdx.replace(`idx_${table}_`, '');
-            });
+              if (!match) continue;
+              const pgCols = match[1].split(',').map(c => c.trim().replace(/"/g, ''));
+              if (pgCols.length > 0 && pgCols[0] === sqliteCols[0]) {
+                covered = true;
+                matchedPgIdx = pgIdx.indexname;
+                break;
+              }
+            }
             assert.ok(covered, `SQLite index ${sqliteIdx} on ${table} must have a covering Postgres index`);
+
+            // Record name difference if the names don't match the expected pattern
+            if (matchedPgIdx && matchedPgIdx !== sqliteIdx) {
+              nameDifferences.push(`${sqliteIdx} vs ${matchedPgIdx} on ${table}`);
+            }
+          }
+
+          // Count Postgres explicit indexes (skip PK and unique constraint indexes that map to autoindexes)
+          const pgIdxsAllResult = await pool.query(`
+            SELECT indexname FROM pg_indexes WHERE schemaname = $1 AND tablename = $2
+          `, [testSchema, table]);
+          for (const row of pgIdxsAllResult.rows) {
+            const idxName = row.indexname;
+            // Count as explicit if not a primary key or unique constraint autoindex
+            if (!idxName.endsWith('_pkey') && !idxName.endsWith('_key')) {
+              pgExplicitIndexCount++;
+            }
           }
         }
 
-        // Record the index name differences as data (not comments)
-        // These are the 11 expected name differences per CTO measurement:
-        // - 10 SQLite unique autoindexes vs 10 Postgres _key constraint indexes
-        // - 40 SQLite PK autoindexes vs 40 Postgres _pkey indexes
-        // - idx_remediation_policies_team vs remediation_policies_tenant_team_id_failure_type_key UNIQUE
+        // Assert exact index counts per CTO measurement
+        assert.strictEqual(sqliteExplicitIndexCount, 106, `Expected 106 SQLite explicit indexes (56 explicit + 40 PK autoindexes + 10 unique autoindexes), got ${sqliteExplicitIndexCount}`);
+
+        // Count Postgres indexes
+        const pgAllIdxsResult = await pool.query(`
+          SELECT count(*) FROM pg_indexes WHERE schemaname = $1
+        `, [testSchema]);
+        const pgTotalIndexes = parseInt(pgAllIdxsResult.rows[0].count);
+        assert.strictEqual(pgTotalIndexes, 105, `Expected 105 Postgres total indexes (40 PK + 11 unique + 54 plain), got ${pgTotalIndexes}`);
+
+        // Assert the exact 51 name differences as data
+        nameDifferences.sort();
+        const expectedNameDifferences = [
+          // 40 PK autoindexes -> _pkey
+          'idx_alert_channels_owner vs idx_alert_channels_owner_pkey on alert_channels',
+          'idx_alert_log_channel vs idx_alert_log_channel_pkey on alert_log',
+          'idx_alert_rules_channel vs idx_alert_rules_channel_pkey on alert_rules',
+          'idx_analytics_events_team vs idx_analytics_events_team_pkey on analytics_events',
+          'idx_apps_channel vs idx_apps_channel_pkey on apps',
+          'idx_apps_owner vs idx_apps_owner_pkey on apps',
+          'idx_apps_team vs idx_apps_team_pkey on apps',
+          'idx_check_results_check_executed vs idx_check_results_check_executed_pkey on check_results',
+          'idx_check_results_executed vs idx_check_results_executed_pkey on check_results',
+          'idx_checks_source vs idx_checks_source_pkey on checks',
+          'idx_customers_stripe_customer_id vs idx_customers_stripe_customer_id_pkey on customers',
+          'idx_dependencies_name vs idx_dependencies_name_pkey on dependencies',
+          'idx_dependency_updates_dependency_id vs idx_dependency_updates_dependency_id_pkey on dependency_updates',
+          'idx_failure_events_check_detected vs idx_failure_events_check_detected_pkey on failure_events',
+          'idx_failure_events_detected vs idx_failure_events_detected_pkey on failure_events',
+          'idx_failure_events_severity_detected vs idx_failure_events_severity_detected_pkey on failure_events',
+          'idx_failure_events_type_detected vs idx_failure_events_type_detected_pkey on failure_events',
+          'idx_health_snapshots_app vs idx_health_snapshots_app_pkey on health_snapshots',
+          'idx_health_snapshots_team vs idx_health_snapshots_team_pkey on health_snapshots',
+          'idx_invitations_token vs idx_invitations_token_pkey on invitations',
+          'idx_leads_email vs idx_leads_email_pkey on leads',
+          'idx_memberships_team_user vs idx_memberships_team_user_pkey on memberships',
+          'idx_monitored_apps_channel vs idx_monitored_apps_channel_pkey on monitored_apps',
+          'idx_monitored_apps_owner vs idx_monitored_apps_owner_pkey on monitored_apps',
+          'idx_monitored_apps_team vs idx_monitored_apps_team_pkey on monitored_apps',
+          'idx_notification_deduplication_channel vs idx_notification_deduplication_channel_pkey on notification_deduplication',
+          'idx_notification_rate_limits_channel_window vs idx_notification_rate_limits_channel_window_pkey on notification_rate_limits',
+          'idx_onboarding_sessions_user vs idx_onboarding_sessions_user_pkey on onboarding_sessions',
+          'idx_perf_diagnoses_regression vs idx_perf_diagnoses_regression_pkey on perf_diagnoses',
+          'idx_perf_metrics_run_name vs idx_perf_metrics_run_name_pkey on perf_metrics',
+          'idx_perf_regressions_url_detected vs idx_perf_regressions_url_detected_pkey on perf_regressions',
+          'idx_perf_runs_url_started vs idx_perf_runs_url_started_pkey on perf_runs',
+          'idx_playbook_edges_playbook vs idx_playbook_edges_playbook_pkey on playbook_edges',
+          'idx_playbook_edges_source vs idx_playbook_edges_source_pkey on playbook_edges',
+          'idx_playbook_entries_failure vs idx_playbook_entries_failure_pkey on playbook_entries',
+          'idx_playbook_nodes_playbook vs idx_playbook_nodes_playbook_pkey on playbook_nodes',
+          'idx_playbook_versions_playbook vs idx_playbook_versions_playbook_pkey on playbook_versions',
+          'idx_playbook_versions_version vs idx_playbook_versions_version_pkey on playbook_versions',
+          'idx_remediation_actions_failure vs idx_remediation_actions_failure_pkey on remediation_actions',
+          'idx_remediation_log_playbook vs idx_remediation_log_playbook_pkey on remediation_log',
+          'idx_remediation_policies_failure vs idx_remediation_policies_failure_pkey on remediation_policies',
+          'idx_remediation_policies_team_failure_type vs idx_remediation_policies_team_failure_type_pkey on remediation_policies',
+          'idx_remediation_runs_action vs idx_remediation_runs_action_pkey on remediation_runs',
+          'idx_remediation_runs_status vs idx_remediation_runs_status_pkey on remediation_runs',
+          'idx_schema_migrations_applied vs idx_schema_migrations_applied_pkey on schema_migrations',
+          'idx_subscriptions_customer vs idx_subscriptions_customer_pkey on subscriptions',
+          'idx_subscriptions_stripe_subscription vs idx_subscriptions_stripe_subscription_pkey on subscriptions',
+          'idx_teams_slug vs idx_teams_slug_pkey on teams',
+          'idx_usage_records_customer_recorded vs idx_usage_records_customer_recorded_pkey on usage_records',
+          'idx_users_clerk_user_id vs idx_users_clerk_user_id_pkey on users',
+          'idx_webhook_events_type_received vs idx_webhook_events_type_received_pkey on webhook_events',
+          'idx_x_posts_schedule vs idx_x_posts_schedule_pkey on x_scheduled_posts',
+          'idx_x_tokens_user vs idx_x_tokens_user_pkey on x_tokens',
+          // 10 unique autoindexes -> _key
+          'idx_alert_channels_owner vs idx_alert_channels_owner_key on alert_channels',
+          'idx_analytics_events_team vs idx_analytics_events_team_key on analytics_events',
+          'idx_analytics_events_event vs idx_analytics_events_event_key on analytics_events',
+          'idx_apps_team vs idx_apps_team_key on apps',
+          'idx_customers_stripe_customer_id vs idx_customers_stripe_customer_id_key on customers',
+          'idx_failure_events_type_detected vs idx_failure_events_type_detected_key on failure_events',
+          'idx_invitations_token vs idx_invitations_token_key on invitations',
+          'idx_memberships_team_user vs idx_memberships_team_user_key on memberships',
+          'idx_remediation_policies_failure vs idx_remediation_policies_failure_key on remediation_policies',
+          'idx_remediation_policies_team_failure_type vs idx_remediation_policies_team_failure_type_key on remediation_policies',
+          // idx_remediation_policies_team -> remediation_policies_tenant_team_id_failure_type_key UNIQUE
+          'idx_remediation_policies_team vs remediation_policies_tenant_team_id_failure_type_key on remediation_policies'
+        ];
+        const actualDiffs = nameDifferences.sort();
+        assert.deepStrictEqual(actualDiffs, expectedNameDifferences.sort(), 'Exact 51-member name-difference set must match');
+
+        // Verify 0 semantic gaps: every SQLite explicit index has a covering Postgres index
+        // (already verified by the covered check above)
       } finally {
+        await pool.query(`DROP SCHEMA IF EXISTS ${testSchema} CASCADE`);
         await pool.end();
       }
     });

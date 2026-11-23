@@ -243,10 +243,11 @@ async function sendInAppWebSocket(config: InAppWebSocketConfig, payload: Notific
 export async function sendNotification(
   channelType: ChannelType,
   config: ChannelConfig,
-  payload: NotificationPayload
+  payload: NotificationPayload,
+  resolver?: HostResolver
 ): Promise<void> {
   // Validate destination at delivery time (defense in depth: also checked at channel creation)
-  await validateDeliveryDestination(channelType, config);
+  await validateDeliveryDestination(channelType, config, resolver);
 
   switch (channelType) {
     case 'slack':
