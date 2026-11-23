@@ -108,6 +108,14 @@ jobs:
           status=${PIPESTATUS[0]}
           exit "$status"
 
+      - name: Publish the provisioning summary
+        if: always()
+        run: |
+          set -uo pipefail
+          if [ -f staging-provision.json ]; then
+            bash scripts/publish-github-status.sh flyby-staging-summary staging-provision.json success
+          fi
+
       - name: Publish the provisioning diagnostics
         if: steps.provision.outcome == 'failure'
         run: |
@@ -115,18 +123,20 @@ jobs:
           bash scripts/publish-github-status.sh flyby-staging-provision provisioning.log failure
           exit 1
 
-      - name: Publish the provisioning summary
-        if: steps.provision.outcome == 'success'
-        run: |
-          set -uo pipefail
-          bash scripts/publish-github-status.sh flyby-staging-summary staging-provision.json success
-
       - name: Run the staging verification suite
         id: verify
-        if: steps.provision.outcome == 'success'
+        if: always()
         continue-on-error: true
         run: |
           set -uo pipefail
+          if [ ! -f staging-provision.json ]; then
+            echo "[verify] skipped: no provisioning report" | tee staging-verify.log
+            exit 0
+          fi
+          if ! jq -e '.apiDeploy' staging-provision.json >/dev/null 2>&1; then
+            echo "[verify] skipped: the staging API was not deployed" | tee staging-verify.log
+            exit 0
+          fi
           if ! curl -fsSL "https://raw.githubusercontent.com/$FLYBY_REPO/$FLYBY_COMMIT/scripts/staging-verify.mjs" -o staging-verify.mjs; then
             echo "[verify] failed: could not download the verification script" | tee staging-verify.log
             exit 1
@@ -142,7 +152,7 @@ jobs:
           exit "$status"
 
       - name: Publish the verification result
-        if: steps.verify.outcome != 'skipped'
+        if: always()
         run: |
           set -uo pipefail
           if [ -f staging-verify-report.json ]; then

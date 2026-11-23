@@ -589,28 +589,47 @@ async function main() {
   const ownerId = await resolveOwnerId(client, config, log);
   config.ownerId = ownerId;
 
-  const postgres = await ensurePostgres(client, config, log, args.dryRun);
-  const keyValue = await ensureKeyValue(client, config, log, args.dryRun);
+  const failures = [];
+  const attempt = async (label, operation) => {
+    try {
+      return await operation();
+    } catch (error) {
+      failures.push(`${label}: ${error.message}`);
+      log(`${label} failed: ${error.message}`);
+      return null;
+    }
+  };
 
-  const apiServiceResult = await ensureService(client, config, log, args.dryRun, {
-    name: config.apiServiceName,
-    type: 'web_service',
-    plan: config.apiPlan,
-    fallbacks: API_PLAN_FALLBACKS,
-    createBody: (plan) => buildApiServicePayload(config, plan),
-    patchBody: (plan) => buildApiServicePatch(config, plan),
-  });
+  const keyValue = await attempt('key value', () => ensureKeyValue(client, config, log, args.dryRun));
+
+  const apiServiceResult = await attempt('api service', () =>
+    ensureService(client, config, log, args.dryRun, {
+      name: config.apiServiceName,
+      type: 'web_service',
+      plan: config.apiPlan,
+      fallbacks: API_PLAN_FALLBACKS,
+      createBody: (plan) => buildApiServicePayload(config, plan),
+      patchBody: (plan) => buildApiServicePatch(config, plan),
+    }),
+  );
   const apiService = apiServiceResult?.service ?? null;
 
-  const webServiceResult = await ensureService(client, config, log, args.dryRun, {
-    name: config.webServiceName,
-    type: 'static_site',
-    plan: null,
-    fallbacks: [],
-    createBody: () => buildWebServicePayload(config),
-    patchBody: () => buildWebServicePatch(config),
-  });
+  const webServiceResult = await attempt('web service', () =>
+    ensureService(client, config, log, args.dryRun, {
+      name: config.webServiceName,
+      type: 'static_site',
+      plan: null,
+      fallbacks: [],
+      createBody: () => buildWebServicePayload(config),
+      patchBody: () => buildWebServicePatch(config),
+    }),
+  );
   const webService = webServiceResult?.service ?? null;
+
+  const postgres = await attempt('postgres', () => ensurePostgres(client, config, log, args.dryRun));
+  const postgresError = postgres
+    ? null
+    : failures.find((entry) => entry.startsWith('postgres: '))?.slice('postgres: '.length) || 'unknown';
 
   const apiUrl = apiService ? serviceUrl(apiService, config.apiServiceName) : `https://${config.apiServiceName.toLowerCase()}.onrender.com`;
   const webUrl = webService ? serviceUrl(webService, config.webServiceName) : `https://${config.webServiceName.toLowerCase()}.onrender.com`;
@@ -621,23 +640,35 @@ async function main() {
     return;
   }
 
-  const apiEnvExisting = await getEnvVars(client, apiService.id);
-  const existingMap = new Map(apiEnvExisting.map((item) => [item.key, item.value]));
-  const vapid = pickVapid(existingMap);
-  if (vapid.generated) log('generated a fresh VAPID key pair for staging');
-  const apiEnvVars = buildApiEnvVars(apiEnvExisting, {
-    databaseUrl: postgres.internalConnectionString,
-    redisUrl: keyValue.internalConnectionString,
-    allowedOrigins: mergeOrigins(existingMap.get('ALLOWED_ORIGINS'), webUrl),
-    vapid,
-    jwtSecret: existingMap.get('JWT_SECRET') || randomBytes(32).toString('hex'),
-    adminApiKey: existingMap.get('ADMIN_API_KEY') || randomBytes(32).toString('hex'),
-    nodeVersion: config.nodeVersion,
-  });
-  await putEnvVars(client, apiService.id, apiEnvVars);
+  let apiEnvVars = [];
+  let vapidGenerated = false;
+  if (apiService) {
+    const apiEnvExisting = await getEnvVars(client, apiService.id);
+    const existingMap = new Map(apiEnvExisting.map((item) => [item.key, item.value]));
+    const vapid = pickVapid(existingMap);
+    vapidGenerated = vapid.generated;
+    if (vapid.generated) log('generated a fresh VAPID key pair for staging');
+    apiEnvVars = buildApiEnvVars(apiEnvExisting, {
+      databaseUrl: postgres?.internalConnectionString || '',
+      redisUrl: keyValue?.internalConnectionString || '',
+      allowedOrigins: mergeOrigins(existingMap.get('ALLOWED_ORIGINS'), webUrl),
+      vapid,
+      jwtSecret: existingMap.get('JWT_SECRET') || randomBytes(32).toString('hex'),
+      adminApiKey: existingMap.get('ADMIN_API_KEY') || randomBytes(32).toString('hex'),
+      nodeVersion: config.nodeVersion,
+    });
+    if (postgres && keyValue) {
+      await putEnvVars(client, apiService.id, apiEnvVars);
+    } else {
+      log('skipping the API environment update: the staging Postgres or Key Value is not available');
+    }
+  }
 
-  const webEnvExisting = await getEnvVars(client, webService.id);
-  await putEnvVars(client, webService.id, buildWebEnvVars(webEnvExisting, apiUrl));
+  let webEnvVars = [];
+  if (webService) {
+    webEnvVars = buildWebEnvVars(await getEnvVars(client, webService.id), apiUrl);
+    await putEnvVars(client, webService.id, webEnvVars);
+  }
 
   const report = {
     generatedAt: new Date().toISOString(),
@@ -650,22 +681,30 @@ async function main() {
       postgres: postgres?.plan ?? config.postgresPlan,
       keyValue: keyValue?.plan ?? config.keyValuePlan,
     },
-    postgresId: postgres.id,
-    keyValueId: keyValue.id,
-    apiServiceId: apiService.id,
-    webServiceId: webService.id,
+    postgresId: postgres?.id ?? null,
+    postgresError,
+    keyValueId: keyValue?.id ?? null,
+    apiServiceId: apiService?.id ?? null,
+    webServiceId: webService?.id ?? null,
     apiUrl,
     webUrl,
     apiEnvKeys: apiEnvVars.map((item) => item.key).sort(),
-    webEnvKeys: buildWebEnvVars(webEnvExisting, apiUrl).map((item) => item.key).sort(),
-    vapidGenerated: vapid.generated,
+    webEnvKeys: webEnvVars.map((item) => item.key).sort(),
+    vapidGenerated,
+    failures,
   };
 
   if (!args.skipDeploy) {
-    report.apiDeploy = await deployAndWait(client, apiService.id, config.commit, log);
-    report.webDeploy = await deployAndWait(client, webService.id, config.commit, log);
-    report.health = await waitForHealth(apiUrl, log);
-    report.webStatus = await waitForWeb(webUrl, log);
+    if (apiService && postgres && keyValue) {
+      report.apiDeploy = await deployAndWait(client, apiService.id, config.commit, log);
+      report.health = await waitForHealth(apiUrl, log);
+    } else {
+      log('skipping the API deploy: the staging Postgres or Key Value is not available');
+    }
+    if (webService) {
+      report.webDeploy = await deployAndWait(client, webService.id, config.commit, log);
+      report.webStatus = await waitForWeb(webUrl, log);
+    }
   }
 
   if (config.reportPath) {
@@ -673,6 +712,9 @@ async function main() {
     log(`wrote ${config.reportPath}`);
   }
   console.log(JSON.stringify(report, null, 2));
+  if (failures.length > 0) {
+    throw new Error(`staging provisioning is incomplete: ${failures.join(' | ')}`);
+  }
 }
 
 const invokedDirectly =
