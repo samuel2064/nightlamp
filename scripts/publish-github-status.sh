@@ -12,7 +12,7 @@ if [ ! -f "$source_file" ]; then
   exit 0
 fi
 
-message=$(tr '\n' ' ' < "$source_file" | tr -s ' ' | cut -c1-700)
+message=$(tr '\n' ' ' < "$source_file" | tr -s ' ' | cut -c1-2000)
 index=1
 while [ -n "$message" ]; do
   chunk=$(printf '%s' "$message" | cut -c1-140)
