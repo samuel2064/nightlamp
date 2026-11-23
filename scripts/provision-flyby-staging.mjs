@@ -9,6 +9,8 @@ export function apiBase() {
 const PROD_SERVICE_IDS = new Set(['srv-dak58lm1egvs73957l50', 'srv-dapocsugekts73ek60t0']);
 const FAILED_DEPLOY_STATUSES = new Set(['build_failed', 'update_failed', 'pre_deploy_failed', 'deactivated', 'canceled']);
 
+let paidPlanAvailability = null;
+
 export const API_BUILD_COMMAND =
   'if [ -f packages/api/package.json ]; then cd packages/api; fi && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --include=dev && npx prisma generate --schema prisma/deploy/schema.postgres.prisma && npx tsc && node -e "require(\'fs\').writeFileSync(\'dist/package.json\', JSON.stringify({type:\'commonjs\'}))"';
 
@@ -67,11 +69,13 @@ export async function withPlanFallback(operation, candidates, label, log) {
     try {
       const result = await operation(plan);
       if (candidates.indexOf(plan) > 0) log(`${label} plan ${plan} is in use`);
+      if (plan !== 'free' && paidPlanAvailability === null) paidPlanAvailability = true;
       return { result, plan };
     } catch (error) {
       lastError = error;
       if (error.status === 402) {
         paymentRequired = true;
+        if (paidPlanAvailability === null) paidPlanAvailability = false;
         log(`${label} plan ${plan} needs a payment method: ${error.message}`);
         continue;
       }
@@ -237,18 +241,19 @@ export function buildWebServicePayload(config, variant = 'minimal') {
   return payload;
 }
 
-export function buildWebServicePatch(config) {
-  return {
+export function buildWebServicePatch(config, variant = 'minimal') {
+  const patch = {
     repo: `https://github.com/${config.repo}`,
     branch: config.branch,
     rootDir: 'packages/web',
-    autoDeployTrigger: 'off',
     serviceDetails: {
       buildCommand: WEB_BUILD_COMMAND,
       publishPath: 'dist',
-      pullRequestPreviewsEnabled: false,
     },
   };
+  if (variant !== 'noAutoDeploy') patch.autoDeployTrigger = 'off';
+  if (variant === 'previews') patch.serviceDetails.pullRequestPreviewsEnabled = false;
+  return patch;
 }
 
 export function serviceUrl(service, fallbackName) {
@@ -454,21 +459,18 @@ async function ensureService(client, config, log, dryRun, spec) {
     log(`reusing ${spec.type} ${spec.name} (${service.id}) on plan ${currentPlan ?? 'unknown'}`);
     if (!dryRun) {
       if (spec.plan && currentPlan === 'free' && spec.plan !== 'free') {
-        const recreated = await recreateService(client, log, spec, service);
-        service = recreated.result?.service ?? recreated.result;
-        plan = recreated.plan;
-      } else if (spec.plan) {
-        const patched = await withPlanFallback(
-          (candidate) => client.patch(`/services/${service.id}`, spec.patchBody(candidate)),
-          planCandidates(spec.plan, spec.fallbacks),
-          `${spec.type} ${spec.name}`,
-          log,
-        );
-        service = patched.result?.service ?? patched.result ?? service;
-        plan = patched.plan;
+        const paidAvailable = await canCreatePaidPlan(client, config, log, spec.plan);
+        if (paidAvailable) {
+          const recreated = await recreateService(client, log, spec, service);
+          service = recreated.result?.service ?? recreated.result;
+          plan = recreated.plan;
+        } else {
+          log(`keeping ${spec.name} on the free plan until the workspace can create paid plans`);
+        }
       } else {
-        const patched = await client.patch(`/services/${service.id}`, spec.patchBody());
-        service = patched?.service ?? patched ?? service;
+        const patched = await patchService(client, log, spec, service);
+        service = patched.result?.service ?? patched.result ?? service;
+        plan = patched.plan ?? plan;
       }
     }
   }
@@ -497,6 +499,66 @@ async function createService(client, log, spec) {
     }
   }
   throw lastError;
+}
+
+async function patchService(client, log, spec, service) {
+  const variants = spec.patchBodies || [spec.patchBody];
+  let lastError = null;
+  for (const variant of variants) {
+    const build = typeof variant === 'function' ? variant : () => variant;
+    try {
+      if (spec.plan) {
+        return await withPlanFallback(
+          (candidate) => client.patch(`/services/${service.id}`, build(candidate)),
+          planCandidates(spec.plan, spec.fallbacks),
+          `${spec.type} ${spec.name}`,
+          log,
+        );
+      }
+      const patched = await client.patch(`/services/${service.id}`, build());
+      return { result: patched?.service ?? patched, plan: null };
+    } catch (error) {
+      lastError = error;
+      log(`${spec.type} ${spec.name} patch failed: ${error.message}`);
+      if (![400, 422].includes(error.status)) throw error;
+    }
+  }
+  throw lastError;
+}
+
+async function canCreatePaidPlan(client, config, log, plan) {
+  if (paidPlanAvailability !== null) return paidPlanAvailability;
+  const probeName = `${config.apiServiceName}-plan-probe-${Date.now()}`;
+  try {
+    const created = await client.post('/services', {
+      type: 'web_service',
+      name: probeName,
+      ownerId: config.ownerId,
+      repo: `https://github.com/${config.repo}`,
+      branch: config.branch,
+      rootDir: 'packages/api',
+      serviceDetails: {
+        runtime: 'node',
+        plan,
+        region: config.region,
+        envSpecificDetails: { buildCommand: 'true', startCommand: 'true' },
+      },
+    });
+    const probeId = created?.service?.id;
+    if (probeId) {
+      await client.request('DELETE', `/services/${probeId}`);
+      log(`paid plan probe ${probeId} created and removed`);
+    }
+    paidPlanAvailability = true;
+    return true;
+  } catch (error) {
+    if (error.status === 402) {
+      log('the Render workspace cannot create paid plans yet: no payment method');
+      paidPlanAvailability = false;
+      return false;
+    }
+    throw error;
+  }
 }
 
 async function recreateService(client, log, spec, service) {
@@ -625,6 +687,7 @@ export async function main(argv = process.argv.slice(2)) {
     throw new Error('RENDER_API_KEY is required');
   }
   const config = buildConfig();
+  paidPlanAvailability = null;
   const client = new RenderClient(apiKey, { dryRun: args.dryRun });
   const ownerId = await resolveOwnerId(client, config, log);
   config.ownerId = ownerId;
@@ -649,7 +712,7 @@ export async function main(argv = process.argv.slice(2)) {
       plan: config.apiPlan,
       fallbacks: API_PLAN_FALLBACKS,
       createBodies: [(plan) => buildApiServicePayload(config, plan)],
-      patchBody: (plan) => buildApiServicePatch(config, plan),
+      patchBodies: [(plan) => buildApiServicePatch(config, plan)],
     }),
   );
   const apiService = apiServiceResult?.service ?? null;
@@ -665,7 +728,11 @@ export async function main(argv = process.argv.slice(2)) {
         () => buildWebServicePayload(config, 'previews'),
         () => buildWebServicePayload(config, 'full'),
       ],
-      patchBody: () => buildWebServicePatch(config),
+      patchBodies: [
+        () => buildWebServicePatch(config, 'minimal'),
+        () => buildWebServicePatch(config, 'previews'),
+        () => buildWebServicePatch(config, 'noAutoDeploy'),
+      ],
     }),
   );
   const webService = webServiceResult?.service ?? null;
@@ -738,6 +805,7 @@ export async function main(argv = process.argv.slice(2)) {
     apiEnvKeys: apiEnvVars.map((item) => item.key).sort(),
     webEnvKeys: webEnvVars.map((item) => item.key).sort(),
     vapidGenerated,
+    paidPlansAvailable: paidPlanAvailability,
     failures,
   };
 

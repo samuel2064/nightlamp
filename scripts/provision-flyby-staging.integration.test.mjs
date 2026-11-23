@@ -17,6 +17,7 @@ function startMockRender() {
     headers: new Map(),
     deploys: [],
     requests: [],
+    rejectPaidPlans: false,
   };
 
   const server = http.createServer((request, response) => {
@@ -43,6 +44,11 @@ function startMockRender() {
         return;
       }
       if (path === '/v1/services' && request.method === 'POST') {
+        const requestedPlan = body.serviceDetails?.plan;
+        if (state.rejectPaidPlans && requestedPlan && requestedPlan !== 'free') {
+          send(402, { message: 'Payment information is required to complete this request.' });
+          return;
+        }
         const id = `srv-${state.services.size + 1}`;
         const service = {
           id,
@@ -99,6 +105,12 @@ function startMockRender() {
           send(200, [
             { deploy: { id: `dep-${serviceId}-${state.deploys.length}`, status: 'live' } },
           ]);
+          return;
+        }
+        if (!suffix && request.method === 'DELETE') {
+          state.services.delete(serviceId);
+          response.writeHead(204);
+          response.end();
           return;
         }
         if (!suffix && request.method === 'PATCH') {
@@ -212,4 +224,74 @@ test('main provisions the staging pair against the Render API', async (t) => {
   ]);
   assert.ok(state.headers.get('srv-2').some((header) => header.path === '/sw.js'));
   assert.equal(state.deploys.length, 2);
+});
+
+test('a second run reuses the staging pair instead of recreating it', async (t) => {
+  const { server, state, port } = await startMockRender();
+  t.after(() => server.close());
+
+  const reportDir = mkdtempSync(join(tmpdir(), 'flyby-staging-'));
+  const reportPath = join(reportDir, 'report.json');
+  const previousEnv = { ...process.env };
+  const originalLog = console.log;
+  console.log = () => {};
+  process.env.RENDER_API_KEY = 'test-key';
+  process.env.RENDER_API_BASE_URL = `http://127.0.0.1:${port}/v1`;
+  process.env.RENDER_OWNER_ID = '';
+  process.env.STAGING_REPORT_PATH = reportPath;
+  process.env.FLYBY_COMMIT = '';
+  t.after(() => {
+    console.log = originalLog;
+    for (const key of Object.keys(process.env)) {
+      if (!(key in previousEnv)) delete process.env[key];
+    }
+    Object.assign(process.env, previousEnv);
+  });
+
+  await main([]);
+  const first = JSON.parse(readFileSync(reportPath, 'utf8'));
+  await main([]);
+  const second = JSON.parse(readFileSync(reportPath, 'utf8'));
+
+  assert.equal(second.apiServiceId, first.apiServiceId);
+  assert.equal(second.webServiceId, first.webServiceId);
+  assert.equal(second.postgresId, first.postgresId);
+  assert.equal(second.keyValueId, first.keyValueId);
+  assert.equal(second.failures.length, 0);
+  assert.equal(state.services.size, 2);
+});
+
+test('a free staging service is kept when the workspace cannot create paid plans', async (t) => {
+  const { server, state, port } = await startMockRender();
+  t.after(() => server.close());
+  state.rejectPaidPlans = true;
+
+  const reportDir = mkdtempSync(join(tmpdir(), 'flyby-staging-'));
+  const reportPath = join(reportDir, 'report.json');
+  const previousEnv = { ...process.env };
+  const originalLog = console.log;
+  console.log = () => {};
+  process.env.RENDER_API_KEY = 'test-key';
+  process.env.RENDER_API_BASE_URL = `http://127.0.0.1:${port}/v1`;
+  process.env.RENDER_OWNER_ID = '';
+  process.env.STAGING_REPORT_PATH = reportPath;
+  process.env.FLYBY_COMMIT = '';
+  t.after(() => {
+    console.log = originalLog;
+    for (const key of Object.keys(process.env)) {
+      if (!(key in previousEnv)) delete process.env[key];
+    }
+    Object.assign(process.env, previousEnv);
+  });
+
+  await main([]);
+  const first = JSON.parse(readFileSync(reportPath, 'utf8'));
+  assert.equal(first.apiServiceId, 'srv-1');
+  assert.equal(first.paidPlansAvailable, false);
+
+  await main([]);
+  const second = JSON.parse(readFileSync(reportPath, 'utf8'));
+  assert.equal(second.apiServiceId, 'srv-1');
+  assert.equal(second.paidPlansAvailable, false);
+  assert.equal(state.services.size, 2);
 });
