@@ -38,6 +38,13 @@ async function ledgerContains(client: PoolClient, migrationId: string): Promise<
 }
 
 async function checkSchemaStillApplied(client: PoolClient, migrationId: string): Promise<boolean> {
+  if (migrationId === '009-postgres-setup') {
+    const teams = await tableExists(client, 'teams');
+    const checks = await tableExists(client, 'checks');
+    const alerts = await tableExists(client, 'alert_rules');
+    const channels = await tableExists(client, 'alert_channels');
+    return teams && checks && alerts && channels;
+  }
   if (migrationId === '008-tenant-isolation') {
     const checks = await hasColumn(client, 'checks', 'team_id');
     const alerts = await hasColumn(client, 'alert_rules', 'team_id');
@@ -1003,27 +1010,13 @@ export async function runPostgresMigrations(pool: any): Promise<void> {
       )
     `);
 
-    // Define migrations in order - 009-postgres-setup runs first
-    const migrations = [
-      { id: '009-postgres-setup', up: async (client: PoolClient) => { /* implemented in 009-postgres-setup.ts */ } },
-      { id: '008-tenant-isolation', up: async (client: PoolClient) => { /* implemented inline */ } },
-      { id: '010-monitored-apps', up: async (client: PoolClient) => { /* ... */ } },
-      { id: '011-analytics-events', up: async (client: PoolClient) => { /* ... */ } },
-      { id: '012-personal-ownership', up: async (client: PoolClient) => { /* ... */ } },
-    ];
-
-    for (const migration of migrations) {
+    for (const migration of POSTGRES_MIGRATIONS) {
       const alreadyInLedger = await ledgerContains(client, migration.id);
 
       if (!alreadyInLedger) {
         await client.query('SAVEPOINT sp_migration');
         try {
-          if (migration.id === '009-postgres-setup') {
-            const { up: up009 } = await import('./009-postgres-setup');
-            await up009(client);
-          } else {
-            await migration.up(client);
-          }
+          await migration.up(client);
           await client.query('INSERT INTO schema_migrations (migration_id) VALUES ($1)', [migration.id]);
         } catch (error) {
           await client.query('ROLLBACK TO SAVEPOINT sp_migration');

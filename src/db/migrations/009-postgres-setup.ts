@@ -1,9 +1,7 @@
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 
-export async function up(pool: Pool): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+export async function up(client: PoolClient): Promise<void> {
+  await client.query('BEGIN');
 
     // checks
     await client.query(`
@@ -669,14 +667,6 @@ export async function up(pool: Pool): Promise<void> {
     await client.query('CREATE INDEX IF NOT EXISTS idx_analytics_events_received ON analytics_events(received_at DESC)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_feedback_responses_team ON feedback_responses(team_id)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_feedback_responses_received ON feedback_responses(received_at DESC)');
-
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
 }
 
 export async function down(pool: Pool): Promise<void> {
