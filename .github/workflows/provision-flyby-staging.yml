@@ -25,9 +25,11 @@ on:
       - .github/workflows/provision-flyby-staging.yml
       - scripts/provision-flyby-staging.mjs
       - scripts/provision-flyby-staging.test.mjs
+      - scripts/publish-github-status.sh
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: provision-flyby-staging
@@ -68,23 +70,88 @@ jobs:
           echo "FLYBY_COMMIT=$sha" >> "$GITHUB_ENV"
           echo "candidate commit: $sha"
 
-      - name: Provision the staging resources
+      - name: Probe the Render API access
+        id: probe
+        continue-on-error: true
         run: |
-          set -euo pipefail
-          test -n "$RENDER_API_KEY" || { echo "::error::RENDER_API_KEY is missing"; exit 1; }
-          if [ "${{ inputs.skip_deploy }}" = "true" ]; then
-            node scripts/provision-flyby-staging.mjs --skip-deploy
-          else
-            node scripts/provision-flyby-staging.mjs
+          set -uo pipefail
+          {
+            if [ -n "$RENDER_API_KEY" ]; then
+              echo "render_key=present"
+            else
+              echo "render_key=missing"
+            fi
+            if [ -n "$RENDER_API_KEY" ]; then
+              code=$(curl -sS -o probe.json -w '%{http_code}' -H "Authorization: Bearer $RENDER_API_KEY" \
+                "https://api.render.com/v1/services?limit=3")
+              echo "services_http=$code"
+              echo "services=$(jq -c '[.[] | (.service // .) | {id, name, type, ownerId}]' probe.json 2>/dev/null | cut -c1-400)"
+            fi
+          } > probe.log
+          bash scripts/publish-github-status.sh flyby-staging-probe probe.log success
+
+      - name: Provision the staging resources
+        id: provision
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          if [ -z "$RENDER_API_KEY" ]; then
+            echo "[provision] failed: RENDER_API_KEY is missing" > provisioning.log
+            cat provisioning.log
+            exit 1
           fi
+          if [ "${{ inputs.skip_deploy }}" = "true" ]; then
+            node scripts/provision-flyby-staging.mjs --skip-deploy 2>&1 | tee provisioning.log
+          else
+            node scripts/provision-flyby-staging.mjs 2>&1 | tee provisioning.log
+          fi
+          status=${PIPESTATUS[0]}
+          exit "$status"
+
+      - name: Publish the provisioning diagnostics
+        if: steps.provision.outcome == 'failure'
+        run: |
+          set -uo pipefail
+          bash scripts/publish-github-status.sh flyby-staging-provision provisioning.log failure
+          exit 1
+
+      - name: Publish the provisioning summary
+        if: steps.provision.outcome == 'success'
+        run: |
+          set -uo pipefail
+          bash scripts/publish-github-status.sh flyby-staging-summary staging-provision.json success
 
       - name: Run the staging verification suite
+        id: verify
+        if: steps.provision.outcome == 'success'
+        continue-on-error: true
         run: |
-          set -euo pipefail
-          curl -fsSL "https://raw.githubusercontent.com/$FLYBY_REPO/$FLYBY_COMMIT/scripts/staging-verify.mjs" -o staging-verify.mjs
+          set -uo pipefail
+          if ! curl -fsSL "https://raw.githubusercontent.com/$FLYBY_REPO/$FLYBY_COMMIT/scripts/staging-verify.mjs" -o staging-verify.mjs; then
+            echo "[verify] failed: could not download the verification script" | tee staging-verify.log
+            exit 1
+          fi
           api_url=$(jq -r '.apiUrl' staging-provision.json)
           web_url=$(jq -r '.webUrl' staging-provision.json)
-          node staging-verify.mjs --api "$api_url" --web "$web_url" --report staging-verify-report.json
+          if [ -z "$api_url" ] || [ "$api_url" = "null" ]; then
+            echo "[verify] failed: the provisioning report has no apiUrl" | tee staging-verify.log
+            exit 1
+          fi
+          node staging-verify.mjs --api "$api_url" --web "$web_url" --report staging-verify-report.json 2>&1 | tee staging-verify.log
+          status=${PIPESTATUS[0]}
+          exit "$status"
+
+      - name: Publish the verification result
+        if: steps.verify.outcome != 'skipped'
+        run: |
+          set -uo pipefail
+          if [ -f staging-verify-report.json ]; then
+            bash scripts/publish-github-status.sh flyby-staging-verify staging-verify-report.json "${{ steps.verify.outcome == 'success' && 'success' || 'failure' }}"
+          fi
+          bash scripts/publish-github-status.sh flyby-staging-verify-log staging-verify.log "${{ steps.verify.outcome == 'success' && 'success' || 'failure' }}"
+          if [ "${{ steps.verify.outcome }}" != "success" ]; then
+            exit 1
+          fi
 
       - name: Upload the staging reports
         if: always()
