@@ -1,0 +1,96 @@
+name: Provision Flyby staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_plan:
+        description: Render plan for flyby-api-staging
+        required: false
+        default: starter
+      postgres_plan:
+        description: Render plan for the staging Postgres
+        required: false
+        default: starter
+      key_value_plan:
+        description: Render plan for the staging Key Value
+        required: false
+        default: free
+      skip_deploy:
+        description: Provision the resources without deploying
+        required: false
+        default: 'false'
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/provision-flyby-staging.yml
+      - scripts/provision-flyby-staging.mjs
+      - scripts/provision-flyby-staging.test.mjs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provision-flyby-staging
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    name: Provision Flyby staging on Render
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      FLYBY_REPO: samuel2064/Flyby
+      FLYBY_BRANCH: monorepo-candidate
+      GH_TOKEN: ${{ github.token }}
+      STAGING_API_PLAN: ${{ inputs.api_plan || 'starter' }}
+      STAGING_POSTGRES_PLAN: ${{ inputs.postgres_plan || 'starter' }}
+      STAGING_KEY_VALUE_PLAN: ${{ inputs.key_value_plan || 'free' }}
+      STAGING_REPORT_PATH: staging-provision.json
+    steps:
+      - name: Checkout nightlamp
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test the provisioner
+        run: npm run test:staging-provision
+
+      - name: Resolve the candidate commit
+        run: |
+          set -euo pipefail
+          sha=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$FLYBY_REPO/commits/$FLYBY_BRANCH" | jq -r '.sha // empty')
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve the candidate commit"; exit 1; }
+          echo "FLYBY_COMMIT=$sha" >> "$GITHUB_ENV"
+          echo "candidate commit: $sha"
+
+      - name: Provision the staging resources
+        run: |
+          set -euo pipefail
+          test -n "$RENDER_API_KEY" || { echo "::error::RENDER_API_KEY is missing"; exit 1; }
+          if [ "${{ inputs.skip_deploy }}" = "true" ]; then
+            node scripts/provision-flyby-staging.mjs --skip-deploy
+          else
+            node scripts/provision-flyby-staging.mjs
+          fi
+
+      - name: Run the staging verification suite
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://raw.githubusercontent.com/$FLYBY_REPO/$FLYBY_COMMIT/scripts/staging-verify.mjs" -o staging-verify.mjs
+          api_url=$(jq -r '.apiUrl' staging-provision.json)
+          web_url=$(jq -r '.webUrl' staging-provision.json)
+          node staging-verify.mjs --api "$api_url" --web "$web_url" --report staging-verify-report.json
+
+      - name: Upload the staging reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flyby-staging-reports
+          path: |
+            staging-provision.json
+            staging-verify-report.json
