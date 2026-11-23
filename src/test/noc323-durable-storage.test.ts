@@ -259,9 +259,11 @@ describe('NOC-323 durable storage', () => {
     const originalEnv = process.env.NODE_ENV;
     const originalDbPath = process.env.DB_PATH;
     const originalPersistentMountPath = process.env.PERSISTENT_MOUNT_PATH;
+    const originalDatabaseUrl = process.env.DATABASE_URL;
 
     beforeEach(() => {
       process.env.NODE_ENV = 'production';
+      delete process.env.DATABASE_URL;
     });
 
     afterEach(() => {
@@ -275,6 +277,11 @@ describe('NOC-323 durable storage', () => {
         process.env.PERSISTENT_MOUNT_PATH = originalPersistentMountPath;
       } else {
         delete process.env.PERSISTENT_MOUNT_PATH;
+      }
+      if (originalDatabaseUrl) {
+        process.env.DATABASE_URL = originalDatabaseUrl;
+      } else {
+        delete process.env.DATABASE_URL;
       }
     });
 
@@ -506,8 +513,9 @@ for (const table of mainTableNames) {
               const def = pgIdx.indexdef;
               const match = def.match(/\(([^)]+)\)/);
               if (!match) continue;
-              const pgCols = match[1].split(',').map(c => c.trim().replace(/"/g, ''));
-              // Compare all columns, not just the first one
+              // Strip ASC/DESC from Postgres columns for comparison
+              const pgCols = match[1].split(',').map(c => c.trim().replace(/"/g, '').replace(/\s+(ASC|DESC)$/i, ''));
+              // Compare columns in SQLite index order (not alphabetically sorted)
               if (pgCols.length === sqliteCols.length && pgCols.every((col, i) => col === sqliteCols[i])) {
                 covered = true;
                 matchedPgIdx = pgIdx.indexname;
@@ -536,7 +544,8 @@ for (const table of mainTableNames) {
         }
 
         // Assert exact index counts per CTO measurement
-        assert.strictEqual(sqliteExplicitIndexCount, 106, `Expected 106 SQLite explicit indexes (56 explicit + 40 PK autoindexes + 10 unique autoindexes), got ${sqliteExplicitIndexCount}`);
+        // The loop explicitly skips sqlite_autoindex_* and counts 56 explicit indexes
+        assert.strictEqual(sqliteExplicitIndexCount, 56, `Expected 56 SQLite explicit indexes (explicit indexes only, autoindexes skipped), got ${sqliteExplicitIndexCount}`);
 
         // Count Postgres indexes
         const pgAllIdxsResult = await pool.query(`
@@ -545,7 +554,7 @@ for (const table of mainTableNames) {
         const pgTotalIndexes = parseInt(pgAllIdxsResult.rows[0].count);
         assert.strictEqual(pgTotalIndexes, 105, `Expected 105 Postgres total indexes (40 PK + 11 unique + 54 plain), got ${pgTotalIndexes}`);
 
-        // Assert the exact 51 name differences as data
+        // Assert the exact 51 name differences as data (measured by CTO)
         nameDifferences.sort();
         const expectedNameDifferences = [
           // 40 PK autoindexes -> _pkey
