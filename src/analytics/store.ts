@@ -30,16 +30,17 @@ export interface FeedbackResponseRecord {
   received_at: string;
 }
 
-export function tenantScopeKey(teamId: string | null): string {
-  return teamId === null ? 'personal' : `team:${teamId}`;
+export function tenantScopeKey(teamId: string | null, userId?: string | null): string {
+  if (teamId !== null) return `team:${teamId}`;
+  return userId ? `personal:${userId}` : 'personal';
 }
 
-export function analyticsDedupKey(teamId: string | null, eventId: string): string {
-  return `${tenantScopeKey(teamId)}:event:${eventId}`;
+export function analyticsDedupKey(teamId: string | null, eventId: string, userId?: string | null): string {
+  return `${tenantScopeKey(teamId, userId)}:event:${eventId}`;
 }
 
-export function feedbackDedupKey(teamId: string | null, responseId: string): string {
-  return `${tenantScopeKey(teamId)}:response:${responseId}`;
+export function feedbackDedupKey(teamId: string | null, responseId: string, userId?: string | null): string {
+  return `${tenantScopeKey(teamId, userId)}:response:${responseId}`;
 }
 
 function parseProperties(raw: any): Record<string, unknown> {
@@ -62,7 +63,7 @@ export function recordAnalyticsEvent(
   },
 ): { inserted: boolean; record: AnalyticsEventRecord } {
   const properties = input.properties ?? input.event.properties;
-  const dedupKey = analyticsDedupKey(input.teamId, input.event.event_id);
+  const dedupKey = analyticsDedupKey(input.teamId, input.event.event_id, input.userId);
 
   const existing = db.exec(
     'SELECT id, event, schema_version, occurred_at, team_id, user_id, properties, received_at, forwarded, forward_error FROM analytics_events WHERE dedup_key = ?',
@@ -130,9 +131,10 @@ export function markAnalyticsForward(
   db: Database,
   teamId: string | null,
   eventId: string,
+  userId: string | null,
   outcome: { forwarded: boolean; error?: string },
 ): void {
-  const dedupKey = analyticsDedupKey(teamId, eventId);
+  const dedupKey = analyticsDedupKey(teamId, eventId, userId);
   if (outcome.forwarded) {
     db.run(
       'UPDATE analytics_events SET forwarded = 1, forward_attempts = forward_attempts + 1, forward_error = NULL WHERE dedup_key = ?',
@@ -251,7 +253,7 @@ export function recordFeedbackSubmission(
     receivedAt?: string;
   },
 ): { inserted: boolean; record: FeedbackResponseRecord } {
-  const dedupKey = feedbackDedupKey(input.teamId, input.response.response_id);
+  const dedupKey = feedbackDedupKey(input.teamId, input.response.response_id, input.userId);
   const receivedAt = input.receivedAt ?? new Date().toISOString();
 
   const existing = db.exec(
@@ -287,7 +289,7 @@ export function recordFeedbackSubmission(
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         input.event.event_id,
-        analyticsDedupKey(input.teamId, input.event.event_id),
+        analyticsDedupKey(input.teamId, input.event.event_id, input.userId),
         input.teamId,
         input.userId,
         input.event.event,
@@ -330,7 +332,7 @@ export function recordFeedbackResponse(
     eventId: string;
   },
 ): { inserted: boolean; record: FeedbackResponseRecord } {
-  const dedupKey = feedbackDedupKey(input.teamId, input.response.response_id);
+  const dedupKey = feedbackDedupKey(input.teamId, input.response.response_id, input.userId);
 
   const existing = db.exec(
     'SELECT id, kind, feedback_type, survey_id, score, team_id, user_id, response, event_id, received_at FROM feedback_responses WHERE dedup_key = ?',

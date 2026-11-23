@@ -29,14 +29,14 @@ import {
   type EndpointCheckResult,
   type EndpointCheckType,
 } from '../engine/endpoint-check';
-import { defaultHostResolver, defaultTargetPolicy } from '../engine/outbound-safety';
+import { defaultHostResolver, defaultTargetPolicy, HostResolver } from '../engine/outbound-safety';
 import { getPolicyForSeverity, getOnCallAt, ESCALATION_POLICIES, buildSelfMonitorDashboard, computeErrorBudgetStatus, SELF_MONITOR_DEFAULTS } from '../alerting';
 import { nodeHTTPRequestHandler } from '@trpc/server/adapters/node-http';
 import { handleSSERequest } from './sse';
 import { createPlaybookEngine } from '../playbook/engine';
 import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
 import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership, authenticateRequestAsync, requireRole } from './auth';
-import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant } from './tenant';
+import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant, rowBelongsToScope, scopedTenantFilter, requireChannelOwnership } from './tenant';
 import { getDatabaseConfig, getBootId } from '../db';
 
 export interface ApiConfig {
@@ -52,6 +52,11 @@ export interface ApiConfig {
    * reaches the network. Production leaves it unset and takes the real policy.
    */
   appsApiDeps?: AppsApiDeps;
+  /**
+   * Host resolver for outbound DNS validation. Tests inject a mock resolver
+   * to avoid live DNS lookups and keep the suite hermetic.
+   */
+  hostResolver?: HostResolver;
 }
 
 interface EndpointRule {
@@ -240,7 +245,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
   const teamApi = new TeamApi(db);
   const onboardingApi = new OnboardingApi(db);
   const playbookBuilderApi = new PlaybookBuilderApi(db);
-  const notificationApi = new NotificationApi(db);
+  const notificationApi = new NotificationApi(db, config.hostResolver ?? defaultHostResolver);
   const reportsApi = new ReportsApi(db);
   const appsApi = new AppsApi(db, config.appsApiDeps ?? buildAppsApiDeps());
   const analyticsApi = new AnalyticsApi(db);
@@ -318,6 +323,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
       const scope = auth ? `${auth.userId}:${auth.teamId || 'personal'}` : 'public';
       const teamId = auth ? auth.teamId : null;
+      const userId = auth ? auth.userId : '';
 
       // The monitored application registry owns its own tenant scoping, so it
       // runs before the generic route chain and never falls through to it.
@@ -794,20 +800,11 @@ const id = uuidv4();
           res.end(JSON.stringify({ error: 'Channel ID required' }));
           return;
         }
-        if (teamId === null || !rowBelongsToTenant(db, 'alert_channels', channelId, teamId)) {
-          res.writeHead(404);
-          res.end(JSON.stringify({ error: 'Channel not found' }));
-          return;
-        }
-        // A monitored application is unusable without its alert channel, so the
-        // channel is refused while one still references it and nothing is
-        // deleted. The foreign key in the apps migration does not protect this
-        // path, because foreign-key enforcement is only enabled inside the apps
-        // API's own transaction helper.
-        const attached = db.exec('SELECT id FROM monitored_apps WHERE alert_channel_id = ? LIMIT 1', [channelId]);
-        if (attached.length > 0 && attached[0].values.length > 0) {
-          res.writeHead(409);
-          res.end(JSON.stringify({ error: 'Channel is referenced by a monitored application', code: 'CHANNEL_IN_USE' }));
+        // Shared referenced-channel delete guard: scope ownership + monitored app reference check
+        const guard = requireChannelOwnership(db, channelId, teamId, userId);
+        if (guard) {
+          res.writeHead(guard.status);
+          res.end(JSON.stringify({ error: guard.error, code: guard.code }));
           return;
         }
         db.run('DELETE FROM alert_rules WHERE channel_id = ?', [channelId]);
@@ -835,8 +832,8 @@ const id = uuidv4();
               return;
             }
             updates.push("updated_at = datetime('now')");
-            const tenantScope = tenantOwnedFilter('team_id', teamId);
-            db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${tenantScope.clause}`, [...params, channelId, ...tenantScope.params]);
+            const channelScope = scopedTenantFilter('alert_channels', teamId, userId);
+            db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${channelScope.clause}`, [...params, channelId, ...channelScope.params]);
             if (db.getRowsModified() === 0) {
               res.writeHead(404);
               res.end(JSON.stringify({ error: 'Channel not found' }));
@@ -863,7 +860,7 @@ const id = uuidv4();
                 res.end(JSON.stringify({ error: 'name, channelId, and failureTypes are required' }));
                 return;
               }
-              if (teamId === null || !rowBelongsToTenant(db, 'alert_channels', channelId, teamId)) {
+              if (!rowBelongsToScope(db, 'alert_channels', channelId, teamId, userId)) {
                 res.writeHead(404);
                 res.end(JSON.stringify({ error: 'Channel not found' }));
                 return;
@@ -931,7 +928,7 @@ const id = uuidv4();
         req.on('end', () => {
           try {
             const { name, channelId, failureTypes, minSeverity, enabled } = JSON.parse(body);
-            if (channelId !== undefined && (teamId === null || !rowBelongsToTenant(db, 'alert_channels', channelId, teamId))) {
+            if (channelId !== undefined && !rowBelongsToScope(db, 'alert_channels', channelId, teamId, userId)) {
               res.writeHead(404);
               res.end(JSON.stringify({ error: 'Channel not found' }));
               return;
@@ -1373,7 +1370,6 @@ const id = uuidv4();
         const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
         const status = parsedUrl.searchParams.get('status');
         const severity = parsedUrl.searchParams.get('severity');
-
         const eventScope = tenantOwnedFilter('fe.team_id', teamId);
         const checkScope = tenantOwnedFilter('c.team_id', teamId);
         let sql = `SELECT fe.id, fe.check_id, fe.failure_type, fe.severity, fe.title, fe.description, 

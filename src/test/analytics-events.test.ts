@@ -449,6 +449,44 @@ describe('Analytics ingestion and feedback responses', () => {
       assert.ok(!events[0].values[0][0].includes('please add a dark mode'));
       assert.ok(!events[0].values[0][0].includes('person-fixture-identity'));
     });
+
+    it('allows two teamless users to submit feedback with the same response_id without conflict', async () => {
+      const responseId = uuidv4();
+      const teamlessTokenA = createTestToken({ sub: 'teamless-a-clerk', email: 'a-fixture-identity' });
+      const teamlessTokenB = createTestToken({ sub: 'teamless-b-clerk', email: 'b-fixture-identity' });
+
+      const payload = {
+        response_id: responseId,
+        kind: 'feedback',
+        feedback_type: 'bug_report',
+        response: { message: 'the dashboard is slow on mobile' },
+      };
+
+      const first = await postResponse(payload, {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${teamlessTokenA}`,
+      });
+      assert.strictEqual(first.status, 200);
+      assert.strictEqual(first.body.duplicate, false);
+
+      const second = await postResponse(payload, {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${teamlessTokenB}`,
+      });
+      assert.strictEqual(second.status, 200);
+      assert.strictEqual(second.body.duplicate, false);
+
+      const responses = db.exec('SELECT COUNT(*) FROM feedback_responses WHERE id = ?', [responseId]);
+      assert.strictEqual(Number(responses[0].values[0][0]), 2);
+
+      const events = db.exec('SELECT COUNT(*) FROM analytics_events WHERE id = ?', [responseId]);
+      assert.strictEqual(Number(events[0].values[0][0]), 2);
+
+      const responseRows = db.exec('SELECT user_id, dedup_key FROM feedback_responses WHERE id = ?', [responseId]);
+      assert.strictEqual(responseRows[0].values.length, 2);
+      const dedupKeys = new Set(responseRows[0].values.map((row: any) => row[1]));
+      assert.strictEqual(dedupKeys.size, 2, 'each teamless user must have a distinct dedup key');
+    });
   });
 
   describe('the forwarding path', () => {

@@ -410,7 +410,7 @@ describe('NOC-323 durable storage', () => {
             indexNames.add(idxName);
             const idxInfo = mainDb.exec(`PRAGMA index_info(${idxName})`);
             if (idxInfo.length > 0 && idxInfo[0].values.length > 0) {
-              const cols = idxInfo[0].values.map((r: any) => r[2] as string);
+const cols = idxInfo[0].values.map((r: any) => r[2] as string).sort();
               idxColsMap.set(idxName, cols);
             }
           }
@@ -423,7 +423,7 @@ describe('NOC-323 durable storage', () => {
 
     skipIfNoPostgres('runPostgresMigrations on fresh database produces 42 tables matching SQLite', async () => {
       const { Pool } = await import('pg');
-      const { runPostgresMigrations } = await import('../db/connection');
+const { runPostgresMigrations } = await import('../db/migrations/postgres-runner');
 
       // Use a dedicated test schema to isolate from unrelated public indexes
       const testSchema = `test_parity_${Date.now()}`;
@@ -477,7 +477,7 @@ describe('NOC-323 durable storage', () => {
         let pgExplicitIndexCount = 0;
         const nameDifferences: string[] = [];
 
-        for (const table of mainTableNames) {
+for (const table of mainTableNames) {
           // Get SQLite explicit indexes (skip autoindexes)
           const sqliteIdxNames = mainIndexes.get(table) ?? new Set();
           for (const sqliteIdx of sqliteIdxNames) {
@@ -486,10 +486,10 @@ describe('NOC-323 durable storage', () => {
 
             const sqliteCols = mainIndexColumns.get(table)?.get(sqliteIdx) ?? [];
 
-            // Get Postgres indexes for this table with their column definitions from pg_index
+// Get Postgres indexes for this table with their column definitions from pg_index
             const pgIdxsResult = await pool.query(`
-              SELECT i.relname as indexname,
-                     pg_get_indexdef(i.oid) as indexdef,
+              SELECT i.indexrelid::regclass::text as indexname,
+                     pg_get_indexdef(i.indexrelid) as indexdef,
                      c.relname as table_name
                 FROM pg_index x
                 JOIN pg_class i ON i.oid = x.indexrelid
@@ -506,13 +506,14 @@ describe('NOC-323 durable storage', () => {
               const match = def.match(/\(([^)]+)\)/);
               if (!match) continue;
               const pgCols = match[1].split(',').map(c => c.trim().replace(/"/g, ''));
-              if (pgCols.length > 0 && pgCols[0] === sqliteCols[0]) {
+// Compare all columns, not just the first one
+              if (pgCols.length === sqliteCols.length && pgCols.every((col, i) => col === sqliteCols[i])) {
                 covered = true;
                 matchedPgIdx = pgIdx.indexname;
                 break;
               }
             }
-            assert.ok(covered, `SQLite index ${sqliteIdx} on ${table} must have a covering Postgres index`);
+assert.ok(covered, `SQLite index ${sqliteIdx} on ${table} must have a covering Postgres index with matching columns (SQLite: [${sqliteCols.join(', ')}])`);
 
             // Record name difference if the names don't match the expected pattern
             if (matchedPgIdx && matchedPgIdx !== sqliteIdx) {
@@ -522,7 +523,7 @@ describe('NOC-323 durable storage', () => {
 
           // Count Postgres explicit indexes (skip PK and unique constraint indexes that map to autoindexes)
           const pgIdxsAllResult = await pool.query(`
-            SELECT i.relname as indexname
+SELECT i.relname as indexname
               FROM pg_index x
               JOIN pg_class i ON i.oid = x.indexrelid
               JOIN pg_class c ON c.oid = x.indrelid
@@ -543,7 +544,7 @@ describe('NOC-323 durable storage', () => {
 
         // Count Postgres indexes
         const pgAllIdxsResult = await pool.query(`
-          SELECT count(*)
+SELECT count(*)
             FROM pg_index x
             JOIN pg_class i ON i.oid = x.indexrelid
             JOIN pg_class c ON c.oid = x.indrelid
@@ -637,7 +638,7 @@ describe('NOC-323 durable storage', () => {
 
     skipIfNoPostgres('runPostgresMigrations on same database is a no-op (idempotent)', async () => {
       const { Pool } = await import('pg');
-      const { runPostgresMigrations } = await import('../db/connection');
+const { runPostgresMigrations } = await import('../db/migrations/postgres-runner');
 
       // Use a dedicated test schema to isolate from unrelated public indexes
       const testSchema = `test_idempotent_${Date.now()}`;
@@ -648,27 +649,27 @@ describe('NOC-323 durable storage', () => {
 
         await runPostgresMigrations(pool);
         const beforeTables = await pool.query(`SELECT count(*) FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, [testSchema]);
-        const beforeIndexes = await pool.query(`
+const beforeIndexes = await pool.query(`
           SELECT count(*)
             FROM pg_index x
             JOIN pg_class i ON i.oid = x.indexrelid
             JOIN pg_class c ON c.oid = x.indrelid
             JOIN pg_namespace n ON n.oid = c.relnamespace
            WHERE n.nspname = $1
-        `, [testSchema]);
+       `, [testSchema]);
         const beforeLedger = await pool.query(`SELECT count(*) FROM schema_migrations`);
 
         await runPostgresMigrations(pool);
 
         const afterTables = await pool.query(`SELECT count(*) FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, [testSchema]);
-        const afterIndexes = await pool.query(`
+const afterIndexes = await pool.query(`
           SELECT count(*)
             FROM pg_index x
             JOIN pg_class i ON i.oid = x.indexrelid
             JOIN pg_class c ON c.oid = x.indrelid
             JOIN pg_namespace n ON n.oid = c.relnamespace
            WHERE n.nspname = $1
-        `, [testSchema]);
+       `, [testSchema]);
         const afterLedger = await pool.query(`SELECT count(*) FROM schema_migrations`);
 
         assert.strictEqual(parseInt(beforeTables.rows[0].count), 42);

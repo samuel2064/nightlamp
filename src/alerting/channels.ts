@@ -1,4 +1,7 @@
 import * as nodemailer from 'nodemailer';
+import { resolvePublicTarget, BlockedTargetError, TargetResolutionError, defaultHostResolver, HostResolver } from '../engine/outbound-safety';
+
+export { HostResolver } from '../engine/outbound-safety';
 
 export type ChannelType = 'slack' | 'email' | 'pagerduty' | 'in-app-websocket';
 
@@ -34,6 +37,73 @@ export interface NotificationPayload {
   detectedAt: string;
   checkId?: string;
   eventId?: string;
+}
+
+export async function validateDeliveryDestination(
+  channelType: ChannelType,
+  config: ChannelConfig,
+  resolver?: HostResolver
+): Promise<void> {
+  const hostResolver = resolver ?? defaultHostResolver;
+  if (channelType === 'slack') {
+    const slackConfig = config as SlackConfig;
+    let parsed: URL;
+    try {
+      parsed = new URL(slackConfig.webhookUrl);
+    } catch {
+      throw new Error('Invalid webhook URL');
+    }
+    try {
+      await resolvePublicTarget(parsed.hostname, hostResolver);
+    } catch (err) {
+      if (err instanceof BlockedTargetError) {
+        throw new Error('Slack webhook destination is not a public endpoint');
+      }
+      if (err instanceof TargetResolutionError) {
+        throw new Error('Slack webhook destination DNS resolution failed');
+      }
+      throw err;
+    }
+  }
+  if (channelType === 'in-app-websocket') {
+    const wsConfig = config as InAppWebSocketConfig;
+    let parsed: URL;
+    try {
+      parsed = new URL(wsConfig.url);
+    } catch {
+      throw new Error('Invalid WebSocket URL');
+    }
+    try {
+      await resolvePublicTarget(parsed.hostname, hostResolver);
+    } catch (err) {
+      if (err instanceof BlockedTargetError) {
+        throw new Error('In-app WebSocket destination is not a public endpoint');
+      }
+      if (err instanceof TargetResolutionError) {
+        throw new Error('In-app WebSocket destination DNS resolution failed');
+      }
+      throw err;
+    }
+  }
+  if (channelType === 'email') {
+    const emailConfig = config as EmailConfig;
+    const host = emailConfig.smtpHost.trim().toLowerCase();
+    if (!host) {
+      throw new Error('Email SMTP destination is not a public endpoint');
+    }
+    try {
+      await resolvePublicTarget(host, hostResolver);
+    } catch (err) {
+      if (err instanceof BlockedTargetError) {
+        throw new Error('Email SMTP destination is not a public endpoint');
+      }
+      if (err instanceof TargetResolutionError) {
+        throw new Error('Email SMTP destination DNS resolution failed');
+      }
+      throw err;
+    }
+  }
+  // PagerDuty uses a fixed public endpoint (events.pagerduty.com), no validation needed
 }
 
 function formatSlackMessage(payload: NotificationPayload): object {
@@ -173,8 +243,12 @@ async function sendInAppWebSocket(config: InAppWebSocketConfig, payload: Notific
 export async function sendNotification(
   channelType: ChannelType,
   config: ChannelConfig,
-  payload: NotificationPayload
+  payload: NotificationPayload,
+  resolver?: HostResolver
 ): Promise<void> {
+  // Validate destination at delivery time (defense in depth: also checked at channel creation)
+  await validateDeliveryDestination(channelType, config, resolver);
+
   switch (channelType) {
     case 'slack':
       await sendSlack(config as SlackConfig, payload);
