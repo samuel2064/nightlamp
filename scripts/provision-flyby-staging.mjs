@@ -3,7 +3,9 @@ import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-const API_BASE = 'https://api.render.com/v1';
+export function apiBase() {
+  return process.env.RENDER_API_BASE_URL || 'https://api.render.com/v1';
+}
 const PROD_SERVICE_IDS = new Set(['srv-dak58lm1egvs73957l50', 'srv-dapocsugekts73ek60t0']);
 const FAILED_DEPLOY_STATUSES = new Set(['build_failed', 'update_failed', 'pre_deploy_failed', 'deactivated', 'canceled']);
 
@@ -262,7 +264,7 @@ export class RenderClient {
   }
 
   async request(method, path, body, options = {}) {
-    const response = await fetch(`${API_BASE}${path}`, {
+    const response = await fetch(`${apiBase()}${path}`, {
       method,
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
@@ -519,7 +521,7 @@ async function getEnvVars(client, serviceId) {
   return items.filter((item) => typeof item.key === 'string');
 }
 
-async function putEnvVars(client, serviceId, vars) {
+async function putEnvVars(client, serviceId, vars, log) {
   const body = vars.map((item) => ({ key: item.key, value: item.value }));
   await client.put(`/services/${serviceId}/env-vars`, body, { sensitive: true });
   log(`updated ${vars.length} environment variables on ${serviceId}`);
@@ -611,8 +613,8 @@ function usage() {
   ].join('\n');
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
+export async function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
   if (args.help) {
     console.log(usage());
     return;
@@ -703,7 +705,7 @@ async function main() {
       nodeVersion: config.nodeVersion,
     });
     if (postgres && keyValue) {
-      await putEnvVars(client, apiService.id, apiEnvVars);
+      await putEnvVars(client, apiService.id, apiEnvVars, log);
     } else {
       log('skipping the API environment update: the staging Postgres or Key Value is not available');
     }
@@ -712,7 +714,7 @@ async function main() {
   let webEnvVars = [];
   if (webService) {
     webEnvVars = buildWebEnvVars(await getEnvVars(client, webService.id), apiUrl);
-    await putEnvVars(client, webService.id, webEnvVars);
+    await putEnvVars(client, webService.id, webEnvVars, log);
   }
 
   const report = {
