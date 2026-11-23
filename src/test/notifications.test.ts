@@ -217,31 +217,48 @@ describe('Notification Service', function () {
   });
 
   describe('processNotification', function () {
-    it('should return skipped when rate limited', async function () {
+      let webhookServer: http.Server;
+      let webhookUrl: string;
+
+      before(async function () {
+        webhookServer = http.createServer((_req, res) => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        });
+        await new Promise<void>((resolve) => webhookServer.listen(0, '127.0.0.1', resolve));
+        const address = webhookServer.address() as any;
+        webhookUrl = `http://127.0.0.1:${address.port}/webhook`;
+      });
+
+      after(async function () {
+        await new Promise<void>((resolve) => webhookServer.close(() => resolve()));
+      });
+
+      it('should return skipped when rate limited', async function () {
+        const { processNotification } = await import('../notifications/service');
+        const channelId = uuidv4();
+        const config = { webhookUrl };
+        db.run(
+          `INSERT INTO alert_channels (id, name, type, config) VALUES (?, 'Proc Test', 'slack', ?)`,
+          [channelId, JSON.stringify(config)]
+        );
+        db.run(
+          `INSERT INTO notification_rate_limits (id, channel_id, max_per_minute, max_per_hour, window_start, current_count)
+         VALUES (?, ?, 0, 0, datetime('now'), 0)`,
+          [uuidv4(), channelId]
+        );
+        const result = await processNotification(db, channelId, 'slack', config, {
+          title: 'Test', description: 'desc', failureType: 'rate_limited', severity: 'warning', detectedAt: new Date().toISOString(), checkId: 'c1',
+        }, 5);
+        assert.strictEqual(result.sent, false);
+        assert.strictEqual(result.skipped, 'rate_limited');
+        assert.ok(result.logId);
+      });
+
+    it('should create alert_log entry and deliver to the channel', async function () {
       const { processNotification } = await import('../notifications/service');
       const channelId = uuidv4();
-      const config = { webhookUrl: 'https://hooks.slack.com/services/test' };
-      db.run(
-        `INSERT INTO alert_channels (id, name, type, config) VALUES (?, 'Proc Test', 'slack', ?)`,
-        [channelId, JSON.stringify(config)]
-      );
-      db.run(
-        `INSERT INTO notification_rate_limits (id, channel_id, max_per_minute, max_per_hour, window_start, current_count)
-         VALUES (?, ?, 0, 0, datetime('now'), 0)`,
-        [uuidv4(), channelId]
-      );
-      const result = await processNotification(db, channelId, 'slack', config, {
-        title: 'Test', description: 'desc', failureType: 'rate_limited', severity: 'warning', detectedAt: new Date().toISOString(), checkId: 'c1',
-      }, 5);
-      assert.strictEqual(result.sent, false);
-      assert.strictEqual(result.skipped, 'rate_limited');
-      assert.ok(result.logId);
-    });
-
-    it('should create alert_log entry with pending status', async function () {
-      const { processNotification, getDedupFingerprint } = await import('../notifications/service');
-      const channelId = uuidv4();
-      const config = { webhookUrl: 'https://hooks.slack.com/services/test' };
+      const config = { webhookUrl };
       db.run(
         `INSERT INTO alert_channels (id, name, type, config) VALUES (?, 'Log Test', 'slack', ?)`,
         [channelId, JSON.stringify(config)]
@@ -249,10 +266,11 @@ describe('Notification Service', function () {
       const result = await processNotification(db, channelId, 'slack', config, {
         title: 'Log Test', description: 'desc', failureType: 'broken_webhook', severity: 'critical', detectedAt: new Date().toISOString(), checkId: 'c2',
       }, 5);
+      assert.strictEqual(result.sent, true);
       assert.ok(result.logId);
       const logResult = db.exec('SELECT status FROM alert_log WHERE id = ?', [result.logId]);
       assert.ok(logResult.length > 0);
-      assert.ok(['pending', 'sent', 'failed'].includes(logResult[0].values[0][0] as string));
+      assert.strictEqual(logResult[0].values[0][0], 'sent');
     });
   });
 
