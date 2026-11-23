@@ -200,7 +200,7 @@ describe('Notification Service', function () {
       );
       const result = await deliverWithRetry(db, 'slack', config, {
         title: 'Test', description: '', failureType: 'test', severity: 'info', detectedAt: new Date().toISOString(),
-      }, 1);
+      }, 1, mockHostResolver);
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.errorMessage, null);
       assert.strictEqual(result.attempts, 1);
@@ -218,7 +218,7 @@ describe('Notification Service', function () {
       );
       const result = await deliverWithRetry(db, 'slack', config, {
         title: 'Test', description: '', failureType: 'test', severity: 'info', detectedAt: new Date().toISOString(),
-      }, 1);
+      }, 1, mockHostResolver);
       assert.strictEqual(result.success, false);
       assert.ok(result.errorMessage);
       assert.strictEqual(result.attempts, 1);
@@ -242,7 +242,7 @@ describe('Notification Service', function () {
       );
       const result = await processNotification(db, channelId, 'slack', config, {
         title: 'Test', description: 'desc', failureType: 'rate_limited', severity: 'warning', detectedAt: new Date().toISOString(), checkId: 'c1',
-      }, 5);
+      }, 5, mockHostResolver);
       assert.strictEqual(result.sent, false);
       assert.strictEqual(result.skipped, 'rate_limited');
       assert.ok(result.logId);
@@ -258,7 +258,7 @@ describe('Notification Service', function () {
       );
       const result = await processNotification(db, channelId, 'slack', config, {
         title: 'Log Test', description: 'desc', failureType: 'broken_webhook', severity: 'critical', detectedAt: new Date().toISOString(), checkId: 'c2',
-      }, 5);
+      }, 5, mockHostResolver);
       assert.ok(result.logId);
       const logResult = db.exec('SELECT status FROM alert_log WHERE id = ?', [result.logId]);
       assert.ok(logResult.length > 0);

@@ -487,14 +487,17 @@ describe('NOC-323 durable storage', () => {
 
             const sqliteCols = mainIndexColumns.get(table)?.get(sqliteIdx) ?? [];
 
-            // Get Postgres indexes for this table with their column definitions
-const pgIdxsResult = await pool.query(`
-              SELECT indexname,
-                     pg_get_indexdef(indexrelid) as indexdef,
-                     indrelid::regclass::text as table_name
-               FROM pg_indexes
-               WHERE schemaname = $1 AND tablename = $2
-             `, [testSchema, table]);
+// Get Postgres indexes for this table with their column definitions
+            // Use pg_index joined with pg_class/pg_namespace to get proper index definitions
+            const pgIdxsResult = await pool.query(`
+              SELECT i.indexrelid::regclass::text as indexname,
+                     pg_get_indexdef(i.indexrelid) as indexdef,
+                     c.relname as table_name
+              FROM pg_index i
+              JOIN pg_class c ON c.oid = i.indrelid
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = $1 AND c.relname = $2
+            `, [testSchema, table]);
 
             // Check if there's a covering Postgres index
             let covered = false;
@@ -627,17 +630,22 @@ const pgIdxsResult = await pool.query(`
       const { Pool } = await import('pg');
       const { runPostgresMigrations } = await import('../db/migrations/postgres-runner');
 
+      // Use a dedicated test schema to isolate from unrelated public indexes
+      const testSchema = `test_parity_idempotent_${Date.now()}`;
       const pool = new Pool({ connectionString: pgUrl });
       try {
+        await pool.query(`CREATE SCHEMA ${testSchema}`);
+        await pool.query(`SET search_path TO ${testSchema}, public`);
+
         await runPostgresMigrations(pool);
-        const beforeTables = await pool.query(`SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`);
-        const beforeIndexes = await pool.query(`SELECT count(*) FROM pg_indexes WHERE schemaname = 'public'`);
+        const beforeTables = await pool.query(`SELECT count(*) FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, [testSchema]);
+        const beforeIndexes = await pool.query(`SELECT count(*) FROM pg_indexes WHERE schemaname = $1`, [testSchema]);
         const beforeLedger = await pool.query(`SELECT count(*) FROM schema_migrations`);
 
         await runPostgresMigrations(pool);
 
-        const afterTables = await pool.query(`SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`);
-        const afterIndexes = await pool.query(`SELECT count(*) FROM pg_indexes WHERE schemaname = 'public'`);
+        const afterTables = await pool.query(`SELECT count(*) FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, [testSchema]);
+        const afterIndexes = await pool.query(`SELECT count(*) FROM pg_indexes WHERE schemaname = $1`, [testSchema]);
         const afterLedger = await pool.query(`SELECT count(*) FROM schema_migrations`);
 
         assert.strictEqual(parseInt(beforeTables.rows[0].count), 42);
@@ -647,6 +655,7 @@ const pgIdxsResult = await pool.query(`
         assert.strictEqual(parseInt(beforeLedger.rows[0].count), 5);
         assert.strictEqual(parseInt(afterLedger.rows[0].count), 5);
       } finally {
+        await pool.query(`DROP SCHEMA IF EXISTS ${testSchema} CASCADE`);
         await pool.end();
       }
     });
