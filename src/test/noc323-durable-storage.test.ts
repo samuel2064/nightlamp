@@ -478,7 +478,7 @@ describe('NOC-323 durable storage', () => {
         let pgExplicitIndexCount = 0;
         const nameDifferences: string[] = [];
 
-        for (const table of mainTableNames) {
+for (const table of mainTableNames) {
           // Get SQLite explicit indexes (skip autoindexes)
           const sqliteIdxNames = mainIndexes.get(table) ?? new Set();
           for (const sqliteIdx of sqliteIdxNames) {
@@ -507,13 +507,14 @@ describe('NOC-323 durable storage', () => {
               const match = def.match(/\(([^)]+)\)/);
               if (!match) continue;
               const pgCols = match[1].split(',').map(c => c.trim().replace(/"/g, ''));
-              if (pgCols.length > 0 && pgCols[0] === sqliteCols[0]) {
+              // Compare all columns, not just the first one
+              if (pgCols.length === sqliteCols.length && pgCols.every((col, i) => col === sqliteCols[i])) {
                 covered = true;
                 matchedPgIdx = pgIdx.indexname;
                 break;
               }
             }
-            assert.ok(covered, `SQLite index ${sqliteIdx} on ${table} must have a covering Postgres index`);
+            assert.ok(covered, `SQLite index ${sqliteIdx} on ${table} must have a covering Postgres index with matching columns (SQLite: [${sqliteCols.join(', ')}])`);
 
             // Record name difference if the names don't match the expected pattern
             if (matchedPgIdx && matchedPgIdx !== sqliteIdx) {
