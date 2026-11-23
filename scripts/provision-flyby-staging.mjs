@@ -24,7 +24,7 @@ export const WEB_HEADERS = [
   { path: '/index.html', name: 'Cache-Control', value: 'no-cache' },
 ];
 
-export const API_PLAN_FALLBACKS = ['0.5c-512mb', '1c-2g'];
+export const API_PLAN_FALLBACKS = ['0.5c-512mb', '1c-2g', 'free'];
 export const POSTGRES_PLAN_FALLBACKS = ['0.1c-256mb', '0.5c-1g', '1c-2g', 'free'];
 export const KEY_VALUE_PLAN_FALLBACKS = ['free', '256mb', '1g'];
 
@@ -59,13 +59,20 @@ export function planCandidates(primary, fallbacks) {
 
 export async function withPlanFallback(operation, candidates, label, log) {
   let lastError = null;
+  let paymentRequired = false;
   for (const plan of candidates) {
+    if (paymentRequired && plan !== 'free') continue;
     try {
       const result = await operation(plan);
       if (candidates.indexOf(plan) > 0) log(`${label} plan ${plan} is in use`);
       return { result, plan };
     } catch (error) {
       lastError = error;
+      if (error.status === 402) {
+        paymentRequired = true;
+        log(`${label} plan ${plan} needs a payment method: ${error.message}`);
+        continue;
+      }
       if (![400, 422].includes(error.status)) throw error;
       log(`${label} plan ${plan} was rejected: ${error.message}`);
     }
@@ -445,6 +452,9 @@ async function ensureService(client, config, log, dryRun, spec) {
       service = created?.service ?? created;
     }
     log(`created ${spec.type} ${spec.name} (${service.id}) on plan ${plan ?? 'n/a'}`);
+    if (plan === 'free') {
+      log(`warning: ${spec.type} ${spec.name} is on the free plan and spins down when idle`);
+    }
   } else {
     log(`reusing ${spec.type} ${spec.name} (${service.id}) on plan ${service?.serviceDetails?.plan ?? 'unknown'}`);
     if (!dryRun) {

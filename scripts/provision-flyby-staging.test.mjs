@@ -242,3 +242,21 @@ test('withPlanFallback does not retry a non plan rejection', async () => {
   );
   assert.equal(attempts, 1);
 });
+
+test('withPlanFallback drops to the free plan when a card is required', async () => {
+  const tried = [];
+  const result = await withPlanFallback(
+    async (plan) => {
+      tried.push(plan);
+      if (plan !== 'free') {
+        throw Object.assign(new Error('Payment information is required'), { status: 402 });
+      }
+      return { id: 'srv-1' };
+    },
+    ['0.5c-512mb', '1c-2g', 'free'],
+    'web service',
+    () => {},
+  );
+  assert.deepEqual(tried, ['0.5c-512mb', 'free']);
+  assert.equal(result.plan, 'free');
+});
