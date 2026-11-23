@@ -141,16 +141,19 @@ test('buildApiServicePatch keeps the service configuration in sync', () => {
 test('buildWebServicePayload mirrors the candidate static site shape', () => {
   const config = buildConfig({});
   config.ownerId = 'wrk-1';
-  const payload = buildWebServicePayload(config, 'https://flyby-api-staging.onrender.com');
+  const payload = buildWebServicePayload(config, 'minimal');
   assert.equal(payload.type, 'static_site');
   assert.equal(payload.name, 'flyby-web-staging');
   assert.equal(payload.rootDir, 'packages/web');
   assert.equal(payload.serviceDetails.publishPath, 'dist');
   assert.equal(payload.serviceDetails.buildCommand, WEB_BUILD_COMMAND);
-  assert.deepEqual(payload.serviceDetails.routes, [
+  assert.equal(payload.serviceDetails.routes, undefined);
+  assert.equal(payload.serviceDetails.headers, undefined);
+  const full = buildWebServicePayload(config, 'full');
+  assert.deepEqual(full.serviceDetails.routes, [
     { type: 'rewrite', source: '/*', destination: '/index.html' },
   ]);
-  assert.ok(payload.serviceDetails.headers.some((header) => header.path === '/sw.js'));
+  assert.ok(full.serviceDetails.headers.some((header) => header.path === '/sw.js'));
   const patch = buildWebServicePatch(config);
   assert.equal(patch.serviceDetails.publishPath, 'dist');
   assert.match(WEB_BUILD_COMMAND, /npm run build/);

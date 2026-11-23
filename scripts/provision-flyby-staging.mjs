@@ -212,8 +212,8 @@ export function buildApiServicePatch(config, plan = config.apiPlan) {
   };
 }
 
-export function buildWebServicePayload(config) {
-  return {
+export function buildWebServicePayload(config, variant = 'minimal') {
+  const payload = {
     type: 'static_site',
     name: config.webServiceName,
     ownerId: config.ownerId,
@@ -224,11 +224,15 @@ export function buildWebServicePayload(config) {
     serviceDetails: {
       buildCommand: WEB_BUILD_COMMAND,
       publishPath: 'dist',
-      pullRequestPreviewsEnabled: false,
-      routes: WEB_ROUTES,
-      headers: WEB_HEADERS,
     },
   };
+  if (variant === 'previews') payload.serviceDetails.pullRequestPreviewsEnabled = false;
+  if (variant === 'full') {
+    payload.serviceDetails.pullRequestPreviewsEnabled = false;
+    payload.serviceDetails.routes = WEB_ROUTES;
+    payload.serviceDetails.headers = WEB_HEADERS;
+  }
+  return payload;
 }
 
 export function buildWebServicePatch(config) {
@@ -241,8 +245,6 @@ export function buildWebServicePatch(config) {
       buildCommand: WEB_BUILD_COMMAND,
       publishPath: 'dist',
       pullRequestPreviewsEnabled: false,
-      routes: WEB_ROUTES,
-      headers: WEB_HEADERS,
     },
   };
 }
@@ -438,27 +440,22 @@ async function ensureService(client, config, log, dryRun, spec) {
       log(`dry-run: would create ${spec.type} ${spec.name}`);
       return null;
     }
-    if (spec.plan) {
-      const created = await withPlanFallback(
-        (candidate) => client.post('/services', spec.createBody(candidate)),
-        planCandidates(spec.plan, spec.fallbacks),
-        `${spec.type} ${spec.name}`,
-        log,
-      );
-      service = created.result?.service ?? created.result;
-      plan = created.plan;
-    } else {
-      const created = await client.post('/services', spec.createBody());
-      service = created?.service ?? created;
-    }
+    const created = await createService(client, log, spec);
+    service = created.result?.service ?? created.result;
+    plan = created.plan;
     log(`created ${spec.type} ${spec.name} (${service.id}) on plan ${plan ?? 'n/a'}`);
     if (plan === 'free') {
       log(`warning: ${spec.type} ${spec.name} is on the free plan and spins down when idle`);
     }
   } else {
-    log(`reusing ${spec.type} ${spec.name} (${service.id}) on plan ${service?.serviceDetails?.plan ?? 'unknown'}`);
+    const currentPlan = service?.serviceDetails?.plan;
+    log(`reusing ${spec.type} ${spec.name} (${service.id}) on plan ${currentPlan ?? 'unknown'}`);
     if (!dryRun) {
-      if (spec.plan) {
+      if (spec.plan && currentPlan === 'free' && spec.plan !== 'free') {
+        const recreated = await recreateService(client, log, spec, service);
+        service = recreated.result?.service ?? recreated.result;
+        plan = recreated.plan;
+      } else if (spec.plan) {
         const patched = await withPlanFallback(
           (candidate) => client.patch(`/services/${service.id}`, spec.patchBody(candidate)),
           planCandidates(spec.plan, spec.fallbacks),
@@ -474,6 +471,47 @@ async function ensureService(client, config, log, dryRun, spec) {
     }
   }
   return { service, plan };
+}
+
+async function createService(client, log, spec) {
+  const variants = spec.createBodies || [spec.createBody];
+  let lastError = null;
+  for (const variant of variants) {
+    const build = typeof variant === 'function' ? variant : () => variant;
+    try {
+      if (spec.plan) {
+        return await withPlanFallback(
+          (candidate) => client.post('/services', build(candidate)),
+          planCandidates(spec.plan, spec.fallbacks),
+          `${spec.type} ${spec.name}`,
+          log,
+        );
+      }
+      return { result: await client.post('/services', build()), plan: null };
+    } catch (error) {
+      lastError = error;
+      log(`${spec.type} ${spec.name} creation failed: ${error.message}`);
+      if (![400, 422].includes(error.status)) throw error;
+    }
+  }
+  throw lastError;
+}
+
+async function recreateService(client, log, spec, service) {
+  log(`recreating ${spec.name}: Render cannot move a free service to a paid plan`);
+  await client.request('DELETE', `/services/${service.id}`);
+  await sleep(15000);
+  return createService(client, log, spec);
+}
+
+async function applyStaticSiteRules(client, serviceId, log) {
+  try {
+    await client.put(`/services/${serviceId}/routes`, WEB_ROUTES);
+    await client.put(`/services/${serviceId}/headers`, WEB_HEADERS);
+    log(`applied the SPA rewrite and cache headers to ${serviceId}`);
+  } catch (error) {
+    log(`could not apply the static site rules to ${serviceId}: ${error.message}`);
+  }
 }
 
 async function getEnvVars(client, serviceId) {
@@ -608,7 +646,7 @@ async function main() {
       type: 'web_service',
       plan: config.apiPlan,
       fallbacks: API_PLAN_FALLBACKS,
-      createBody: (plan) => buildApiServicePayload(config, plan),
+      createBodies: [(plan) => buildApiServicePayload(config, plan)],
       patchBody: (plan) => buildApiServicePatch(config, plan),
     }),
   );
@@ -620,11 +658,18 @@ async function main() {
       type: 'static_site',
       plan: null,
       fallbacks: [],
-      createBody: () => buildWebServicePayload(config),
+      createBodies: [
+        () => buildWebServicePayload(config, 'minimal'),
+        () => buildWebServicePayload(config, 'previews'),
+        () => buildWebServicePayload(config, 'full'),
+      ],
       patchBody: () => buildWebServicePatch(config),
     }),
   );
   const webService = webServiceResult?.service ?? null;
+  if (webService && !args.dryRun) {
+    await applyStaticSiteRules(client, webService.id, log);
+  }
 
   const postgres = await attempt('postgres', () => ensurePostgres(client, config, log, args.dryRun));
   const postgresError = postgres
