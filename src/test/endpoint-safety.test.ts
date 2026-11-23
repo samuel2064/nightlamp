@@ -525,7 +525,7 @@ describe('personal ownership isolation', () => {
   it('keeps a personal channel invisible to other personal users', async () => {
     const created = await apiRequest('/api/notifications/channels', personalA, {
       method: 'POST',
-      body: JSON.stringify({ name: 'Personal A channel', type: 'slack-webhook', config: { webhookUrl: 'https://example.invalid/a' } }),
+      body: JSON.stringify({ name: 'Personal A channel', type: 'slack-webhook', config: { webhookUrl: 'https://example.com/a' } }),
     });
     assert.strictEqual(created.status, 200);
     const body = await created.json() as any;
@@ -550,7 +550,7 @@ describe('personal ownership isolation', () => {
   it('refuses to mutate a personal channel owned by another user', async () => {
     const created = await apiRequest('/api/notifications/channels', personalA, {
       method: 'POST',
-      body: JSON.stringify({ name: 'Owned channel', type: 'slack-webhook', config: { webhookUrl: 'https://example.invalid/owned' } }),
+      body: JSON.stringify({ name: 'Owned channel', type: 'slack-webhook', config: { webhookUrl: 'https://example.com/owned' } }),
     });
     const body = await created.json() as any;
 

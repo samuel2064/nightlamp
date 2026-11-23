@@ -1,8 +1,8 @@
 import { expect } from 'chai';
 import { Database } from 'sql.js';
 import { createDatabase } from '../db/schema';
-import { parsePackageJson, analyzeVersionChange, pollNpmRegistry as realPollNpmRegistry } from '../connectors/npm-registry';
-import { DependencyModel, DependencyInfo } from '../models/dependency';
+import { parsePackageJson, analyzeVersionChange, pollNpmRegistry as realPollNpmRegistry, NpmPackageInfo } from '../connectors/npm-registry';
+import { DependencyModel, DependencyInfo, RegistryPoller } from '../models/dependency';
 import { mockNpmRegistry, mockPollNpmRegistry, resetMockNpmRegistry } from './support/npm-mock';
 
 const pollNpmRegistry = mockPollNpmRegistry;
@@ -119,7 +119,7 @@ describe('Dependency Detection - Model', () => {
 
   beforeEach(async () => {
     db = await createDatabase();
-    model = new DependencyModel(db);
+    model = new DependencyModel(db, mockPollNpmRegistry);
     resetMockNpmRegistry();
   });
 

@@ -289,7 +289,7 @@ export function recordFeedbackSubmission(
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         input.event.event_id,
-        analyticsDedupKey(input.teamId, input.event.event_id),
+        analyticsDedupKey(input.teamId, input.event.event_id, input.userId),
         input.teamId,
         input.userId,
         input.event.event,

@@ -1,48 +1,10 @@
 import { Database } from 'sql.js';
 import { IncomingMessage, ServerResponse } from 'http';
 import { v4 as uuidv4 } from 'uuid';
-import { ChannelType, ChannelConfig } from '../alerting/channels';
+import { ChannelType, ChannelConfig, validateDeliveryDestination } from '../alerting/channels';
 import { processNotification, sendDirectNotification, getChannelType, getChannelConfig, checkRateLimit, logDelivery, markDelivered } from './service';
 import { AuthContext } from '../api/auth';
 import { rowBelongsToScope, scopedTenantFilter, requireChannelOwnership } from '../api/tenant';
-import { isBlockedAddress, isBlockedHostname } from '../engine/outbound-safety';
-import * as net from 'net';
-
-function isBlockedHost(host: string): boolean {
-  if (isBlockedHostname(host)) return true;
-  if (net.isIP(host)) return isBlockedAddress(host);
-  return false;
-}
-
-function isBlockedChannelDestination(type: string, config: Record<string, unknown>): boolean {
-  if (type === 'slack-webhook') {
-    let parsed: URL;
-    try {
-      parsed = new URL(String(config.webhookUrl || ''));
-    } catch {
-      return true;
-    }
-    return isBlockedHost(parsed.hostname);
-  }
-
-  if (type === 'in-app-websocket') {
-    let parsed: URL;
-    try {
-      parsed = new URL(String(config.url || ''));
-    } catch {
-      return true;
-    }
-    return isBlockedHost(parsed.hostname);
-  }
-
-  if (type === 'email-smtp') {
-    const host = String(config.smtpHost || '').trim().toLowerCase();
-    if (!host) return true;
-    return isBlockedHost(host);
-  }
-
-  return false;
-}
 
 export class NotificationApi {
   private validTypes: Set<string> = new Set(['slack-webhook', 'email-smtp', 'in-app-websocket']);
@@ -130,7 +92,7 @@ export class NotificationApi {
   private handleCreateChannel(req: IncomingMessage, res: ServerResponse, teamId: string | null, userId: string): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
-    req.on('end', () => {
+    req.on('end', async () => {
       try {
         const { name, type, config } = JSON.parse(body);
         if (!name || !type || !config) {
@@ -147,9 +109,11 @@ export class NotificationApi {
 
         const mappedType = type === 'slack-webhook' ? 'slack' : type === 'email-smtp' ? 'email' : type;
 
-        if (isBlockedChannelDestination(type, config)) {
+        try {
+          await validateDeliveryDestination(mappedType as ChannelType, config as any);
+        } catch (err: any) {
           res.writeHead(400);
-          res.end(JSON.stringify({ error: 'config must target a public destination' }));
+          res.end(JSON.stringify({ error: err.message }));
           return;
         }
 
@@ -170,7 +134,7 @@ export class NotificationApi {
   private handleUpdateChannel(req: IncomingMessage, channelId: string, res: ServerResponse, teamId: string | null, userId: string): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
-    req.on('end', () => {
+    req.on('end', async () => {
       try {
         const { name, config, enabled } = JSON.parse(body);
         const updates: string[] = [];
@@ -186,10 +150,27 @@ export class NotificationApi {
           return;
         }
 
+        // If config is being updated, validate the new destination
+        if (config !== undefined) {
+          const currentChannel = this.db.exec('SELECT type FROM alert_channels WHERE id = ?', [channelId]);
+          if (currentChannel.length === 0 || currentChannel[0].values.length === 0) {
+            res.writeHead(404);
+            res.end(JSON.stringify({ error: 'Channel not found' }));
+            return;
+          }
+          const currentType = currentChannel[0].values[0][0] as string;
+          const mappedType = currentType === 'slack-webhook' ? 'slack' : currentType === 'email-smtp' ? 'email' : currentType;
+          try {
+            await validateDeliveryDestination(mappedType as ChannelType, config as any);
+          } catch (err: any) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: err.message }));
+            return;
+          }
+        }
+
         updates.push("updated_at = datetime('now')");
         const scope = scopedTenantFilter('alert_channels', teamId, userId);
-        // A caller that owns nothing has no write predicate, so the update
-        // matches no row and is refused rather than silently succeeding.
         this.db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${scope.clause}`, [...params, channelId, ...scope.params]);
         if (this.db.getRowsModified() === 0) {
           res.writeHead(404);

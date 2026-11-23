@@ -386,7 +386,7 @@ describe('Notification Service', function () {
     it('POST /api/notifications/channels should create email-smtp channel', async function () {
       const result = await fetchFromApi('/api/notifications/channels', {
         method: 'POST',
-        body: { name: 'Dev Email', type: 'email-smtp', config: { smtpHost: 'smtp.example.com', smtpPort: 587, smtpUser: 'u', smtpPass: 'p', fromAddress: 'a@b.com', toAddresses: ['c@d.com'] } },
+        body: { name: 'Dev Email', type: 'email-smtp', config: { smtpHost: 'example.com', smtpPort: 587, smtpUser: 'u', smtpPass: 'p', fromAddress: 'a@b.com', toAddresses: ['c@d.com'] } },
       });
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.type, 'email-smtp');
@@ -395,7 +395,7 @@ describe('Notification Service', function () {
     it('POST /api/notifications/channels should create in-app-websocket channel', async function () {
       const result = await fetchFromApi('/api/notifications/channels', {
         method: 'POST',
-        body: { name: 'Real-time WS', type: 'in-app-websocket', config: { url: 'https://sockets.example.com/notify', reconnect: true } },
+        body: { name: 'Real-time WS', type: 'in-app-websocket', config: { url: 'https://example.com/notify', reconnect: true } },
       });
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.type, 'in-app-websocket');

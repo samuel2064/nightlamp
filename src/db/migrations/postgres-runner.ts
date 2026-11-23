@@ -61,7 +61,7 @@ async function checkSchemaStillApplied(client: PoolClient, migrationId: string):
   return false;
 }
 
-const POSTGRES_MIGRATIONS = [
+export const POSTGRES_MIGRATIONS = [
   {
     id: '009-postgres-setup',
     up: async (client: PoolClient) => {

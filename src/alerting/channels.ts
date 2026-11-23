@@ -37,7 +37,7 @@ export interface NotificationPayload {
   eventId?: string;
 }
 
-async function validateDeliveryDestination(channelType: ChannelType, config: ChannelConfig): Promise<void> {
+export async function validateDeliveryDestination(channelType: ChannelType, config: ChannelConfig): Promise<void> {
   if (channelType === 'slack') {
     const slackConfig = config as SlackConfig;
     let parsed: URL;
