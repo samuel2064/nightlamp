@@ -150,7 +150,6 @@ describe('NOC-323 durable storage', () => {
       await assert.rejects(
         () => createDatabase(dbPath),
         (err: Error) => {
-          // The error should mention the file path or at least indicate a corrupt database
           assert.ok(
             err.message.includes(dbPath) || /database disk image is malformed|file is not a database/i.test(err.message),
             `the error must indicate a corrupt database or name the file: ${err.message}`
@@ -418,7 +417,7 @@ describe('NOC-323 durable storage', () => {
             indexNames.add(idxName);
             const idxInfo = mainDb.exec(`PRAGMA index_info(${idxName})`);
             if (idxInfo.length > 0 && idxInfo[0].values.length > 0) {
-              const cols = idxInfo[0].values.map((r: any) => r[2] as string).sort();
+const cols = idxInfo[0].values.map((r: any) => r[2] as string).sort();
               idxColsMap.set(idxName, cols);
             }
           }
@@ -431,7 +430,7 @@ describe('NOC-323 durable storage', () => {
 
     skipIfNoPostgres('runPostgresMigrations on fresh database produces 42 tables matching SQLite', async () => {
       const { Pool } = await import('pg');
-      const { runPostgresMigrations } = await import('../db/migrations/postgres-runner');
+const { runPostgresMigrations } = await import('../db/migrations/postgres-runner');
 
       // Use a dedicated test schema to isolate from unrelated public indexes
       const testSchema = `test_parity_${Date.now()}`;
@@ -494,17 +493,17 @@ for (const table of mainTableNames) {
 
             const sqliteCols = mainIndexColumns.get(table)?.get(sqliteIdx) ?? [];
 
-// Get Postgres indexes for this table with their column definitions
-            // Use pg_catalog.pg_index joined with pg_class/pg_namespace to get proper index definitions
+// Get Postgres indexes for this table with their column definitions from pg_index
             const pgIdxsResult = await pool.query(`
               SELECT i.indexrelid::regclass::text as indexname,
                      pg_get_indexdef(i.indexrelid) as indexdef,
                      c.relname as table_name
-               FROM pg_catalog.pg_index i
-               JOIN pg_catalog.pg_class c ON c.oid = i.indrelid
-               JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                FROM pg_index x
+                JOIN pg_class i ON i.oid = x.indexrelid
+                JOIN pg_class c ON c.oid = x.indrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
                WHERE n.nspname = $1 AND c.relname = $2
-             `, [testSchema, table]);
+              `, [testSchema, table]);
 
             // Check if there's a covering Postgres index
             let covered = false;
@@ -513,7 +512,7 @@ for (const table of mainTableNames) {
               const def = pgIdx.indexdef;
               const match = def.match(/\(([^)]+)\)/);
               if (!match) continue;
-              // Strip ASC/DESC from Postgres columns for comparison
+// Strip ASC/DESC from Postgres columns for comparison
               const pgCols = match[1].split(',').map(c => c.trim().replace(/"/g, '').replace(/\s+(ASC|DESC)$/i, ''));
               // Compare columns in SQLite index order (not alphabetically sorted)
               if (pgCols.length === sqliteCols.length && pgCols.every((col, i) => col === sqliteCols[i])) {
@@ -522,7 +521,7 @@ for (const table of mainTableNames) {
                 break;
               }
             }
-            assert.ok(covered, `SQLite index ${sqliteIdx} on ${table} must have a covering Postgres index with matching columns (SQLite: [${sqliteCols.join(', ')}])`);
+assert.ok(covered, `SQLite index ${sqliteIdx} on ${table} must have a covering Postgres index with matching columns (SQLite: [${sqliteCols.join(', ')}])`);
 
             // Record name difference if the names don't match the expected pattern
             if (matchedPgIdx && matchedPgIdx !== sqliteIdx) {
@@ -532,7 +531,12 @@ for (const table of mainTableNames) {
 
           // Count Postgres explicit indexes (skip PK and unique constraint indexes that map to autoindexes)
           const pgIdxsAllResult = await pool.query(`
-            SELECT indexname FROM pg_catalog.pg_indexes WHERE schemaname = $1 AND tablename = $2
+SELECT i.relname as indexname
+              FROM pg_index x
+              JOIN pg_class i ON i.oid = x.indexrelid
+              JOIN pg_class c ON c.oid = x.indrelid
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = $1 AND c.relname = $2
           `, [testSchema, table]);
           for (const row of pgIdxsAllResult.rows) {
             const idxName = row.indexname;
@@ -549,7 +553,12 @@ for (const table of mainTableNames) {
 
         // Count Postgres indexes
         const pgAllIdxsResult = await pool.query(`
-          SELECT count(*) FROM pg_catalog.pg_indexes WHERE schemaname = $1
+SELECT count(*)
+            FROM pg_index x
+            JOIN pg_class i ON i.oid = x.indexrelid
+            JOIN pg_class c ON c.oid = x.indrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = $1
         `, [testSchema]);
         const pgTotalIndexes = parseInt(pgAllIdxsResult.rows[0].count);
         assert.strictEqual(pgTotalIndexes, 105, `Expected 105 Postgres total indexes (40 PK + 11 unique + 54 plain), got ${pgTotalIndexes}`);
@@ -638,10 +647,10 @@ for (const table of mainTableNames) {
 
     skipIfNoPostgres('runPostgresMigrations on same database is a no-op (idempotent)', async () => {
       const { Pool } = await import('pg');
-      const { runPostgresMigrations } = await import('../db/migrations/postgres-runner');
+const { runPostgresMigrations } = await import('../db/migrations/postgres-runner');
 
       // Use a dedicated test schema to isolate from unrelated public indexes
-      const testSchema = `test_parity_idempotent_${Date.now()}`;
+      const testSchema = `test_idempotent_${Date.now()}`;
       const pool = new Pool({ connectionString: pgUrl });
       try {
         await pool.query(`CREATE SCHEMA ${testSchema}`);
@@ -649,13 +658,27 @@ for (const table of mainTableNames) {
 
         await runPostgresMigrations(pool);
         const beforeTables = await pool.query(`SELECT count(*) FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, [testSchema]);
-        const beforeIndexes = await pool.query(`SELECT count(*) FROM pg_indexes WHERE schemaname = $1`, [testSchema]);
+const beforeIndexes = await pool.query(`
+          SELECT count(*)
+            FROM pg_index x
+            JOIN pg_class i ON i.oid = x.indexrelid
+            JOIN pg_class c ON c.oid = x.indrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = $1
+       `, [testSchema]);
         const beforeLedger = await pool.query(`SELECT count(*) FROM schema_migrations`);
 
         await runPostgresMigrations(pool);
 
         const afterTables = await pool.query(`SELECT count(*) FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, [testSchema]);
-        const afterIndexes = await pool.query(`SELECT count(*) FROM pg_indexes WHERE schemaname = $1`, [testSchema]);
+const afterIndexes = await pool.query(`
+          SELECT count(*)
+            FROM pg_index x
+            JOIN pg_class i ON i.oid = x.indexrelid
+            JOIN pg_class c ON c.oid = x.indrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = $1
+       `, [testSchema]);
         const afterLedger = await pool.query(`SELECT count(*) FROM schema_migrations`);
 
         assert.strictEqual(parseInt(beforeTables.rows[0].count), 42);
@@ -690,7 +713,6 @@ for (const table of mainTableNames) {
       await assert.rejects(
         () => createDatabase(dbPath),
         (err: Error) => {
-          // The error must name the file
           assert.ok(err.message.includes(dbPath), `the error must name the file: ${err.message}`);
           return true;
         }
