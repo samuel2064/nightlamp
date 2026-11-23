@@ -6,11 +6,11 @@ on:
       api_plan:
         description: Render plan for flyby-api-staging
         required: false
-        default: starter
+        default: 0.5c-512mb
       postgres_plan:
         description: Render plan for the staging Postgres
         required: false
-        default: starter
+        default: 0.1c-256mb
       key_value_plan:
         description: Render plan for the staging Key Value
         required: false
@@ -45,8 +45,8 @@ jobs:
       FLYBY_REPO: samuel2064/Flyby
       FLYBY_BRANCH: monorepo-candidate
       GH_TOKEN: ${{ github.token }}
-      STAGING_API_PLAN: ${{ inputs.api_plan || 'starter' }}
-      STAGING_POSTGRES_PLAN: ${{ inputs.postgres_plan || 'starter' }}
+      STAGING_API_PLAN: ${{ inputs.api_plan || '0.5c-512mb' }}
+      STAGING_POSTGRES_PLAN: ${{ inputs.postgres_plan || '0.1c-256mb' }}
       STAGING_KEY_VALUE_PLAN: ${{ inputs.key_value_plan || 'free' }}
       STAGING_REPORT_PATH: staging-provision.json
     steps:

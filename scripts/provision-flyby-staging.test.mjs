@@ -17,8 +17,10 @@ import {
   isValidVapidPair,
   mergeOrigins,
   pickVapid,
+  planCandidates,
   serviceUrl,
   unwrapList,
+  withPlanFallback,
 } from './provision-flyby-staging.mjs';
 
 test('generateVapidKeyPair emits an unpadded base64url P-256 pair', () => {
@@ -103,7 +105,7 @@ test('buildApiEnvVars drops MOCK_REDIS and keeps unrelated variables', () => {
 test('buildApiServicePayload mirrors the candidate blueprint shape', () => {
   const config = buildConfig({});
   config.ownerId = 'wrk-1';
-  const payload = buildApiServicePayload(config, 'https://flyby-api-staging.onrender.com');
+  const payload = buildApiServicePayload(config);
   assert.equal(payload.type, 'web_service');
   assert.equal(payload.name, 'flyby-api-staging');
   assert.equal(payload.ownerId, 'wrk-1');
@@ -112,7 +114,7 @@ test('buildApiServicePayload mirrors the candidate blueprint shape', () => {
   assert.equal(payload.rootDir, 'packages/api');
   assert.equal(payload.autoDeployTrigger, 'off');
   assert.equal(payload.serviceDetails.runtime, 'node');
-  assert.equal(payload.serviceDetails.plan, 'starter');
+  assert.equal(payload.serviceDetails.plan, '0.5c-512mb');
   assert.equal(payload.serviceDetails.region, 'oregon');
   assert.equal(payload.serviceDetails.healthCheckPath, '/api/health');
   assert.equal(payload.serviceDetails.preDeployCommand, API_PRE_DEPLOY_COMMAND);
@@ -131,7 +133,7 @@ test('buildApiServicePatch keeps the service configuration in sync', () => {
   const patch = buildApiServicePatch(config);
   assert.equal(patch.branch, 'monorepo-candidate');
   assert.equal(patch.rootDir, 'packages/api');
-  assert.equal(patch.serviceDetails.plan, 'starter');
+  assert.equal(patch.serviceDetails.plan, '0.5c-512mb');
   assert.equal(patch.serviceDetails.envSpecificDetails.startCommand, 'node dist/server.js');
   assert.equal(patch.serviceDetails.region, undefined);
 });
@@ -198,4 +200,45 @@ test('buildConfig reads the staging overrides from the environment', () => {
   assert.equal(config.region, 'virginia');
   assert.equal(config.postgresVersion, '16');
   assert.equal(config.nodeVersion, '22.22.0');
+});
+
+test('planCandidates keeps the primary plan first and drops duplicates', () => {
+  assert.deepEqual(planCandidates('0.5c-512mb', ['0.5c-512mb', '1c-2g']), ['0.5c-512mb', '1c-2g']);
+  assert.deepEqual(planCandidates('', ['free']), ['free']);
+  assert.deepEqual(planCandidates(null, []), []);
+});
+
+test('withPlanFallback moves to the next plan when one is rejected', async () => {
+  const tried = [];
+  const rejected = Object.assign(new Error('Legacy Postgres plans are no longer supported'), { status: 400 });
+  const result = await withPlanFallback(
+    async (plan) => {
+      tried.push(plan);
+      if (tried.length < 2) throw rejected;
+      return { id: 'pg-1' };
+    },
+    ['starter', '0.1c-256mb'],
+    'postgres',
+    () => {},
+  );
+  assert.deepEqual(tried, ['starter', '0.1c-256mb']);
+  assert.equal(result.plan, '0.1c-256mb');
+  assert.equal(result.result.id, 'pg-1');
+});
+
+test('withPlanFallback does not retry a non plan rejection', async () => {
+  let attempts = 0;
+  await assert.rejects(
+    withPlanFallback(
+      async () => {
+        attempts += 1;
+        throw Object.assign(new Error('insufficient token scope'), { status: 403 });
+      },
+      ['0.5c-512mb', '1c-2g'],
+      'web service',
+      () => {},
+    ),
+    /insufficient token scope/,
+  );
+  assert.equal(attempts, 1);
 });

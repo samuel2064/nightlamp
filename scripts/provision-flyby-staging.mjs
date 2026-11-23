@@ -24,6 +24,10 @@ export const WEB_HEADERS = [
   { path: '/index.html', name: 'Cache-Control', value: 'no-cache' },
 ];
 
+export const API_PLAN_FALLBACKS = ['0.5c-512mb', '1c-2g'];
+export const POSTGRES_PLAN_FALLBACKS = ['0.1c-256mb', '0.5c-1g', '1c-2g', 'free'];
+export const KEY_VALUE_PLAN_FALLBACKS = ['free', '256mb', '1g'];
+
 export function buildConfig(env = process.env) {
   return {
     repo: env.FLYBY_REPO || 'samuel2064/Flyby',
@@ -31,8 +35,8 @@ export function buildConfig(env = process.env) {
     commit: env.FLYBY_COMMIT || '',
     ownerId: env.RENDER_OWNER_ID || '',
     region: env.STAGING_REGION || 'oregon',
-    apiPlan: env.STAGING_API_PLAN || 'starter',
-    postgresPlan: env.STAGING_POSTGRES_PLAN || 'starter',
+    apiPlan: env.STAGING_API_PLAN || '0.5c-512mb',
+    postgresPlan: env.STAGING_POSTGRES_PLAN || '0.1c-256mb',
     keyValuePlan: env.STAGING_KEY_VALUE_PLAN || 'free',
     postgresVersion: env.STAGING_POSTGRES_VERSION || '16',
     nodeVersion: env.STAGING_NODE_VERSION || '22.22.0',
@@ -42,6 +46,31 @@ export function buildConfig(env = process.env) {
     keyValueName: env.STAGING_KEY_VALUE_NAME || 'flyby-staging-kv',
     reportPath: env.STAGING_REPORT_PATH || 'staging-provision.json',
   };
+}
+
+export function planCandidates(primary, fallbacks) {
+  const candidates = [];
+  for (const plan of [primary, ...(fallbacks || [])]) {
+    const trimmed = String(plan || '').trim();
+    if (trimmed && !candidates.includes(trimmed)) candidates.push(trimmed);
+  }
+  return candidates;
+}
+
+export async function withPlanFallback(operation, candidates, label, log) {
+  let lastError = null;
+  for (const plan of candidates) {
+    try {
+      const result = await operation(plan);
+      if (candidates.indexOf(plan) > 0) log(`${label} plan ${plan} is in use`);
+      return { result, plan };
+    } catch (error) {
+      lastError = error;
+      if (![400, 422].includes(error.status)) throw error;
+      log(`${label} plan ${plan} was rejected: ${error.message}`);
+    }
+  }
+  throw lastError;
 }
 
 export function unwrapList(payload, key) {
@@ -134,7 +163,7 @@ export function buildWebEnvVars(existing, apiUrl) {
   return result;
 }
 
-export function buildApiServicePayload(config, apiUrl) {
+export function buildApiServicePayload(config, plan = config.apiPlan) {
   return {
     type: 'web_service',
     name: config.apiServiceName,
@@ -145,7 +174,7 @@ export function buildApiServicePayload(config, apiUrl) {
     autoDeployTrigger: 'off',
     serviceDetails: {
       runtime: 'node',
-      plan: config.apiPlan,
+      plan,
       region: config.region,
       healthCheckPath: '/api/health',
       preDeployCommand: API_PRE_DEPLOY_COMMAND,
@@ -157,7 +186,7 @@ export function buildApiServicePayload(config, apiUrl) {
   };
 }
 
-export function buildApiServicePatch(config) {
+export function buildApiServicePatch(config, plan = config.apiPlan) {
   return {
     repo: `https://github.com/${config.repo}`,
     branch: config.branch,
@@ -165,7 +194,7 @@ export function buildApiServicePatch(config) {
     autoDeployTrigger: 'off',
     serviceDetails: {
       runtime: 'node',
-      plan: config.apiPlan,
+      plan,
       healthCheckPath: '/api/health',
       preDeployCommand: API_PRE_DEPLOY_COMMAND,
       envSpecificDetails: {
@@ -176,7 +205,7 @@ export function buildApiServicePatch(config) {
   };
 }
 
-export function buildWebServicePayload(config, apiUrl) {
+export function buildWebServicePayload(config) {
   return {
     type: 'static_site',
     name: config.webServiceName,
@@ -316,22 +345,32 @@ async function waitForConnectionInfo(client, path, label, id, log, timeoutMs = 9
 async function ensurePostgres(client, config, log, dryRun) {
   const instances = unwrapList(await client.get(`/postgres?ownerId=${config.ownerId}&limit=100`), 'postgres');
   let instance = findByName(instances, config.postgresName);
+  let plan = instance?.plan || config.postgresPlan;
   if (!instance) {
     if (dryRun) {
       log(`dry-run: would create postgres ${config.postgresName} (${config.postgresPlan})`);
       return null;
     }
-    log(`creating postgres ${config.postgresName} (${config.postgresPlan})`);
-    instance = await client.post('/postgres', {
-      name: config.postgresName,
-      plan: config.postgresPlan,
-      ownerId: config.ownerId,
-      region: config.region,
-      version: config.postgresVersion,
-      databaseName: 'flyby_staging',
-    });
+    const created = await withPlanFallback(
+      (candidate) =>
+        client.post('/postgres', {
+          name: config.postgresName,
+          plan: candidate,
+          ownerId: config.ownerId,
+          region: config.region,
+          version: config.postgresVersion,
+          databaseName: 'flyby_staging',
+        }),
+      planCandidates(config.postgresPlan, POSTGRES_PLAN_FALLBACKS),
+      'postgres',
+      log,
+    );
+    instance = created.result;
+    plan = created.plan;
+    log(`created postgres ${config.postgresName} (${instance.id}) on plan ${plan}`);
+    if (plan === 'free') log('warning: the staging Postgres is on the free plan and expires after 30 days');
   } else {
-    log(`reusing postgres ${config.postgresName} (${instance.id})`);
+    log(`reusing postgres ${config.postgresName} (${instance.id}) on plan ${instance.plan}`);
   }
   const info = await waitForConnectionInfo(
     client,
@@ -340,26 +379,35 @@ async function ensurePostgres(client, config, log, dryRun) {
     instance.id,
     log,
   );
-  return { id: instance.id, internalConnectionString: info.internalConnectionString };
+  return { id: instance.id, plan, internalConnectionString: info.internalConnectionString };
 }
 
 async function ensureKeyValue(client, config, log, dryRun) {
   const instances = unwrapList(await client.get(`/key-value?ownerId=${config.ownerId}&limit=100`), 'keyValue');
   let instance = findByName(instances, config.keyValueName);
+  let plan = instance?.plan || config.keyValuePlan;
   if (!instance) {
     if (dryRun) {
       log(`dry-run: would create key value ${config.keyValueName} (${config.keyValuePlan})`);
       return null;
     }
-    log(`creating key value ${config.keyValueName} (${config.keyValuePlan})`);
-    instance = await client.post('/key-value', {
-      name: config.keyValueName,
-      plan: config.keyValuePlan,
-      ownerId: config.ownerId,
-      region: config.region,
-    });
+    const created = await withPlanFallback(
+      (candidate) =>
+        client.post('/key-value', {
+          name: config.keyValueName,
+          plan: candidate,
+          ownerId: config.ownerId,
+          region: config.region,
+        }),
+      planCandidates(config.keyValuePlan, KEY_VALUE_PLAN_FALLBACKS),
+      'key value',
+      log,
+    );
+    instance = created.result;
+    plan = created.plan;
+    log(`created key value ${config.keyValueName} (${instance.id}) on plan ${plan}`);
   } else {
-    log(`reusing key value ${config.keyValueName} (${instance.id})`);
+    log(`reusing key value ${config.keyValueName} (${instance.id}) on plan ${instance.plan}`);
   }
   const info = await waitForConnectionInfo(
     client,
@@ -368,7 +416,7 @@ async function ensureKeyValue(client, config, log, dryRun) {
     instance.id,
     log,
   );
-  return { id: instance.id, internalConnectionString: info.internalConnectionString };
+  return { id: instance.id, plan, internalConnectionString: info.internalConnectionString };
 }
 
 async function ensureService(client, config, log, dryRun, spec) {
@@ -377,22 +425,45 @@ async function ensureService(client, config, log, dryRun, spec) {
   if (service && PROD_SERVICE_IDS.has(service.id)) {
     throw new Error(`refusing to touch production service ${service.id}`);
   }
+  let plan = service?.serviceDetails?.plan || spec.plan;
   if (!service) {
     if (dryRun) {
       log(`dry-run: would create ${spec.type} ${spec.name}`);
       return null;
     }
-    log(`creating ${spec.type} ${spec.name}`);
-    const created = await client.post('/services', spec.createBody);
-    service = created?.service ?? created;
+    if (spec.plan) {
+      const created = await withPlanFallback(
+        (candidate) => client.post('/services', spec.createBody(candidate)),
+        planCandidates(spec.plan, spec.fallbacks),
+        `${spec.type} ${spec.name}`,
+        log,
+      );
+      service = created.result?.service ?? created.result;
+      plan = created.plan;
+    } else {
+      const created = await client.post('/services', spec.createBody());
+      service = created?.service ?? created;
+    }
+    log(`created ${spec.type} ${spec.name} (${service.id}) on plan ${plan ?? 'n/a'}`);
   } else {
-    log(`reusing ${spec.type} ${spec.name} (${service.id})`);
+    log(`reusing ${spec.type} ${spec.name} (${service.id}) on plan ${service?.serviceDetails?.plan ?? 'unknown'}`);
     if (!dryRun) {
-      const patched = await client.patch(`/services/${service.id}`, spec.patchBody);
-      service = patched?.service ?? patched ?? service;
+      if (spec.plan) {
+        const patched = await withPlanFallback(
+          (candidate) => client.patch(`/services/${service.id}`, spec.patchBody(candidate)),
+          planCandidates(spec.plan, spec.fallbacks),
+          `${spec.type} ${spec.name}`,
+          log,
+        );
+        service = patched.result?.service ?? patched.result ?? service;
+        plan = patched.plan;
+      } else {
+        const patched = await client.patch(`/services/${service.id}`, spec.patchBody());
+        service = patched?.service ?? patched ?? service;
+      }
     }
   }
-  return service;
+  return { service, plan };
 }
 
 async function getEnvVars(client, serviceId) {
@@ -511,19 +582,25 @@ async function main() {
   const postgres = await ensurePostgres(client, config, log, args.dryRun);
   const keyValue = await ensureKeyValue(client, config, log, args.dryRun);
 
-  let apiService = await ensureService(client, config, log, args.dryRun, {
+  const apiServiceResult = await ensureService(client, config, log, args.dryRun, {
     name: config.apiServiceName,
     type: 'web_service',
-    createBody: buildApiServicePayload(config),
-    patchBody: buildApiServicePatch(config),
+    plan: config.apiPlan,
+    fallbacks: API_PLAN_FALLBACKS,
+    createBody: (plan) => buildApiServicePayload(config, plan),
+    patchBody: (plan) => buildApiServicePatch(config, plan),
   });
+  const apiService = apiServiceResult?.service ?? null;
 
-  let webService = await ensureService(client, config, log, args.dryRun, {
+  const webServiceResult = await ensureService(client, config, log, args.dryRun, {
     name: config.webServiceName,
     type: 'static_site',
-    createBody: buildWebServicePayload(config),
-    patchBody: buildWebServicePatch(config),
+    plan: null,
+    fallbacks: [],
+    createBody: () => buildWebServicePayload(config),
+    patchBody: () => buildWebServicePatch(config),
   });
+  const webService = webServiceResult?.service ?? null;
 
   const apiUrl = apiService ? serviceUrl(apiService, config.apiServiceName) : `https://${config.apiServiceName.toLowerCase()}.onrender.com`;
   const webUrl = webService ? serviceUrl(webService, config.webServiceName) : `https://${config.webServiceName.toLowerCase()}.onrender.com`;
@@ -559,9 +636,9 @@ async function main() {
     commit: config.commit || null,
     region: config.region,
     plans: {
-      api: config.apiPlan,
-      postgres: config.postgresPlan,
-      keyValue: config.keyValuePlan,
+      api: apiServiceResult?.plan ?? config.apiPlan,
+      postgres: postgres?.plan ?? config.postgresPlan,
+      keyValue: keyValue?.plan ?? config.keyValuePlan,
     },
     postgresId: postgres.id,
     keyValueId: keyValue.id,
