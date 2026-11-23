@@ -488,16 +488,16 @@ for (const table of mainTableNames) {
             const sqliteCols = mainIndexColumns.get(table)?.get(sqliteIdx) ?? [];
 
 // Get Postgres indexes for this table with their column definitions
-            // Use pg_index joined with pg_class/pg_namespace to get proper index definitions
+            // Use pg_catalog.pg_index joined with pg_class/pg_namespace to get proper index definitions
             const pgIdxsResult = await pool.query(`
               SELECT i.indexrelid::regclass::text as indexname,
                      pg_get_indexdef(i.indexrelid) as indexdef,
                      c.relname as table_name
-              FROM pg_index i
-              JOIN pg_class c ON c.oid = i.indrelid
-              JOIN pg_namespace n ON n.oid = c.relnamespace
-              WHERE n.nspname = $1 AND c.relname = $2
-            `, [testSchema, table]);
+               FROM pg_catalog.pg_index i
+               JOIN pg_catalog.pg_class c ON c.oid = i.indrelid
+               JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname = $1 AND c.relname = $2
+             `, [testSchema, table]);
 
             // Check if there's a covering Postgres index
             let covered = false;
@@ -524,7 +524,7 @@ for (const table of mainTableNames) {
 
           // Count Postgres explicit indexes (skip PK and unique constraint indexes that map to autoindexes)
           const pgIdxsAllResult = await pool.query(`
-            SELECT indexname FROM pg_indexes WHERE schemaname = $1 AND tablename = $2
+            SELECT indexname FROM pg_catalog.pg_indexes WHERE schemaname = $1 AND tablename = $2
           `, [testSchema, table]);
           for (const row of pgIdxsAllResult.rows) {
             const idxName = row.indexname;
@@ -540,7 +540,7 @@ for (const table of mainTableNames) {
 
         // Count Postgres indexes
         const pgAllIdxsResult = await pool.query(`
-          SELECT count(*) FROM pg_indexes WHERE schemaname = $1
+          SELECT count(*) FROM pg_catalog.pg_indexes WHERE schemaname = $1
         `, [testSchema]);
         const pgTotalIndexes = parseInt(pgAllIdxsResult.rows[0].count);
         assert.strictEqual(pgTotalIndexes, 105, `Expected 105 Postgres total indexes (40 PK + 11 unique + 54 plain), got ${pgTotalIndexes}`);
