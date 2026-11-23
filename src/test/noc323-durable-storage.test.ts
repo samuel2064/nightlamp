@@ -417,7 +417,7 @@ describe('NOC-323 durable storage', () => {
             indexNames.add(idxName);
             const idxInfo = mainDb.exec(`PRAGMA index_info(${idxName})`);
             if (idxInfo.length > 0 && idxInfo[0].values.length > 0) {
-const cols = idxInfo[0].values.map((r: any) => r[2] as string).sort();
+              const cols = idxInfo[0].values.map((r: any) => r[2] as string);
               idxColsMap.set(idxName, cols);
             }
           }
@@ -479,21 +479,24 @@ const { runPostgresMigrations } = await import('../db/migrations/postgres-runner
           '012-personal-ownership'
         ], 'Ledger must have 5 rows in runner order');
 
-        // Verify index parity by reading actual index columns from both destinations
+// Verify index parity by reading actual index columns from both destinations
         let sqliteExplicitIndexCount = 0;
+        let sqliteTotalIndexCount = 0;
         let pgExplicitIndexCount = 0;
         const nameDifferences: string[] = [];
 
-for (const table of mainTableNames) {
-          // Get SQLite explicit indexes (skip autoindexes)
+        for (const table of mainTableNames) {
           const sqliteIdxNames = mainIndexes.get(table) ?? new Set();
           for (const sqliteIdx of sqliteIdxNames) {
-            if (sqliteIdx.startsWith('sqlite_autoindex_')) continue;
-            sqliteExplicitIndexCount++;
+            sqliteTotalIndexCount++;
+            const isExplicit = !sqliteIdx.startsWith('sqlite_autoindex_');
+            if (isExplicit) {
+              sqliteExplicitIndexCount++;
+            }
 
             const sqliteCols = mainIndexColumns.get(table)?.get(sqliteIdx) ?? [];
 
-// Get Postgres indexes for this table with their column definitions from pg_index
+            // Get Postgres indexes for this table with their column definitions from pg_index
             const pgIdxsResult = await pool.query(`
               SELECT i.indexrelid::regclass::text as indexname,
                      pg_get_indexdef(i.indexrelid) as indexdef,
@@ -503,7 +506,7 @@ for (const table of mainTableNames) {
                 JOIN pg_class c ON c.oid = x.indrelid
                 JOIN pg_namespace n ON n.oid = c.relnamespace
                WHERE n.nspname = $1 AND c.relname = $2
-              `, [testSchema, table]);
+             `, [testSchema, table]);
 
             // Check if there's a covering Postgres index
             let covered = false;
@@ -512,7 +515,7 @@ for (const table of mainTableNames) {
               const def = pgIdx.indexdef;
               const match = def.match(/\(([^)]+)\)/);
               if (!match) continue;
-// Strip ASC/DESC from Postgres columns for comparison
+              // Strip ASC/DESC from Postgres columns for comparison
               const pgCols = match[1].split(',').map(c => c.trim().replace(/"/g, '').replace(/\s+(ASC|DESC)$/i, ''));
               // Compare columns in SQLite index order (not alphabetically sorted)
               if (pgCols.length === sqliteCols.length && pgCols.every((col, i) => col === sqliteCols[i])) {
@@ -521,7 +524,7 @@ for (const table of mainTableNames) {
                 break;
               }
             }
-assert.ok(covered, `SQLite index ${sqliteIdx} on ${table} must have a covering Postgres index with matching columns (SQLite: [${sqliteCols.join(', ')}])`);
+            assert.ok(covered, `SQLite index ${sqliteIdx} on ${table} must have a covering Postgres index with matching columns (SQLite: [${sqliteCols.join(', ')}])`);
 
             // Record name difference if the names don't match the expected pattern
             if (matchedPgIdx && matchedPgIdx !== sqliteIdx) {
@@ -531,12 +534,12 @@ assert.ok(covered, `SQLite index ${sqliteIdx} on ${table} must have a covering P
 
           // Count Postgres explicit indexes (skip PK and unique constraint indexes that map to autoindexes)
           const pgIdxsAllResult = await pool.query(`
-SELECT i.relname as indexname
-              FROM pg_index x
-              JOIN pg_class i ON i.oid = x.indexrelid
-              JOIN pg_class c ON c.oid = x.indrelid
-              JOIN pg_namespace n ON n.oid = c.relnamespace
-             WHERE n.nspname = $1 AND c.relname = $2
+            SELECT i.relname as indexname
+            FROM pg_index x
+            JOIN pg_class i ON i.oid = x.indexrelid
+            JOIN pg_class c ON c.oid = x.indrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = $1 AND c.relname = $2
           `, [testSchema, table]);
           for (const row of pgIdxsAllResult.rows) {
             const idxName = row.indexname;
@@ -548,8 +551,9 @@ SELECT i.relname as indexname
         }
 
         // Assert exact index counts per CTO measurement
-        // The loop explicitly skips sqlite_autoindex_* and counts 56 explicit indexes
+        // SQLite: 56 explicit + 40 PK autoindexes + 10 unique autoindexes = 106 total
         assert.strictEqual(sqliteExplicitIndexCount, 56, `Expected 56 SQLite explicit indexes (explicit indexes only, autoindexes skipped), got ${sqliteExplicitIndexCount}`);
+        assert.strictEqual(sqliteTotalIndexCount, 106, `Expected 106 SQLite total indexes (56 explicit + 40 PK autoindexes + 10 unique autoindexes), got ${sqliteTotalIndexCount}`);
 
         // Count Postgres indexes
         const pgAllIdxsResult = await pool.query(`
@@ -566,72 +570,59 @@ SELECT count(*)
         // Assert the exact 51 name differences as data (measured by CTO)
         nameDifferences.sort();
         const expectedNameDifferences = [
-          // 40 PK autoindexes -> _pkey
-          'idx_alert_channels_owner vs idx_alert_channels_owner_pkey on alert_channels',
-          'idx_alert_log_channel vs idx_alert_log_channel_pkey on alert_log',
-          'idx_alert_rules_channel vs idx_alert_rules_channel_pkey on alert_rules',
-          'idx_analytics_events_team vs idx_analytics_events_team_pkey on analytics_events',
-          'idx_apps_channel vs idx_apps_channel_pkey on apps',
-          'idx_apps_owner vs idx_apps_owner_pkey on apps',
-          'idx_apps_team vs idx_apps_team_pkey on apps',
-          'idx_check_results_check_executed vs idx_check_results_check_executed_pkey on check_results',
-          'idx_check_results_executed vs idx_check_results_executed_pkey on check_results',
-          'idx_checks_source vs idx_checks_source_pkey on checks',
-          'idx_customers_stripe_customer_id vs idx_customers_stripe_customer_id_pkey on customers',
-          'idx_dependencies_name vs idx_dependencies_name_pkey on dependencies',
-          'idx_dependency_updates_dependency_id vs idx_dependency_updates_dependency_id_pkey on dependency_updates',
-          'idx_failure_events_check_detected vs idx_failure_events_check_detected_pkey on failure_events',
-          'idx_failure_events_detected vs idx_failure_events_detected_pkey on failure_events',
-          'idx_failure_events_severity_detected vs idx_failure_events_severity_detected_pkey on failure_events',
-          'idx_failure_events_type_detected vs idx_failure_events_type_detected_pkey on failure_events',
-          'idx_health_snapshots_app vs idx_health_snapshots_app_pkey on health_snapshots',
-          'idx_health_snapshots_team vs idx_health_snapshots_team_pkey on health_snapshots',
-          'idx_invitations_token vs idx_invitations_token_pkey on invitations',
-          'idx_leads_email vs idx_leads_email_pkey on leads',
-          'idx_memberships_team_user vs idx_memberships_team_user_pkey on memberships',
-          'idx_monitored_apps_channel vs idx_monitored_apps_channel_pkey on monitored_apps',
-          'idx_monitored_apps_owner vs idx_monitored_apps_owner_pkey on monitored_apps',
-          'idx_monitored_apps_team vs idx_monitored_apps_team_pkey on monitored_apps',
-          'idx_notification_deduplication_channel vs idx_notification_deduplication_channel_pkey on notification_deduplication',
-          'idx_notification_rate_limits_channel_window vs idx_notification_rate_limits_channel_window_pkey on notification_rate_limits',
-          'idx_onboarding_sessions_user vs idx_onboarding_sessions_user_pkey on onboarding_sessions',
-          'idx_perf_diagnoses_regression vs idx_perf_diagnoses_regression_pkey on perf_diagnoses',
-          'idx_perf_metrics_run_name vs idx_perf_metrics_run_name_pkey on perf_metrics',
-          'idx_perf_regressions_url_detected vs idx_perf_regressions_url_detected_pkey on perf_regressions',
-          'idx_perf_runs_url_started vs idx_perf_runs_url_started_pkey on perf_runs',
-          'idx_playbook_edges_playbook vs idx_playbook_edges_playbook_pkey on playbook_edges',
-          'idx_playbook_edges_source vs idx_playbook_edges_source_pkey on playbook_edges',
-          'idx_playbook_entries_failure vs idx_playbook_entries_failure_pkey on playbook_entries',
-          'idx_playbook_nodes_playbook vs idx_playbook_nodes_playbook_pkey on playbook_nodes',
-          'idx_playbook_versions_playbook vs idx_playbook_versions_playbook_pkey on playbook_versions',
-          'idx_playbook_versions_version vs idx_playbook_versions_version_pkey on playbook_versions',
-          'idx_remediation_actions_failure vs idx_remediation_actions_failure_pkey on remediation_actions',
-          'idx_remediation_log_playbook vs idx_remediation_log_playbook_pkey on remediation_log',
-          'idx_remediation_policies_failure vs idx_remediation_policies_failure_pkey on remediation_policies',
-          'idx_remediation_policies_team_failure_type vs idx_remediation_policies_team_failure_type_pkey on remediation_policies',
-          'idx_remediation_runs_action vs idx_remediation_runs_action_pkey on remediation_runs',
-          'idx_remediation_runs_status vs idx_remediation_runs_status_pkey on remediation_runs',
-          'idx_schema_migrations_applied vs idx_schema_migrations_applied_pkey on schema_migrations',
-          'idx_subscriptions_customer vs idx_subscriptions_customer_pkey on subscriptions',
-          'idx_subscriptions_stripe_subscription vs idx_subscriptions_stripe_subscription_pkey on subscriptions',
-          'idx_teams_slug vs idx_teams_slug_pkey on teams',
-          'idx_usage_records_customer_recorded vs idx_usage_records_customer_recorded_pkey on usage_records',
-          'idx_users_clerk_user_id vs idx_users_clerk_user_id_pkey on users',
-          'idx_webhook_events_type_received vs idx_webhook_events_type_received_pkey on webhook_events',
-          'idx_x_posts_schedule vs idx_x_posts_schedule_pkey on x_scheduled_posts',
-          'idx_x_tokens_user vs idx_x_tokens_user_pkey on x_tokens',
-          // 10 unique autoindexes -> _key
-          'idx_alert_channels_owner vs idx_alert_channels_owner_key on alert_channels',
-          'idx_analytics_events_team vs idx_analytics_events_team_key on analytics_events',
-          'idx_analytics_events_event vs idx_analytics_events_event_key on analytics_events',
-          'idx_apps_team vs idx_apps_team_key on apps',
-          'idx_customers_stripe_customer_id vs idx_customers_stripe_customer_id_key on customers',
-          'idx_failure_events_type_detected vs idx_failure_events_type_detected_key on failure_events',
-          'idx_invitations_token vs idx_invitations_token_key on invitations',
-          'idx_memberships_team_user vs idx_memberships_team_user_key on memberships',
-          'idx_remediation_policies_failure vs idx_remediation_policies_failure_key on remediation_policies',
-          'idx_remediation_policies_team_failure_type vs idx_remediation_policies_team_failure_type_key on remediation_policies',
-          // idx_remediation_policies_team -> remediation_policies_tenant_team_id_failure_type_key UNIQUE
+          // 40 PK autoindexes: sqlite_autoindex_<table>_1 vs <table>_pkey
+          'sqlite_autoindex_alert_channels_1 vs alert_channels_pkey on alert_channels',
+          'sqlite_autoindex_alert_log_1 vs alert_log_pkey on alert_log',
+          'sqlite_autoindex_alert_rules_1 vs alert_rules_pkey on alert_rules',
+          'sqlite_autoindex_analytics_events_1 vs analytics_events_pkey on analytics_events',
+          'sqlite_autoindex_apps_1 vs apps_pkey on apps',
+          'sqlite_autoindex_check_results_1 vs check_results_pkey on check_results',
+          'sqlite_autoindex_checks_1 vs checks_pkey on checks',
+          'sqlite_autoindex_customers_1 vs customers_pkey on customers',
+          'sqlite_autoindex_dependencies_1 vs dependencies_pkey on dependencies',
+          'sqlite_autoindex_dependency_updates_1 vs dependency_updates_pkey on dependency_updates',
+          'sqlite_autoindex_failure_events_1 vs failure_events_pkey on failure_events',
+          'sqlite_autoindex_feedback_responses_1 vs feedback_responses_pkey on feedback_responses',
+          'sqlite_autoindex_health_snapshots_1 vs health_snapshots_pkey on health_snapshots',
+          'sqlite_autoindex_invitations_1 vs invitations_pkey on invitations',
+          'sqlite_autoindex_leads_1 vs leads_pkey on leads',
+          'sqlite_autoindex_memberships_1 vs memberships_pkey on memberships',
+          'sqlite_autoindex_monitored_apps_1 vs monitored_apps_pkey on monitored_apps',
+          'sqlite_autoindex_notification_deduplication_1 vs notification_deduplication_pkey on notification_deduplication',
+          'sqlite_autoindex_notification_rate_limits_1 vs notification_rate_limits_pkey on notification_rate_limits',
+          'sqlite_autoindex_onboarding_sessions_1 vs onboarding_sessions_pkey on onboarding_sessions',
+          'sqlite_autoindex_perf_diagnoses_1 vs perf_diagnoses_pkey on perf_diagnoses',
+          'sqlite_autoindex_perf_metrics_1 vs perf_metrics_pkey on perf_metrics',
+          'sqlite_autoindex_perf_regressions_1 vs perf_regressions_pkey on perf_regressions',
+          'sqlite_autoindex_perf_runs_1 vs perf_runs_pkey on perf_runs',
+          'sqlite_autoindex_playbook_edges_1 vs playbook_edges_pkey on playbook_edges',
+          'sqlite_autoindex_playbook_entries_1 vs playbook_entries_pkey on playbook_entries',
+          'sqlite_autoindex_playbook_nodes_1 vs playbook_nodes_pkey on playbook_nodes',
+          'sqlite_autoindex_playbook_versions_1 vs playbook_versions_pkey on playbook_versions',
+          'sqlite_autoindex_remediation_actions_1 vs remediation_actions_pkey on remediation_actions',
+          'sqlite_autoindex_remediation_log_1 vs remediation_log_pkey on remediation_log',
+          'sqlite_autoindex_remediation_policies_1 vs remediation_policies_pkey on remediation_policies',
+          'sqlite_autoindex_remediation_runs_1 vs remediation_runs_pkey on remediation_runs',
+          'sqlite_autoindex_schema_migrations_1 vs schema_migrations_pkey on schema_migrations',
+          'sqlite_autoindex_subscriptions_1 vs subscriptions_pkey on subscriptions',
+          'sqlite_autoindex_teams_1 vs teams_pkey on teams',
+          'sqlite_autoindex_usage_records_1 vs usage_records_pkey on usage_records',
+          'sqlite_autoindex_users_1 vs users_pkey on users',
+          'sqlite_autoindex_webhook_events_1 vs webhook_events_pkey on webhook_events',
+          'sqlite_autoindex_x_scheduled_posts_1 vs x_scheduled_posts_pkey on x_scheduled_posts',
+          'sqlite_autoindex_x_tokens_1 vs x_tokens_pkey on x_tokens',
+          // 10 unique autoindexes: sqlite_autoindex_<table>_N vs <table>_<constraint>_key
+          'sqlite_autoindex_alert_channels_2 vs alert_channels_owner_key on alert_channels',
+          'sqlite_autoindex_analytics_events_2 vs analytics_events_team_key on analytics_events',
+          'sqlite_autoindex_analytics_events_3 vs analytics_events_event_key on analytics_events',
+          'sqlite_autoindex_apps_2 vs apps_team_key on apps',
+          'sqlite_autoindex_customers_2 vs customers_stripe_customer_id_key on customers',
+          'sqlite_autoindex_failure_events_2 vs failure_events_type_detected_key on failure_events',
+          'sqlite_autoindex_invitations_2 vs invitations_token_key on invitations',
+          'sqlite_autoindex_memberships_2 vs memberships_team_user_key on memberships',
+          'sqlite_autoindex_remediation_policies_2 vs remediation_policies_failure_key on remediation_policies',
+          'sqlite_autoindex_remediation_policies_3 vs remediation_policies_team_failure_type_key on remediation_policies',
+          // idx_remediation_policies_team (explicit) -> remediation_policies_tenant_team_id_failure_type_key UNIQUE
           'idx_remediation_policies_team vs remediation_policies_tenant_team_id_failure_type_key on remediation_policies'
         ];
         const actualDiffs = nameDifferences.sort();
