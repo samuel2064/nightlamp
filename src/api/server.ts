@@ -1370,7 +1370,6 @@ const id = uuidv4();
         const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
         const status = parsedUrl.searchParams.get('status');
         const severity = parsedUrl.searchParams.get('severity');
-
         const eventScope = tenantOwnedFilter('fe.team_id', teamId);
         const checkScope = tenantOwnedFilter('c.team_id', teamId);
         let sql = `SELECT fe.id, fe.check_id, fe.failure_type, fe.severity, fe.title, fe.description, 
