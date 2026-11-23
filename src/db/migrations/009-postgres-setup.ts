@@ -1,4 +1,4 @@
-import { Pool, PoolClient } from 'pg';
+import { PoolClient } from 'pg';
 
 export async function up(client: PoolClient): Promise<void> {
   await client.query('BEGIN');
@@ -667,60 +667,54 @@ export async function up(client: PoolClient): Promise<void> {
     await client.query('CREATE INDEX IF NOT EXISTS idx_analytics_events_received ON analytics_events(received_at DESC)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_feedback_responses_team ON feedback_responses(team_id)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_feedback_responses_received ON feedback_responses(received_at DESC)');
+
+    await client.query('COMMIT');
 }
 
-export async function down(pool: Pool): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    // Drop tables in reverse order to handle foreign keys
-    await client.query('DROP TABLE IF EXISTS schema_migrations');
-    await client.query('DROP TABLE IF EXISTS feedback_responses');
-    await client.query('DROP TABLE IF EXISTS analytics_events');
-    await client.query('DROP TABLE IF EXISTS health_snapshots');
-    await client.query('DROP TABLE IF EXISTS monitored_apps');
-    await client.query('DROP TABLE IF EXISTS webhook_events');
-    await client.query('DROP TABLE IF EXISTS leads');
-    await client.query('DROP TABLE IF EXISTS notification_deduplication');
-    await client.query('DROP TABLE IF EXISTS notification_rate_limits');
-    await client.query('DROP TABLE IF EXISTS playbook_executions');
-    await client.query('DROP TABLE IF EXISTS playbook_versions');
-    await client.query('DROP TABLE IF EXISTS playbook_edges');
-    await client.query('DROP TABLE IF EXISTS playbook_nodes');
-    await client.query('DROP TABLE IF EXISTS custom_playbooks');
-    await client.query('DROP TABLE IF EXISTS alert_log');
-    await client.query('DROP TABLE IF EXISTS onboarding_sessions');
-    await client.query('DROP TABLE IF EXISTS alert_rules');
-    await client.query('DROP TABLE IF EXISTS alert_channels');
-    await client.query('DROP TABLE IF EXISTS team_workspaces');
-    await client.query('DROP TABLE IF EXISTS invitations');
-    await client.query('DROP TABLE IF EXISTS memberships');
-    await client.query('DROP TABLE IF EXISTS teams');
-    await client.query('DROP TABLE IF EXISTS perf_diagnoses');
-    await client.query('DROP TABLE IF EXISTS perf_regressions');
-    await client.query('DROP TABLE IF EXISTS perf_metrics');
-    await client.query('DROP TABLE IF EXISTS perf_runs');
-    await client.query('DROP TABLE IF EXISTS remediation_policies');
-    await client.query('DROP TABLE IF EXISTS remediation_runs');
-    await client.query('DROP TABLE IF EXISTS remediation_actions');
-    await client.query('DROP TABLE IF EXISTS remediation_log');
-    await client.query('DROP TABLE IF EXISTS dependency_updates');
-    await client.query('DROP TABLE IF EXISTS dependencies');
-    await client.query('DROP TABLE IF EXISTS usage_records');
-    await client.query('DROP TABLE IF EXISTS subscriptions');
-    await client.query('DROP TABLE IF EXISTS users');
-    await client.query('DROP TABLE IF EXISTS customers');
-    await client.query('DROP TABLE IF EXISTS playbook_entries');
-    await client.query('DROP TABLE IF EXISTS failure_events');
-    await client.query('DROP TABLE IF EXISTS check_results');
-    await client.query('DROP TABLE IF EXISTS checks');
-    await client.query('DROP TABLE IF EXISTS x_scheduled_posts');
-    await client.query('DROP TABLE IF EXISTS x_tokens');
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
+export async function down(client: PoolClient): Promise<void> {
+  await client.query('BEGIN');
+  // Drop tables in reverse order to handle foreign keys
+  await client.query('DROP TABLE IF EXISTS schema_migrations');
+  await client.query('DROP TABLE IF EXISTS feedback_responses');
+  await client.query('DROP TABLE IF EXISTS analytics_events');
+  await client.query('DROP TABLE IF EXISTS health_snapshots');
+  await client.query('DROP TABLE IF EXISTS monitored_apps');
+  await client.query('DROP TABLE IF EXISTS webhook_events');
+  await client.query('DROP TABLE IF EXISTS leads');
+  await client.query('DROP TABLE IF EXISTS notification_deduplication');
+  await client.query('DROP TABLE IF EXISTS notification_rate_limits');
+  await client.query('DROP TABLE IF EXISTS playbook_executions');
+  await client.query('DROP TABLE IF EXISTS playbook_versions');
+  await client.query('DROP TABLE IF EXISTS playbook_edges');
+  await client.query('DROP TABLE IF EXISTS playbook_nodes');
+  await client.query('DROP TABLE IF EXISTS custom_playbooks');
+  await client.query('DROP TABLE IF EXISTS alert_log');
+  await client.query('DROP TABLE IF EXISTS onboarding_sessions');
+  await client.query('DROP TABLE IF EXISTS alert_rules');
+  await client.query('DROP TABLE IF EXISTS alert_channels');
+  await client.query('DROP TABLE IF EXISTS team_workspaces');
+  await client.query('DROP TABLE IF EXISTS invitations');
+  await client.query('DROP TABLE IF EXISTS memberships');
+  await client.query('DROP TABLE IF EXISTS teams');
+  await client.query('DROP TABLE IF EXISTS perf_diagnoses');
+  await client.query('DROP TABLE IF EXISTS perf_regressions');
+  await client.query('DROP TABLE IF EXISTS perf_metrics');
+  await client.query('DROP TABLE IF EXISTS perf_runs');
+  await client.query('DROP TABLE IF EXISTS remediation_policies');
+  await client.query('DROP TABLE IF EXISTS remediation_runs');
+  await client.query('DROP TABLE IF EXISTS remediation_actions');
+  await client.query('DROP TABLE IF EXISTS remediation_log');
+  await client.query('DROP TABLE IF EXISTS dependency_updates');
+  await client.query('DROP TABLE IF EXISTS dependencies');
+  await client.query('DROP TABLE IF EXISTS usage_records');
+  await client.query('DROP TABLE IF EXISTS subscriptions');
+  await client.query('DROP TABLE IF EXISTS users');
+  await client.query('DROP TABLE IF EXISTS customers');
+  await client.query('DROP TABLE IF EXISTS playbook_entries');
+  await client.query('DROP TABLE IF EXISTS failure_events');
+  await client.query('DROP TABLE IF EXISTS check_results');
+  await client.query('DROP TABLE IF EXISTS checks');
+  await client.query('DROP TABLE IF EXISTS x_scheduled_posts');
+  await client.query('DROP TABLE IF EXISTS x_tokens');
+  await client.query('COMMIT');
 }

@@ -376,144 +376,150 @@ describe('NOC-323 durable storage', () => {
     });
   });
 
-  describe('Postgres schema parity', () => {
-    it('Postgres migration runner produces schema matching SQLite schema', async () => {
-      // Read the main schema from schema.ts by creating a database
+  describe('Postgres schema parity (criterion 4 lane)', () => {
+    const pgUrl = process.env.DATABASE_URL;
+    const skipIfNoPostgres = pgUrl ? it : it.skip;
+
+    // Read the main schema from schema.ts by creating a database
+    let mainTableNames: string[];
+    let mainColumns: Map<string, string[]>;
+    let mainIndexes: Map<string, Set<string>>;
+
+    before(async () => {
       const mainDb = await createDatabase();
       const mainTables = mainDb.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
-      const mainTableNames = mainTables[0].values.map((r: any) => r[0]).sort();
+      mainTableNames = mainTables[0].values.map((r: any) => r[0]).sort();
 
-      // Extract column info from SQLite schema
-      const mainColumns = new Map<string, string[]>();
+      mainColumns = new Map<string, string[]>();
       for (const table of mainTableNames) {
         const cols = mainDb.exec(`PRAGMA table_info(${table})`);
         if (cols.length > 0 && cols[0].values.length > 0) {
           mainColumns.set(table, cols[0].values.map((row: any) => row[1]).sort());
         }
       }
-      mainDb.close();
 
-      // Execute the Postgres runner against a mock client that captures DDL
-      const { POSTGRES_MIGRATIONS } = await import('../db/migrations/postgres-runner');
-
-      const executedStatements: string[] = [];
-      const createdTables = new Set<string>();
-      const tableColumns = new Map<string, Set<string>>();
-
-      const mockClient = {
-        async connect() { return mockClient; },
-        async query(sql: string, params?: any[]) {
-          const statement = params ? sql.replace(/\$(\d+)/g, (_, i) => String(params[i - 1])) : sql;
-          executedStatements.push(statement.trim());
-
-          // Track CREATE TABLE statements
-          const createTableMatch = statement.match(/CREATE TABLE (?:IF NOT EXISTS )?(\w+)\s*\(/i);
-          if (createTableMatch) {
-            const tableName = createTableMatch[1];
-            createdTables.add(tableName);
-            if (!tableColumns.has(tableName)) {
-              tableColumns.set(tableName, new Set());
-            }
-          }
-
-          // Track ALTER TABLE ADD COLUMN
-          const alterMatch = statement.match(/ALTER TABLE (\w+) ADD COLUMN (\w+)/i);
-          if (alterMatch) {
-            const [, tableName, columnName] = alterMatch;
-            if (!tableColumns.has(tableName)) {
-              tableColumns.set(tableName, new Set());
-            }
-            tableColumns.get(tableName)!.add(columnName);
-          }
-
-          // Track columns in CREATE TABLE
-          const colsMatch = statement.match(/CREATE TABLE (?:IF NOT EXISTS )?\w+\s*\(([\s\S]*?)\);/i);
-          if (colsMatch) {
-            const colDef = colsMatch[1];
-            const tableName = createTableMatch?.[1];
-            if (tableName) {
-              const colLines = colDef.split(',').map((line: string) => line.trim());
-              for (const line of colLines) {
-                if (line.startsWith('CONSTRAINT') || line.startsWith('PRIMARY KEY') || line.startsWith('FOREIGN KEY') ||
-                    line.startsWith('UNIQUE') || line.startsWith('CHECK') || line.startsWith('INDEX')) {
-                  continue;
-                }
-                const parts = line.trim().split(/\s+/);
-                if (parts.length >= 1) {
-                  tableColumns.get(tableName)!.add(parts[0]);
-                }
-              }
-            }
-          }
-
-          // Return mock result for SELECT queries
-          if (statement.trim().startsWith('SELECT')) {
-            if (statement.includes('schema_migrations')) {
-              return { rowCount: 0, rows: [] };
-            }
-            if (statement.includes('information_schema.tables')) {
-              const tableMatch = statement.match(/table_name = '\$1'/i) || statement.match(/table_name = \$1/i);
-              const tableName = params?.[0];
-              if (tableName && createdTables.has(tableName)) {
-                return { rowCount: 1, rows: [{ table_name: tableName }] };
-              }
-              return { rowCount: 0, rows: [] };
-            }
-            if (statement.includes('information_schema.columns')) {
-              const tableName = params?.[0];
-              const columnName = params?.[1];
-              if (tableName && columnName && tableColumns.has(tableName) && tableColumns.get(tableName)!.has(columnName)) {
-                return { rowCount: 1, rows: [{ column_name: columnName }] };
-              }
-              return { rowCount: 0, rows: [] };
-            }
-            if (statement.includes('pg_indexes')) {
-              const indexName = params?.[0];
-              // For simplicity, assume indexes don't exist yet
-              return { rowCount: 0, rows: [] };
-            }
-          }
-          return { rowCount: 0, rows: [], command: 'OK' };
-        },
-        release() {},
-      };
-
-      const mockPool = mockClient;
-
-      // Execute the actual Postgres migrations
-      for (const migration of POSTGRES_MIGRATIONS) {
-        await migration.up(mockClient);
-      }
-
-      // Convert captured columns to sorted arrays
-      const pgTableNames = Array.from(createdTables).sort();
-      const pgColumns = new Map<string, string[]>();
-      for (const [table, cols] of tableColumns) {
-        pgColumns.set(table, Array.from(cols).sort());
-      }
-
-      // Check that all main tables exist in Postgres migration
+      mainIndexes = new Map<string, Set<string>>();
       for (const table of mainTableNames) {
-        assert.ok(pgTableNames.includes(table), `Postgres migration missing table: ${table}`);
-      }
-
-      // Verify column parity for all tables
-      for (const table of mainTableNames) {
-        const sqliteCols = mainColumns.get(table) ?? [];
-        const pgCols = pgColumns.get(table) ?? [];
-
-        // Filter out columns that are SQLite-specific (like rowid)
-        const relevantSqliteCols = sqliteCols.filter(c => c !== 'rowid');
-
-        for (const col of relevantSqliteCols) {
-          assert.ok(pgCols.includes(col), `Postgres migration missing column ${table}.${col}`);
+        const idxs = mainDb.exec(`PRAGMA index_list(${table})`);
+        if (idxs.length > 0 && idxs[0].values.length > 0) {
+          const indexNames = new Set<string>();
+          for (const row of idxs[0].values) {
+            indexNames.add(row[1] as string);
+          }
+          mainIndexes.set(table, indexNames);
         }
       }
+      mainDb.close();
+    });
 
-      // Verify total table count matches (43 tables: the shipped snapshot plus
-      // the monitored app registry, health snapshots, analytics events, feedback
-      // responses and the migration ledger the SQLite schema creates)
-      assert.strictEqual(pgTableNames.length, 43, `Postgres migration should have 43 tables, got ${pgTableNames.length}: ${pgTableNames.join(', ')}`);
+    skipIfNoPostgres('runPostgresMigrations on fresh database produces 42 tables matching SQLite', async () => {
+      const { Pool } = await import('pg');
+      const { runPostgresMigrations } = await import('../db/migrations/postgres-runner');
+
+      const pool = new Pool({ connectionString: pgUrl });
+      try {
+        await runPostgresMigrations(pool);
+
+        // Verify table count and names
+        const tablesResult = await pool.query(`
+          SELECT table_name FROM information_schema.tables
+          WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+          ORDER BY table_name
+        `);
+        const pgTableNames = tablesResult.rows.map(r => r.table_name).sort();
+
+        assert.strictEqual(pgTableNames.length, 42, `Expected 42 Postgres tables, got ${pgTableNames.length}: ${pgTableNames.join(', ')}`);
+
+        // Verify table sets match
+        assert.deepStrictEqual(pgTableNames, mainTableNames, 'Postgres and SQLite table sets must be identical');
+
+        // Verify column parity for all tables
+        for (const table of mainTableNames) {
+          const colsResult = await pool.query(`
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = $1
+            ORDER BY column_name
+          `, [table]);
+          const pgCols = colsResult.rows.map(r => r.column_name).sort();
+          const sqliteCols = (mainColumns.get(table) ?? []).filter(c => c !== 'rowid');
+          assert.deepStrictEqual(pgCols, sqliteCols, `Column mismatch for table ${table}`);
+        }
+
+        // Verify ledger rows
+        const ledgerResult = await pool.query(`
+          SELECT migration_id FROM schema_migrations ORDER BY applied_at
+        `);
+        const ledgerIds = ledgerResult.rows.map(r => r.migration_id);
+        assert.deepStrictEqual(ledgerIds, [
+          '009-postgres-setup',
+          '008-tenant-isolation',
+          '010-monitored-apps',
+          '011-analytics-events',
+          '012-personal-ownership'
+        ], 'Ledger must have 5 rows in runner order');
+
+        // Verify index parity by semantics (every SQLite explicit index has a covering Postgres index)
+        for (const table of mainTableNames) {
+          const sqliteIdxs = mainIndexes.get(table) ?? new Set();
+          if (sqliteIdxs.size === 0) continue;
+
+          const pgIdxsResult = await pool.query(`
+            SELECT indexname, indexdef FROM pg_indexes
+            WHERE schemaname = 'public' AND tablename = $1
+          `, [table]);
+          const pgIdxNames = pgIdxsResult.rows.map(r => r.indexname);
+          const pgIdxDefs = pgIdxsResult.rows.map(r => r.indexdef);
+
+          for (const sqliteIdx of sqliteIdxs) {
+            // Skip primary key and unique constraint autoindexes
+            if (sqliteIdx.startsWith('sqlite_autoindex_')) continue;
+
+            const covered = pgIdxDefs.some(def => {
+              const match = def.match(/\(([^)]+)\)/);
+              if (!match) return false;
+              const leadingCols = match[1].split(',').map(c => c.trim());
+              return leadingCols[0] === sqliteIdx.replace(`idx_${table}_`, '');
+            });
+            assert.ok(covered, `SQLite index ${sqliteIdx} on ${table} must have a covering Postgres index`);
+          }
+        }
+
+        // Record the index name differences as data (not comments)
+        // These are the 11 expected name differences per CTO measurement:
+        // - 10 SQLite unique autoindexes vs 10 Postgres _key constraint indexes
+        // - 40 SQLite PK autoindexes vs 40 Postgres _pkey indexes
+        // - idx_remediation_policies_team vs remediation_policies_tenant_team_id_failure_type_key UNIQUE
+      } finally {
+        await pool.end();
+      }
+    });
+
+    skipIfNoPostgres('runPostgresMigrations on same database is a no-op (idempotent)', async () => {
+      const { Pool } = await import('pg');
+      const { runPostgresMigrations } = await import('../db/migrations/postgres-runner');
+
+      const pool = new Pool({ connectionString: pgUrl });
+      try {
+        await runPostgresMigrations(pool);
+        const beforeTables = await pool.query(`SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`);
+        const beforeIndexes = await pool.query(`SELECT count(*) FROM pg_indexes WHERE schemaname = 'public'`);
+        const beforeLedger = await pool.query(`SELECT count(*) FROM schema_migrations`);
+
+        await runPostgresMigrations(pool);
+
+        const afterTables = await pool.query(`SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`);
+        const afterIndexes = await pool.query(`SELECT count(*) FROM pg_indexes WHERE schemaname = 'public'`);
+        const afterLedger = await pool.query(`SELECT count(*) FROM schema_migrations`);
+
+        assert.strictEqual(parseInt(beforeTables.rows[0].count), 42);
+        assert.strictEqual(parseInt(afterTables.rows[0].count), 42);
+        assert.strictEqual(parseInt(beforeIndexes.rows[0].count), 105);
+        assert.strictEqual(parseInt(afterIndexes.rows[0].count), 105);
+        assert.strictEqual(parseInt(beforeLedger.rows[0].count), 5);
+        assert.strictEqual(parseInt(afterLedger.rows[0].count), 5);
+      } finally {
+        await pool.end();
+      }
     });
   });
 

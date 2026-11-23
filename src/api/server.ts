@@ -29,7 +29,7 @@ import {
   type EndpointCheckResult,
   type EndpointCheckType,
 } from '../engine/endpoint-check';
-import { defaultHostResolver, defaultTargetPolicy } from '../engine/outbound-safety';
+import { defaultHostResolver, defaultTargetPolicy, HostResolver } from '../engine/outbound-safety';
 import { getPolicyForSeverity, getOnCallAt, ESCALATION_POLICIES, buildSelfMonitorDashboard, computeErrorBudgetStatus, SELF_MONITOR_DEFAULTS } from '../alerting';
 import { nodeHTTPRequestHandler } from '@trpc/server/adapters/node-http';
 import { handleSSERequest } from './sse';
@@ -52,6 +52,11 @@ export interface ApiConfig {
    * reaches the network. Production leaves it unset and takes the real policy.
    */
   appsApiDeps?: AppsApiDeps;
+  /**
+   * Host resolver for outbound DNS validation. Tests inject a mock resolver
+   * to avoid live DNS lookups and keep the suite hermetic.
+   */
+  hostResolver?: HostResolver;
 }
 
 interface EndpointRule {
@@ -240,7 +245,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
   const teamApi = new TeamApi(db);
   const onboardingApi = new OnboardingApi(db);
   const playbookBuilderApi = new PlaybookBuilderApi(db);
-  const notificationApi = new NotificationApi(db);
+  const notificationApi = new NotificationApi(db, config.hostResolver ?? defaultHostResolver);
   const reportsApi = new ReportsApi(db);
   const appsApi = new AppsApi(db, config.appsApiDeps ?? buildAppsApiDeps());
   const analyticsApi = new AnalyticsApi(db);

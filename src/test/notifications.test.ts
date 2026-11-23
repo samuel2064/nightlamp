@@ -4,6 +4,7 @@ import { createDatabase } from '../db/schema';
 import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
 import { createTestToken, TEST_CLERK_USER_ID, TEST_LOCAL_USER_ID } from './setup';
+import { mockHostResolver } from './support/dns-mock';
 
 describe('Notification Service', function () {
   let db: Database;
@@ -322,7 +323,7 @@ describe('Notification Service', function () {
 
     beforeEach(function (done) {
       const { startApiServer } = require('../api/server');
-      server = startApiServer(db, { port: 0 });
+      server = startApiServer(db, { port: 0, hostResolver: mockHostResolver });
       server.on('listening', () => {
         port = server.address().port;
         done();

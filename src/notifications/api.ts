@@ -1,7 +1,7 @@
 import { Database } from 'sql.js';
 import { IncomingMessage, ServerResponse } from 'http';
 import { v4 as uuidv4 } from 'uuid';
-import { ChannelType, ChannelConfig, validateDeliveryDestination } from '../alerting/channels';
+import { ChannelType, ChannelConfig, validateDeliveryDestination, HostResolver } from '../alerting/channels';
 import { processNotification, sendDirectNotification, getChannelType, getChannelConfig, checkRateLimit, logDelivery, markDelivered } from './service';
 import { AuthContext } from '../api/auth';
 import { rowBelongsToScope, scopedTenantFilter, requireChannelOwnership } from '../api/tenant';
@@ -9,7 +9,10 @@ import { rowBelongsToScope, scopedTenantFilter, requireChannelOwnership } from '
 export class NotificationApi {
   private validTypes: Set<string> = new Set(['slack-webhook', 'email-smtp', 'in-app-websocket']);
 
-  constructor(private db: Database) {}
+  constructor(
+    private db: Database,
+    private resolver?: HostResolver
+  ) {}
 
   handle(req: IncomingMessage, res: ServerResponse, auth: AuthContext | null = null): boolean {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
@@ -110,7 +113,7 @@ export class NotificationApi {
         const mappedType = type === 'slack-webhook' ? 'slack' : type === 'email-smtp' ? 'email' : type;
 
         try {
-          await validateDeliveryDestination(mappedType as ChannelType, config as any);
+          await validateDeliveryDestination(mappedType as ChannelType, config as any, this.resolver);
         } catch (err: any) {
           res.writeHead(400);
           res.end(JSON.stringify({ error: err.message }));
@@ -152,7 +155,8 @@ export class NotificationApi {
 
         // If config is being updated, validate the new destination
         if (config !== undefined) {
-          const currentChannel = this.db.exec('SELECT type FROM alert_channels WHERE id = ?', [channelId]);
+          const scope = scopedTenantFilter('alert_channels', teamId, userId);
+          const currentChannel = this.db.exec(`SELECT type FROM alert_channels WHERE id = ? AND ${scope.clause}`, [channelId, ...scope.params]);
           if (currentChannel.length === 0 || currentChannel[0].values.length === 0) {
             res.writeHead(404);
             res.end(JSON.stringify({ error: 'Channel not found' }));
@@ -161,7 +165,7 @@ export class NotificationApi {
           const currentType = currentChannel[0].values[0][0] as string;
           const mappedType = currentType === 'slack-webhook' ? 'slack' : currentType === 'email-smtp' ? 'email' : currentType;
           try {
-            await validateDeliveryDestination(mappedType as ChannelType, config as any);
+            await validateDeliveryDestination(mappedType as ChannelType, config as any, this.resolver);
           } catch (err: any) {
             res.writeHead(400);
             res.end(JSON.stringify({ error: err.message }));

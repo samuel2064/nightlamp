@@ -25,6 +25,8 @@ import {
   isBlockedIpv6,
   resolvePublicTarget,
 } from '../engine/outbound-safety';
+import { mockHostResolver } from './support/dns-mock';
+import { HostResolver } from '../engine/outbound-safety';
 
 describe('outbound target safety', () => {
   it('blocks loopback, private, link-local, and reserved IPv4 ranges', () => {
@@ -513,7 +515,7 @@ describe('personal ownership isolation', () => {
       [legacyChannelId, 'Legacy personal channel', 'slack', '{}'],
     );
 
-    server = startApiServer(db, { port: 0 });
+    server = startApiServer(db, { port: 0, hostResolver: mockHostResolver });
     port = (server.address() as { port: number }).port;
   });
 

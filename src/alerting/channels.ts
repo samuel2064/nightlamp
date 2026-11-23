@@ -1,5 +1,7 @@
 import * as nodemailer from 'nodemailer';
-import { resolvePublicTarget, BlockedTargetError, TargetResolutionError, defaultHostResolver } from '../engine/outbound-safety';
+import { resolvePublicTarget, BlockedTargetError, TargetResolutionError, defaultHostResolver, HostResolver } from '../engine/outbound-safety';
+
+export { HostResolver } from '../engine/outbound-safety';
 
 export type ChannelType = 'slack' | 'email' | 'pagerduty' | 'in-app-websocket';
 
@@ -37,7 +39,12 @@ export interface NotificationPayload {
   eventId?: string;
 }
 
-export async function validateDeliveryDestination(channelType: ChannelType, config: ChannelConfig): Promise<void> {
+export async function validateDeliveryDestination(
+  channelType: ChannelType,
+  config: ChannelConfig,
+  resolver?: HostResolver
+): Promise<void> {
+  const hostResolver = resolver ?? defaultHostResolver;
   if (channelType === 'slack') {
     const slackConfig = config as SlackConfig;
     let parsed: URL;
@@ -47,7 +54,7 @@ export async function validateDeliveryDestination(channelType: ChannelType, conf
       throw new Error('Invalid webhook URL');
     }
     try {
-      await resolvePublicTarget(parsed.hostname, defaultHostResolver);
+      await resolvePublicTarget(parsed.hostname, hostResolver);
     } catch (err) {
       if (err instanceof BlockedTargetError) {
         throw new Error('Slack webhook destination is not a public endpoint');
@@ -67,7 +74,7 @@ export async function validateDeliveryDestination(channelType: ChannelType, conf
       throw new Error('Invalid WebSocket URL');
     }
     try {
-      await resolvePublicTarget(parsed.hostname, defaultHostResolver);
+      await resolvePublicTarget(parsed.hostname, hostResolver);
     } catch (err) {
       if (err instanceof BlockedTargetError) {
         throw new Error('In-app WebSocket destination is not a public endpoint');
@@ -85,7 +92,7 @@ export async function validateDeliveryDestination(channelType: ChannelType, conf
       throw new Error('Email SMTP destination is not a public endpoint');
     }
     try {
-      await resolvePublicTarget(host, defaultHostResolver);
+      await resolvePublicTarget(host, hostResolver);
     } catch (err) {
       if (err instanceof BlockedTargetError) {
         throw new Error('Email SMTP destination is not a public endpoint');
