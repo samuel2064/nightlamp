@@ -60,7 +60,11 @@ const JWKS_CACHE_TTL_MS = 10 * 60 * 1000;
 
 const JWKS_FETCH_TIMEOUT_MS = 5000;
 
+const JWKS_NEGATIVE_CACHE_TTL_MS = 10 * 60 * 1000;
+
 const jwksKeySets = new Map<string, { keys: Map<string, crypto.KeyObject>; fetchedAt: number }>();
+
+const jwksNegativeCache = new Map<string, number>();
 
 function decodeJsonPart(value: string): Record<string, any> {
   try {
@@ -166,26 +170,57 @@ async function fetchJwksKeySet(issuer: string): Promise<Map<string, crypto.KeyOb
 }
 
 async function resolveJwksKey(issuer: string, kid: string): Promise<crypto.KeyObject | null> {
-  const cached = jwksKeySets.get(issuer);
   const now = Date.now();
+
+  // Phase 2: serve cached-set hit BEFORE the negative entry — a kid present
+  // in the fresh cached set always verifies with zero outbound fetches, even
+  // while a negative entry is active.
+  const cached = jwksKeySets.get(issuer);
   if (cached && now - cached.fetchedAt < JWKS_CACHE_TTL_MS) {
     const hit = cached.keys.get(kid);
-    if (hit) return hit;
+    if (hit) {
+      jwksNegativeCache.delete(issuer);
+      return hit;
+    }
+    // Kid not in cached set: fall through (negative entry may still be active)
   }
 
+  // Phase 1: active negative entry — return null with zero outbound fetches,
+  // but only when the kid is absent from the cached set.
+  if (jwksNegativeCache.has(issuer) && now - jwksNegativeCache.get(issuer)! < JWKS_NEGATIVE_CACHE_TTL_MS) {
+    // When the kid IS in the cached set but not found by key lookup above,
+    // we already returned null in Phase 2. Here we only short-circuit when
+    // the kid is truly absent from the cached set and a negative entry exists.
+    return null;
+  }
+
+  // Phase 3: no cached set or kid absent — perform exactly one refetch
   let keys: Map<string, crypto.KeyObject>;
   try {
     keys = await fetchJwksKeySet(issuer);
   } catch {
     jwksKeySets.delete(issuer);
+    // Do NOT set negative entry on fetch failure — a transient error is not
+    // evidence the key is unknown, and recording it would deny every legitimate
+    // token for the issuer until the TTL expires.
     return null;
   }
   jwksKeySets.set(issuer, { keys, fetchedAt: now });
-  return keys.get(kid) || null;
+
+  const foundKey = keys.get(kid);
+  if (foundKey) {
+    jwksNegativeCache.delete(issuer);
+    return foundKey;
+  }
+
+  // Kid absent from freshly fetched set — record negative entry, return null
+  jwksNegativeCache.set(issuer, now);
+  return null;
 }
 
 export function clearJwksCache(): void {
   jwksKeySets.clear();
+  jwksNegativeCache.clear();
 }
 
 function verifySignature(parsed: ParsedToken, config: JwtVerificationConfig, jwksKey?: crypto.KeyObject): boolean {
