@@ -244,8 +244,11 @@ describe('cross-tenant mutation sweep', () => {
   describe('events', () => {
     it('refuses to acknowledge another tenant\'s event', async () => {
       const res = await call('POST', '/api/events/acknowledge', { clerkId: TEAM_B_CLERK, body: { id: eventId } });
-      assert.strictEqual(res.status, 403);
+      // A foreign event answers the absent case's exact 404 and body
+      // (NOC-342), so the caller cannot probe for ids it does not own.
+      assert.strictEqual(res.status, 404);
       assert.strictEqual(scalar('SELECT acknowledged FROM failure_events WHERE id = ?', [eventId]), 0);
+      assert.deepStrictEqual(res.payload, { error: 'Event not found' });
     });
   });
 

@@ -334,8 +334,16 @@ describe('P0 security regression gate', () => {
         method: 'POST',
         body: { id: eventAId },
       });
-      assert.strictEqual(res.status, 403);
+      // A foreign target is indistinguishable from an absent one (NOC-342):
+      // the same status and the same body bytes.
+      assert.strictEqual(res.status, 404);
       assert.strictEqual(scalar('SELECT acknowledged FROM failure_events WHERE id = ?', [eventAId]), 0);
+      const absent = await request(ownerB, '/api/events/acknowledge', {
+        method: 'POST',
+        body: { id: 'absent-event-id' },
+      });
+      assert.strictEqual(absent.status, 404);
+      assert.strictEqual(await res.text(), await absent.text());
     });
 
     it('does not mutate another organisation alert channel', async () => {
