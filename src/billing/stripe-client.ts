@@ -23,6 +23,14 @@ export function createStripeClient(config: {
   };
 }
 
+export function getStripePriceIds(): Record<string, string> {
+  return {
+    basic: 'price_basic',
+    advanced: 'price_advanced',
+    white_glove: 'price_white_glove',
+  };
+}
+
 export async function createCheckoutSession(
   client: StripeClient,
   customerId: string,

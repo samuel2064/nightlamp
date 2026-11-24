@@ -1,15 +1,18 @@
 import { IncomingMessage, ServerResponse } from 'http';
 import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
+import { AuthContext, authenticateRequestAsync, ApiAuthError } from '../api/auth';
+import { requireTenantScope } from './guards';
 
 export interface SSEClient {
   id: string;
   res: ServerResponse;
   connectedAt: Date;
   lastHeartbeat: Date;
+  teamId: string;
 }
 
-export type SSEEventType = 
+export type SSEEventType =
   | 'monitor_update'
   | 'incident_alert'
   | 'playbook_progress'
@@ -27,13 +30,45 @@ export interface SSEEvent {
 
 const clients = new Map<string, SSEClient>();
 
-export function addSSEClient(req: IncomingMessage, res: ServerResponse): string {
+// Heartbeat interval to keep connections alive
+const HEARTBEAT_INTERVAL_MS = 30_000;
+let heartbeatInterval: NodeJS.Timeout | null = null;
+
+function startHeartbeat(): void {
+  if (heartbeatInterval) return;
+  heartbeatInterval = setInterval(() => {
+    const event: SSEEvent = {
+      id: uuidv4(),
+      type: 'heartbeat',
+      timestamp: new Date().toISOString(),
+      data: { timestamp: new Date().toISOString() },
+    };
+    for (const client of clients.values()) {
+      sendEvent(client, event);
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+  heartbeatInterval.unref();
+}
+
+function stopHeartbeat(): void {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+  }
+}
+
+export function addSSEClient(req: IncomingMessage, res: ServerResponse, teamId: string): string {
+  // Start heartbeat when first client connects
+  if (clients.size === 0) {
+    startHeartbeat();
+  }
   const clientId = uuidv4();
   const client: SSEClient = {
     id: clientId,
     res,
     connectedAt: new Date(),
     lastHeartbeat: new Date(),
+    teamId,
   };
   clients.set(clientId, client);
 
@@ -66,6 +101,10 @@ export function removeSSEClient(clientId: string): boolean {
       client.res.end();
     } catch { }
     clients.delete(clientId);
+    // Stop heartbeat when last client disconnects
+    if (clients.size === 0) {
+      stopHeartbeat();
+    }
     return true;
   }
   return false;
@@ -93,7 +132,7 @@ export function sendEvent(client: SSEClient, event: SSEEvent): boolean {
   }
 }
 
-export function broadcastEvent(type: SSEEventType, data: any): number {
+export function broadcastEventToTeam(teamId: string, type: SSEEventType, data: any): number {
   const event: SSEEvent = {
     id: uuidv4(),
     type,
@@ -103,34 +142,30 @@ export function broadcastEvent(type: SSEEventType, data: any): number {
 
   let sent = 0;
   for (const client of clients.values()) {
-    if (sendEvent(client, event)) {
+    if (client.teamId === teamId && sendEvent(client, event)) {
       sent++;
     }
   }
   return sent;
 }
 
-export function broadcastHeartbeat(): number {
-  return broadcastEvent('heartbeat', { timestamp: new Date().toISOString(), clientCount: clients.size });
+export function notifyMonitorUpdate(teamId: string, monitor: any): number {
+  return broadcastEventToTeam(teamId, 'monitor_update', monitor);
 }
 
-export function notifyMonitorUpdate(monitor: any): number {
-  return broadcastEvent('monitor_update', monitor);
+export function notifyIncidentAlert(teamId: string, incident: any): number {
+  return broadcastEventToTeam(teamId, 'incident_alert', incident);
 }
 
-export function notifyIncidentAlert(incident: any): number {
-  return broadcastEvent('incident_alert', incident);
+export function notifyPlaybookProgress(teamId: string, progress: any): number {
+  return broadcastEventToTeam(teamId, 'playbook_progress', progress);
 }
 
-export function notifyPlaybookProgress(progress: any): number {
-  return broadcastEvent('playbook_progress', progress);
+export function notifyBillingEvent(teamId: string, event: any): number {
+  return broadcastEventToTeam(teamId, 'billing_event', event);
 }
 
-export function notifyBillingEvent(event: any): number {
-  return broadcastEvent('billing_event', event);
-}
-
-export function handleSSERequest(req: IncomingMessage, res: ServerResponse, db: Database): boolean {
+export async function handleSSERequest(req: IncomingMessage, res: ServerResponse, db: Database): Promise<boolean> {
   try {
     const host = req.headers.host;
     if (!host) {
@@ -140,7 +175,24 @@ export function handleSSERequest(req: IncomingMessage, res: ServerResponse, db: 
     const path = parsedUrl.pathname;
 
     if (path === '/api/realtime' || path === '/api/realtime/') {
-      addSSEClient(req, res);
+      // Require authentication
+      let auth: AuthContext;
+      try {
+        auth = await authenticateRequestAsync(db, req);
+      } catch (err: any) {
+        if (err instanceof ApiAuthError) {
+          res.writeHead(err.statusCode);
+          res.end(JSON.stringify({ error: err.message, code: err.code }));
+          return true;
+        }
+        throw err;
+      }
+
+      if (!requireTenantScope(res, auth.teamId)) {
+        return true;
+      }
+
+      addSSEClient(req, res, auth.teamId!);
       return true;
     }
   } catch {
@@ -149,9 +201,3 @@ export function handleSSERequest(req: IncomingMessage, res: ServerResponse, db: 
 
   return false;
 }
-
-const heartbeatTimer = setInterval(() => {
-  broadcastHeartbeat();
-}, 30000);
-
-heartbeatTimer.unref();

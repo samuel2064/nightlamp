@@ -2,6 +2,10 @@ import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { up as applyTenantIsolationMigration } from './migrations/008-tenant-isolation';
+import { up as applyPlaybookExecutionsTenantMigration } from './migrations/012-playbook-executions-tenant';
+import { up as applyPerfTenantMigration } from './migrations/013-perf-tenant';
+import { up as applyLeadsTenantMigration } from './migrations/014-leads-tenant';
+import { up as applyClerkWebhookReplayMigration } from './migrations/015-clerk-webhook-replay';
 
 export interface NightlampDb {
   db: SqlJsDatabase;
@@ -574,7 +578,20 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   db.run('CREATE INDEX IF NOT EXISTS idx_webhook_events_type ON webhook_events(event_type)');
   db.run('CREATE INDEX IF NOT EXISTS idx_webhook_events_received ON webhook_events(received_at DESC)');
 
+  // Clerk webhook replay protection table (NOC-337)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS clerk_webhook_events (
+      id TEXT PRIMARY KEY,
+      received_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_clerk_webhook_events_received ON clerk_webhook_events(received_at)`);
+
   applyTenantIsolationMigration(db);
+  applyPlaybookExecutionsTenantMigration(db);
+  applyPerfTenantMigration(db);
+  applyLeadsTenantMigration(db);
+  applyClerkWebhookReplayMigration(db);
 
   return db;
 }

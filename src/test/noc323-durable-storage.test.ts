@@ -382,6 +382,15 @@ describe('NOC-323 durable storage', () => {
       const mainDb = await createDatabase();
       const mainTables = mainDb.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
       const mainTableNames = mainTables[0].values.map((r: any) => r[0]).sort();
+
+      // Get column info for each main table
+      const mainTableColumns: Record<string, string[]> = {};
+      for (const table of mainTableNames) {
+        const cols = mainDb.exec(`PRAGMA table_info(${table})`);
+        if (cols.length > 0 && cols[0].values.length > 0) {
+          mainTableColumns[table] = cols[0].values.map((r: any) => r[1]).sort();
+        }
+      }
       mainDb.close();
 
       // Read the Postgres migration file and parse CREATE TABLE statements
@@ -390,24 +399,48 @@ describe('NOC-323 durable storage', () => {
       const migrationPath = path.join(__dirname, '..', 'db', 'migrations', '009-postgres-setup.ts');
       const migrationContent = fs.readFileSync(migrationPath, 'utf8');
 
-      // Extract table names from Postgres migration
-      const pgTableMatches = migrationContent.match(/CREATE TABLE IF NOT EXISTS\s+(\w+)\s*\(/g);
-      const pgTableNames = pgTableMatches ? pgTableMatches.map(m => m.match(/CREATE TABLE IF NOT EXISTS\s+(\w+)\s*\(/)[1]).sort() : [];
+      // Extract table names and column definitions from Postgres migration
+      const pgTableRegex = /CREATE TABLE IF NOT EXISTS\s+(\w+)\s*\(([\s\S]*?)\);/g;
+      const pgTables: Record<string, string[]> = {};
+      let match;
+      while ((match = pgTableRegex.exec(migrationContent)) !== null) {
+        const tableName = match[1];
+        const columnDefs = match[2];
+        // Parse column names from definitions (first word before space or type)
+        const columnLines = columnDefs.split(',').map((line: string) => line.trim());
+        const columns: string[] = [];
+        for (const line of columnLines) {
+          // Skip constraints (lines starting with FOREIGN KEY, PRIMARY KEY, CHECK, UNIQUE, INDEX)
+          if (line.match(/^(FOREIGN KEY|PRIMARY KEY|CHECK|UNIQUE|INDEX)\b/)) continue;
+          // Extract column name (first identifier)
+          const colMatch = line.match(/^(\w+)/);
+          if (colMatch) {
+            columns.push(colMatch[1]);
+          }
+        }
+        pgTables[tableName] = columns.sort();
+      }
+
+      const pgTableNames = Object.keys(pgTables).sort();
 
       // Check that all main tables exist in Postgres migration
       for (const table of mainTableNames) {
         assert.ok(pgTableNames.includes(table), `Postgres migration missing table: ${table}`);
       }
 
-      // Verify column parity for a few critical tables
-      for (const criticalTable of ['teams', 'memberships', 'invitations', 'usage_records', 'team_workspaces', 'checks', 'check_results', 'failure_events', 'playbook_entries']) {
-        if (mainTableNames.includes(criticalTable)) {
-          assert.ok(pgTableNames.includes(criticalTable), `Critical table ${criticalTable} must exist in Postgres migration`);
+      // Verify column parity for all tables
+      for (const table of mainTableNames) {
+        const mainCols = mainTableColumns[table] || [];
+        const pgCols = pgTables[table] || [];
+        for (const col of mainCols) {
+          // Skip sqlite auto columns that don't need explicit definition in Postgres
+          if (col === 'rowid') continue;
+          assert.ok(pgCols.includes(col), `Postgres migration table ${table} missing column: ${col}`);
         }
       }
 
-      // Verify total table count matches (37 tables)
-      assert.strictEqual(pgTableNames.length, 37, `Postgres migration should have 37 tables, got ${pgTableNames.length}`);
+      // Verify total table count matches (38 tables: 37 original + clerk_webhook_events)
+      assert.strictEqual(pgTableNames.length, 38, `Postgres migration should have 38 tables, got ${pgTableNames.length}`);
     });
   });
 

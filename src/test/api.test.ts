@@ -4,7 +4,16 @@ import { Database } from 'sql.js';
 import { Server } from 'http';
 import assert from 'assert';
 import { getOrCreatePlaybookEntry } from '../playbook';
-import { TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID } from './setup';
+import { TEST_LOCAL_USER_ID, TEST_CLERK_USER_ID, createTestToken } from './setup';
+
+function authFetch(port: number, path: string, options: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(options.headers);
+  headers.set('authorization', `Bearer ${createTestToken({ sub: TEST_CLERK_USER_ID, email: 'owner@example.com' })}`);
+  if (!headers.has('content-type') && options.body) {
+    headers.set('content-type', 'application/json');
+  }
+  return fetch(`http://127.0.0.1:${port}${path}`, { ...options, headers });
+}
 
 describe('API Server', () => {
   let db: Database;
@@ -180,9 +189,8 @@ describe('API Server', () => {
     });
 
     it('POST /api/leads rejects missing email', async () => {
-      const res = await fetch(`http://127.0.0.1:${port}/api/leads`, {
+      const res = await authFetch(port, '/api/leads', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
       });
       assert.strictEqual(res.status, 400);
@@ -191,9 +199,8 @@ describe('API Server', () => {
     });
 
     it('POST /api/leads rejects invalid email', async () => {
-      const res = await fetch(`http://127.0.0.1:${port}/api/leads`, {
+      const res = await authFetch(port, '/api/leads', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: 'not-an-email' }),
       });
       assert.strictEqual(res.status, 400);
@@ -204,16 +211,14 @@ describe('API Server', () => {
     it('POST /api/leads rejects duplicate email', async () => {
       const email = `lead-dup-${Date.now()}@example.com`;
       testEmails.push(email);
-      const first = await fetch(`http://127.0.0.1:${port}/api/leads`, {
+      const first = await authFetch(port, '/api/leads', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
       });
       assert.strictEqual(first.status, 200);
 
-      const second = await fetch(`http://127.0.0.1:${port}/api/leads`, {
+      const second = await authFetch(port, '/api/leads', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
       });
       assert.strictEqual(second.status, 409);
@@ -222,19 +227,26 @@ describe('API Server', () => {
     it('GET /api/leads returns created leads', async () => {
       const email = `lead-list-${Date.now()}@example.com`;
       testEmails.push(email);
-      await fetch(`http://127.0.0.1:${port}/api/leads`, {
+      const postRes = await authFetch(port, '/api/leads', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
       });
+      const postJson = await postRes.json() as any;
+      console.log('POST /api/leads status:', postRes.status);
+      console.log('POST /api/leads response:', postJson);
+      assert.strictEqual(postRes.status, 200);
+      assert.strictEqual(postJson.success, true);
 
-      const res = await (await fetch(`http://127.0.0.1:${port}/api/leads`)).json() as any;
-      assert.ok(Array.isArray(res.leads));
-      assert.ok(res.leads.some((l: any) => l.email === email.toLowerCase()));
+      const getRes = await authFetch(port, '/api/leads');
+      const getJson = await getRes.json() as any;
+      console.log('GET /api/leads status:', getRes.status);
+      console.log('GET /api/leads response:', JSON.stringify(getJson, null, 2));
+      assert.ok(Array.isArray(getJson.leads));
+      assert.ok(getJson.leads.some((l: any) => l.email === email.toLowerCase()), 'Lead not found in GET response');
     });
 
     it('GET /api/leads filters by source', async () => {
-      const res = await (await fetch(`http://127.0.0.1:${port}/api/leads?source=landing`)).json() as any;
+      const res = await (await authFetch(port, `/api/leads?source=landing`)).json() as any;
       assert.ok(Array.isArray(res.leads));
       assert.ok(res.leads.every((l: any) => l.source === 'landing'));
     });
