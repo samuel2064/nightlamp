@@ -19,32 +19,32 @@ export interface PerfRun {
 export class PerfStorage {
   constructor(private db: Database) {}
 
-  createRun(url: string): string {
+  createRun(url: string, teamId: string): string {
     const id = uuid();
     this.db.run(
-      'INSERT INTO perf_runs (id, url) VALUES (?, ?)',
-      [id, url],
+      'INSERT INTO perf_runs (id, url, team_id) VALUES (?, ?, ?)',
+      [id, url, teamId],
     );
     return id;
   }
 
-  completeRun(runId: string, result: LighthouseResult): void {
+  completeRun(runId: string, result: LighthouseResult, teamId: string): void {
     if (result.successful) {
       this.db.run(
-        `UPDATE perf_runs SET status = 'completed', lcp = ?, tbt = ?, cls = ?, fcp = ?, inp = ?, score = ?, raw_output = ?, completed_at = datetime('now') WHERE id = ?`,
-        [result.lcp, result.tbt, result.cls, result.fcp, result.inp, result.score, result.rawJson, runId],
+        `UPDATE perf_runs SET status = 'completed', lcp = ?, tbt = ?, cls = ?, fcp = ?, inp = ?, score = ?, raw_output = ?, completed_at = datetime('now') WHERE id = ? AND team_id = ?`,
+        [result.lcp, result.tbt, result.cls, result.fcp, result.inp, result.score, result.rawJson, runId, teamId],
       );
 
-      this.storeMetrics(runId, result);
+      this.storeMetrics(runId, result, teamId);
     } else {
       this.db.run(
-        `UPDATE perf_runs SET status = 'failed', raw_output = ?, completed_at = datetime('now') WHERE id = ?`,
-        [result.error || '', runId],
+        `UPDATE perf_runs SET status = 'failed', raw_output = ?, completed_at = datetime('now') WHERE id = ? AND team_id = ?`,
+        [result.error || '', runId, teamId],
       );
     }
   }
 
-  private storeMetrics(runId: string, result: LighthouseResult): void {
+  private storeMetrics(runId: string, result: LighthouseResult, teamId: string): void {
     const metrics: { name: string; value: number; unit: string }[] = [
       { name: 'LCP', value: result.lcp, unit: 'ms' },
       { name: 'TBT', value: result.tbt, unit: 'ms' },
@@ -62,10 +62,10 @@ export class PerfStorage {
     }
   }
 
-  getRecentRuns(url: string, limit: number = 10): PerfRun[] {
+  getRecentRuns(url: string, teamId: string, limit: number = 10): PerfRun[] {
     const result = this.db.exec(
-      `SELECT id, url, status, lcp, tbt, cls, fcp, inp, score, started_at, completed_at FROM perf_runs WHERE url = ? ORDER BY started_at DESC LIMIT ?`,
-      [url, limit],
+      `SELECT id, url, status, lcp, tbt, cls, fcp, inp, score, started_at, completed_at FROM perf_runs WHERE url = ? AND team_id = ? ORDER BY started_at DESC LIMIT ?`,
+      [url, teamId, limit],
     );
 
     if (result.length === 0) return [];
@@ -85,14 +85,14 @@ export class PerfStorage {
     }));
   }
 
-  getMetricHistory(url: string, metric: string, limit: number = 24): { value: number; date: string }[] {
+  getMetricHistory(url: string, teamId: string, metric: string, limit: number = 24): { value: number; date: string }[] {
     const result = this.db.exec(
       `SELECT pm.value, pr.started_at
        FROM perf_metrics pm
        JOIN perf_runs pr ON pm.run_id = pr.id
-       WHERE pr.url = ? AND pm.name = ? AND pr.status = 'completed'
+       WHERE pr.url = ? AND pr.team_id = ? AND pm.name = ? AND pr.status = 'completed'
        ORDER BY pr.started_at DESC LIMIT ?`,
-      [url, metric, limit],
+      [url, teamId, metric, limit],
     );
 
     if (result.length === 0) return [];
@@ -103,8 +103,8 @@ export class PerfStorage {
     }));
   }
 
-  getBaseline(url: string, metric: string, lookback: number = 4): { mean: number; stddev: number; count: number } {
-    const history = this.getMetricHistory(url, metric, lookback);
+  getBaseline(url: string, teamId: string, metric: string, lookback: number = 4): { mean: number; stddev: number; count: number } {
+    const history = this.getMetricHistory(url, teamId, metric, lookback);
 
     if (history.length < 2) {
       return { mean: 0, stddev: 0, count: history.length };
@@ -127,22 +127,22 @@ export class PerfStorage {
     direction: string;
     url: string;
     runId: string;
-  }): string {
+  }, teamId: string): string {
     const id = uuid();
     const trend = regression.direction === 'degradation' ? 'declining' : 'improving';
     this.db.run(
-      `INSERT INTO perf_regressions (id, metric, current_value, baseline_mean, baseline_stddev, p_value, direction, trend, url, run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, regression.metric, regression.currentValue, regression.baselineMean, regression.baselineStddev, regression.pValue, regression.direction, trend, regression.url, regression.runId],
+      `INSERT INTO perf_regressions (id, metric, current_value, baseline_mean, baseline_stddev, p_value, direction, trend, url, run_id, team_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, regression.metric, regression.currentValue, regression.baselineMean, regression.baselineStddev, regression.pValue, regression.direction, trend, regression.url, regression.runId, teamId],
     );
     return id;
   }
 
-  getRegressions(url?: string, limit: number = 20): any[] {
-    let sql = `SELECT pr.id, pr.metric, pr.current_value, pr.baseline_mean, pr.baseline_stddev, pr.p_value, pr.direction, pr.trend, pr.url, pr.detected_at, pr.acknowledged FROM perf_regressions pr`;
-    const params: any[] = [];
+getRegressions(teamId: string, url?: string, limit: number = 20): any[] {
+    let sql = `SELECT pr.id, pr.metric, pr.current_value, pr.baseline_mean, pr.baseline_stddev, pr.p_value, pr.direction, pr.trend, pr.url, pr.detected_at, pr.acknowledged FROM perf_regressions pr WHERE pr.team_id = ?`;
+    const params: any[] = [teamId];
 
     if (url) {
-      sql += ' WHERE pr.url = ?';
+      sql += ' AND pr.url = ?';
       params.push(url);
     }
 
@@ -165,19 +165,19 @@ export class PerfStorage {
     recommendation: string;
     impact: string;
     category: string;
-  }): string {
+  }, teamId: string): string {
     const id = uuid();
     this.db.run(
-      'INSERT INTO perf_diagnoses (id, regression_id, diagnosis, recommendation, impact, category) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, diagnosis.regressionId, diagnosis.diagnosis, diagnosis.recommendation, diagnosis.impact, diagnosis.category],
+      'INSERT INTO perf_diagnoses (id, regression_id, diagnosis, recommendation, impact, category, team_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [id, diagnosis.regressionId, diagnosis.diagnosis, diagnosis.recommendation, diagnosis.impact, diagnosis.category, teamId],
     );
     return id;
   }
 
-  getDiagnoses(regressionId: string): any[] {
+  getDiagnoses(teamId: string, regressionId: string): any[] {
     const result = this.db.exec(
-      'SELECT id, diagnosis, recommendation, impact, category, created_at FROM perf_diagnoses WHERE regression_id = ? ORDER BY created_at DESC',
-      [regressionId],
+      'SELECT id, diagnosis, recommendation, impact, category, created_at FROM perf_diagnoses WHERE regression_id = ? AND team_id = ? ORDER BY created_at DESC',
+      [regressionId, teamId],
     );
     if (result.length === 0) return [];
     return result[0].values.map((row: any) => ({

@@ -7,7 +7,10 @@ export class RegressionDetector {
     this.pValueThreshold = threshold;
   }
 
-  analyzeRuns(url: string, currentRun: PerfRun): { detected: boolean; regressions: any[] } {
+  analyzeRuns(url: string, currentRun: PerfRun, teamId: string): { detected: boolean; regressions: any[] } {
+    if (!teamId) {
+      throw new Error('Regression detector requires a team ID');
+    }
     const metrics: { name: string; value: number }[] = [
       { name: 'LCP', value: currentRun.lcp },
       { name: 'TBT', value: currentRun.tbt },
@@ -20,7 +23,7 @@ export class RegressionDetector {
     const regressions: any[] = [];
 
     for (const metric of metrics) {
-      const baseline = this.storage.getBaseline(url, metric.name);
+      const baseline = this.storage.getBaseline(url, teamId, metric.name);
 
       if (baseline.count < 2) continue;
 
@@ -45,7 +48,7 @@ export class RegressionDetector {
             direction: 'degradation',
             url,
             runId: currentRun.id,
-          });
+          }, teamId);
 
           regressions.push({
             id: regId,

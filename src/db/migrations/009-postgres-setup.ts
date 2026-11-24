@@ -14,7 +14,8 @@ export async function up(pool: Pool): Promise<void> {
         config TEXT NOT NULL,
         enabled INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-        updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        team_id TEXT
       );
     `);
 
@@ -28,6 +29,7 @@ export async function up(pool: Pool): Promise<void> {
         details TEXT,
         raw_data TEXT,
         executed_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        team_id TEXT,
         FOREIGN KEY (check_id) REFERENCES checks(id)
       );
     `);
@@ -44,6 +46,7 @@ export async function up(pool: Pool): Promise<void> {
         raw_data TEXT,
         detected_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
         acknowledged INTEGER NOT NULL DEFAULT 0,
+        team_id TEXT,
         FOREIGN KEY (check_id) REFERENCES checks(id)
       );
     `);
@@ -57,7 +60,8 @@ export async function up(pool: Pool): Promise<void> {
         body TEXT NOT NULL,
         first_seen_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
         last_occurrence_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-        occurrence_count INTEGER NOT NULL DEFAULT 1
+        occurrence_count INTEGER NOT NULL DEFAULT 1,
+        team_id TEXT
       );
     `);
 
@@ -69,7 +73,8 @@ export async function up(pool: Pool): Promise<void> {
         email TEXT NOT NULL,
         name TEXT,
         created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-        updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        team_id TEXT
       );
     `);
 
@@ -98,6 +103,7 @@ export async function up(pool: Pool): Promise<void> {
         cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
         updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        team_id TEXT,
         FOREIGN KEY (customer_id) REFERENCES customers(id)
       );
     `);
@@ -110,6 +116,7 @@ export async function up(pool: Pool): Promise<void> {
         metric TEXT NOT NULL,
         value REAL NOT NULL DEFAULT 0,
         recorded_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        team_id TEXT,
         FOREIGN KEY (customer_id) REFERENCES customers(id)
       );
     `);
@@ -123,7 +130,8 @@ export async function up(pool: Pool): Promise<void> {
         specified_range TEXT NOT NULL,
         is_dev INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-        updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        team_id TEXT
       );
     `);
 
@@ -138,6 +146,7 @@ export async function up(pool: Pool): Promise<void> {
         is_breaking INTEGER NOT NULL DEFAULT 0,
         changelog_url TEXT,
         detected_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        team_id TEXT,
         FOREIGN KEY (dependency_id) REFERENCES dependencies(id)
       );
     `);
@@ -152,6 +161,7 @@ export async function up(pool: Pool): Promise<void> {
         status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'success', 'failed', 'skipped')),
         output TEXT,
         executed_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        team_id TEXT,
         FOREIGN KEY (playbook_entry_id) REFERENCES playbook_entries(id)
       );
     `);
@@ -181,7 +191,8 @@ export async function up(pool: Pool): Promise<void> {
         error TEXT,
         started_at TEXT,
         completed_at TEXT,
-        created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        team_id TEXT
       )
     `);
 
@@ -189,11 +200,12 @@ export async function up(pool: Pool): Promise<void> {
     await client.query(`
       CREATE TABLE IF NOT EXISTS remediation_policies (
         id TEXT PRIMARY KEY,
+        team_id TEXT,
         failure_type TEXT NOT NULL,
         auto_approve INTEGER NOT NULL DEFAULT 0,
         require_dry_run INTEGER NOT NULL DEFAULT 1,
         cooldown_minutes INTEGER NOT NULL DEFAULT 60,
-        UNIQUE(failure_type)
+        UNIQUE(team_id, failure_type)
       )
     `);
 
@@ -221,7 +233,8 @@ export async function up(pool: Pool): Promise<void> {
         error TEXT,
         scheduled_at TEXT,
         posted_at TEXT,
-        created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        team_id TEXT
       );
     `);
 
@@ -230,6 +243,7 @@ export async function up(pool: Pool): Promise<void> {
       CREATE TABLE IF NOT EXISTS perf_runs (
         id TEXT PRIMARY KEY,
         url TEXT NOT NULL,
+        team_id TEXT,
         status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'running', 'completed', 'failed')),
         lcp REAL,
         tbt REAL,
@@ -271,6 +285,7 @@ export async function up(pool: Pool): Promise<void> {
         run_id TEXT NOT NULL,
         detected_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
         acknowledged INTEGER NOT NULL DEFAULT 0,
+        team_id TEXT,
         FOREIGN KEY (run_id) REFERENCES perf_runs(id)
       );
     `);
@@ -285,6 +300,7 @@ export async function up(pool: Pool): Promise<void> {
         impact TEXT NOT NULL CHECK(impact IN ('high', 'medium', 'low')),
         category TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        team_id TEXT,
         FOREIGN KEY (regression_id) REFERENCES perf_regressions(id)
       );
     `);
@@ -370,6 +386,7 @@ export async function up(pool: Pool): Promise<void> {
         enabled INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
         updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        team_id TEXT,
         FOREIGN KEY (channel_id) REFERENCES alert_channels(id)
       );
     `);
@@ -384,7 +401,8 @@ export async function up(pool: Pool): Promise<void> {
         completed_at TEXT,
         created_team_id TEXT,
         created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-        updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        team_id TEXT
       );
     `);
 
@@ -472,6 +490,7 @@ export async function up(pool: Pool): Promise<void> {
       CREATE TABLE IF NOT EXISTS playbook_executions (
         id TEXT PRIMARY KEY,
         playbook_id TEXT NOT NULL,
+        team_id TEXT,
         status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'running', 'waiting_decision', 'completed', 'failed', 'cancelled')),
         current_step_id TEXT,
         context TEXT NOT NULL DEFAULT '{}',
@@ -493,6 +512,7 @@ export async function up(pool: Pool): Promise<void> {
         max_per_hour INTEGER NOT NULL DEFAULT 100,
         window_start TEXT NOT NULL,
         current_count INTEGER NOT NULL DEFAULT 0,
+        team_id TEXT,
         FOREIGN KEY (channel_id) REFERENCES alert_channels(id)
       );
     `);
@@ -507,6 +527,7 @@ export async function up(pool: Pool): Promise<void> {
         last_seen_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
         suppress_until TEXT,
         suppression_count INTEGER NOT NULL DEFAULT 0,
+        team_id TEXT,
         FOREIGN KEY (channel_id) REFERENCES alert_channels(id)
       );
     `);
@@ -518,6 +539,7 @@ export async function up(pool: Pool): Promise<void> {
         email TEXT NOT NULL,
         source TEXT NOT NULL DEFAULT 'webinar',
         name TEXT,
+        team_id TEXT,
         created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
       );
     `);
@@ -533,7 +555,23 @@ export async function up(pool: Pool): Promise<void> {
         error TEXT,
         payload TEXT,
         received_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-        processed_at TEXT
+        processed_at TEXT,
+        team_id TEXT
+      );
+    `);
+
+    // clerk_webhook_events
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS clerk_webhook_events (
+        id TEXT PRIMARY KEY,
+        event_type TEXT NOT NULL,
+        livemode INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'received' CHECK(status IN ('received', 'processed', 'failed', 'skipped')),
+        error TEXT,
+        payload TEXT,
+        received_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        processed_at TEXT,
+        team_id TEXT
       );
     `);
 
@@ -559,9 +597,12 @@ export async function up(pool: Pool): Promise<void> {
 
     // Hot-path indexes for performance optimization
     await client.query('CREATE INDEX IF NOT EXISTS idx_perf_runs_url_started ON perf_runs(url, started_at DESC)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_perf_runs_team ON perf_runs(team_id)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_perf_metrics_run_name ON perf_metrics(run_id, name)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_perf_regressions_url_detected ON perf_regressions(url, detected_at DESC)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_perf_regressions_team ON perf_regressions(team_id)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_perf_diagnoses_regression ON perf_diagnoses(regression_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_perf_diagnoses_team ON perf_diagnoses(team_id)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_dep_updates_dep_detected ON dependency_updates(dependency_id, detected_at DESC)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_usage_customer_recorded ON usage_records(customer_id, recorded_at DESC)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_subscriptions_customer ON subscriptions(customer_id)');
@@ -570,11 +611,42 @@ export async function up(pool: Pool): Promise<void> {
     await client.query('CREATE INDEX IF NOT EXISTS idx_x_posts_schedule ON x_scheduled_posts(status, scheduled_at)');
 
     await client.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email ON leads(email)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_leads_team ON leads(team_id)');
 
     await client.query('CREATE INDEX IF NOT EXISTS idx_failure_events_severity ON failure_events(severity)');
 
     await client.query('CREATE INDEX IF NOT EXISTS idx_webhook_events_type ON webhook_events(event_type)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_webhook_events_received ON webhook_events(received_at DESC)');
+
+    await client.query('CREATE INDEX IF NOT EXISTS idx_clerk_webhook_events_type ON clerk_webhook_events(event_type)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_clerk_webhook_events_received ON clerk_webhook_events(received_at DESC)');
+
+    await client.query('CREATE INDEX IF NOT EXISTS idx_playbook_executions_team ON playbook_executions(team_id)');
+
+    // Tenant isolation indexes for team_id columns
+    await client.query('CREATE INDEX IF NOT EXISTS idx_checks_team ON checks(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_check_results_team ON check_results(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_failure_events_team ON failure_events(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_playbook_entries_team ON playbook_entries(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_customers_team ON customers(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_subscriptions_team ON subscriptions(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_usage_records_team ON usage_records(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_dependencies_team ON dependencies(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_dependency_updates_team ON dependency_updates(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_remediation_log_team ON remediation_log(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_remediation_runs_team ON remediation_runs(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_remediation_policies_team ON remediation_policies(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_alert_rules_team ON alert_rules(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_onboarding_sessions_team ON onboarding_sessions(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_notification_rate_limits_team ON notification_rate_limits(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_notification_deduplication_team ON notification_deduplication(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_webhook_events_team ON webhook_events(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_clerk_webhook_events_team ON clerk_webhook_events(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_x_scheduled_posts_team ON x_scheduled_posts(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_alert_rules_team ON alert_rules(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_onboarding_sessions_team ON onboarding_sessions(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_notification_rate_limits_team ON notification_rate_limits(team_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_notification_deduplication_team ON notification_deduplication(team_id)');
 
     await client.query('COMMIT');
   } catch (error) {
@@ -590,6 +662,7 @@ export async function down(pool: Pool): Promise<void> {
   try {
     await client.query('BEGIN');
     // Drop tables in reverse order to handle foreign keys
+    await client.query('DROP TABLE IF EXISTS clerk_webhook_events');
     await client.query('DROP TABLE IF EXISTS webhook_events');
     await client.query('DROP TABLE IF EXISTS leads');
     await client.query('DROP TABLE IF EXISTS notification_deduplication');

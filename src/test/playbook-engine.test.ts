@@ -95,6 +95,7 @@ describe('Playbook Engine', () => {
     name: 'HTTP Test',
     description: '',
     variables: { apiUrl: 'https://httpbin.org' },
+    teamId: 'test-team',
     steps: [
       {
         id: 'http-step',
@@ -113,6 +114,7 @@ describe('Playbook Engine', () => {
     name: 'HTTP Error Test',
     description: '',
     variables: {},
+    teamId: 'test-team',
     steps: [
       {
         id: 'http-step',
@@ -131,6 +133,7 @@ describe('Playbook Engine', () => {
     name: 'Interpolation Test',
     description: '',
     variables: { baseUrl: 'https://httpbin.org', endpoint: '/get', param: 'test' },
+    teamId: 'test-team',
     steps: [
       {
         id: 'interp-step',
@@ -149,6 +152,7 @@ describe('Playbook Engine', () => {
     name: 'Assertion Pass Test',
     description: '',
     variables: { value: 42 },
+    teamId: 'test-team',
     steps: [
       {
         id: 'assert-step',
@@ -167,6 +171,7 @@ describe('Playbook Engine', () => {
     name: 'Assertion Fail Test',
     description: '',
     variables: { value: 10 },
+    teamId: 'test-team',
     steps: [
       {
         id: 'assert-step',
@@ -185,6 +190,7 @@ describe('Playbook Engine', () => {
     name: 'Wait Duration Test',
     description: '',
     variables: {},
+    teamId: 'test-team',
     steps: [
       {
         id: 'wait-step',
@@ -203,6 +209,7 @@ describe('Playbook Engine', () => {
     name: 'Wait Condition Test',
     description: '',
     variables: { counter: 6 },
+    teamId: 'test-team',
     steps: [
       {
         id: 'wait-step',
@@ -221,6 +228,7 @@ describe('Playbook Engine', () => {
     name: 'Wait Timeout Test',
     description: '',
     variables: { counter: 0 },
+    teamId: 'test-team',
     steps: [
       {
         id: 'wait-step',
@@ -239,6 +247,7 @@ describe('Playbook Engine', () => {
     name: 'Conditional True Test',
     description: '',
     variables: { flag: true },
+    teamId: 'test-team',
     steps: [
       {
         id: 'cond-step',
@@ -270,6 +279,7 @@ describe('Playbook Engine', () => {
     name: 'Conditional False Test',
     description: '',
     variables: { flag: false },
+    teamId: 'test-team',
     steps: [
       {
         id: 'cond-step',
@@ -301,6 +311,7 @@ describe('Playbook Engine', () => {
     name: 'Notification Test',
     description: '',
     variables: { alertMsg: 'Test Alert' },
+    teamId: 'test-team',
     steps: [
       {
         id: 'notif-step',
@@ -320,6 +331,7 @@ describe('Playbook Engine', () => {
     name: 'Custom Code Test',
     description: '',
     variables: { input: 5 },
+    teamId: 'test-team',
     steps: [
       {
         id: 'custom-step',
@@ -338,6 +350,7 @@ describe('Playbook Engine', () => {
     name: 'Custom Code Error Test',
     description: '',
     variables: {},
+    teamId: 'test-team',
     steps: [
       {
         id: 'custom-step',
@@ -356,6 +369,7 @@ describe('Playbook Engine', () => {
     name: 'Failure Handling Test',
     description: '',
     variables: {},
+    teamId: 'test-team',
     steps: [
       {
         id: 'failing-step',
@@ -378,6 +392,7 @@ describe('Playbook Engine', () => {
     name: 'No Recovery Test',
     description: '',
     variables: {},
+    teamId: 'test-team',
     steps: [
       {
         id: 'failing-step',
@@ -393,6 +408,7 @@ describe('Playbook Engine', () => {
     name: 'Decision Test',
     description: '',
     variables: {},
+    teamId: 'test-team',
     steps: [
       {
         id: 'decision-step',
@@ -417,6 +433,7 @@ describe('Playbook Engine', () => {
     name: 'Cancel Test',
     description: '',
     variables: {},
+    teamId: 'test-team',
     steps: [
       {
         id: 'long-step',
@@ -432,6 +449,7 @@ describe('Playbook Engine', () => {
     name: 'Complete Test',
     description: '',
     variables: {},
+    teamId: 'test-team',
     steps: [
       {
         id: 'step-1',
@@ -488,14 +506,15 @@ describe('Playbook Engine', () => {
       assert.ok(execution.createdAt);
     });
 
-    it('should throw when playbook has no steps', async () => {
-      const playbook: PlaybookDefinition = {
+it('should throw when playbook has no steps', async () => {
+        const playbook: PlaybookDefinition = {
         id: 'empty-steps',
-        name: 'Empty Steps',
-        description: '',
-        variables: {},
-        steps: [],
-      };
+          name: 'Empty Steps',
+          description: '',
+          variables: {},
+          teamId: 'test-team',
+          steps: [],
+        };
       try {
         await engine.createExecution(playbook);
         assert.fail('Should have thrown');

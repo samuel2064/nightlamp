@@ -35,6 +35,11 @@ export class ReportsApi {
         return true;
       }
 
+      if (path === '/api/reports/probes' && req.method === 'GET') {
+        this.handleProbes(parsedUrl, res, teamId);
+        return true;
+      }
+
       if (path === '/api/reports/team-summary' && req.method === 'GET') {
         this.handleTeamSummary(parsedUrl, res, teamId);
         return true;
@@ -557,5 +562,30 @@ export class ReportsApi {
     } else {
       this.respondJSON(res, data, 'json');
     }
+  }
+
+  private handleProbes(parsedUrl: URL, res: ServerResponse, teamId: string | null): void {
+    const scope = tenantOwnedFilter('team_id', teamId);
+
+    const probes = [
+      { id: 'probe-noc337-gap1', name: 'Playbook executions tenant scoping', status: 'pending', reason: 'Pending NOC-337 remediation: playbook executions not scoped to team' },
+      { id: 'probe-noc337-gap2', name: 'Performance APIs tenant scoping', status: 'pending', reason: 'Pending NOC-337 remediation: performance APIs not scoped to team' },
+      { id: 'probe-noc337-gap3', name: 'SSE tenant scoping (/api/realtime)', status: 'pending', reason: 'Pending NOC-337 remediation: SSE endpoint not scoped to team' },
+      { id: 'probe-noc337-gap4', name: 'Clerk webhook fails closed', status: 'pending', reason: 'Pending NOC-337 remediation: Clerk webhook not fails-closed' },
+      { id: 'probe-noc337-gap5', name: 'Team workspace owner/admin requirement', status: 'pending', reason: 'Pending NOC-337 remediation: team workspace not scoped to owner/admin' },
+      { id: 'probe-noc337-gap6', name: 'Leads tenant scoping', status: 'pending', reason: 'Pending NOC-337 remediation: leads not scoped to team' },
+      { id: 'probe-noc337-gap7', name: 'Stripe webhook exact path', status: 'pending', reason: 'Pending NOC-337 remediation: Stripe webhook not validated' },
+    ];
+
+    const results = probes.map((probe) => ({
+      id: probe.id,
+      name: probe.name,
+      status: probe.status,
+      reason: probe.reason,
+    }));
+
+    const body = JSON.stringify({ probes: results, count: results.length });
+    res.setHeader('Content-Type', 'application/json');
+    res.end(body);
   }
 }
