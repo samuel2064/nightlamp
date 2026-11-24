@@ -497,6 +497,7 @@ const { runPostgresMigrations } = await import('../db/migrations/postgres-runner
             const sqliteCols = mainIndexColumns.get(table)?.get(sqliteIdx) ?? [];
 
             // Get Postgres indexes for this table with their column definitions from pg_index
+            // Order by column count asc (single-column first), then by index name for exact-match preference
             const pgIdxsResult = await pool.query(`
               SELECT x.indexrelid::regclass::text as indexname,
                      pg_get_indexdef(x.indexrelid) as indexdef,
@@ -505,11 +506,15 @@ const { runPostgresMigrations } = await import('../db/migrations/postgres-runner
                 JOIN pg_catalog.pg_class c ON c.oid = x.indrelid
                 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
                WHERE n.nspname = $1 AND c.relname = $2
+               ORDER BY array_length(regexp_split_to_array(pg_get_indexdef(x.indexrelid), ','), 1), x.indexrelid::regclass::text
              `, [testSchema, table]);
 
             // Check if there's a covering Postgres index
             let covered = false;
             let matchedPgIdx = '';
+            let coveringCount = 0;
+            let exactMatchPgIdx = '';
+            let exactColumnMatchPgIdx = '';
             for (const pgIdx of pgIdxsResult.rows) {
               const def = pgIdx.indexdef;
               const match = def.match(/\(([^)]+)\)/);
@@ -519,10 +524,29 @@ const { runPostgresMigrations } = await import('../db/migrations/postgres-runner
               // Compare columns in SQLite index order (not alphabetically sorted)
               // Allow leading-column coverage: SQLite columns must be a prefix of Postgres columns
               if (pgCols.length >= sqliteCols.length && pgCols.slice(0, sqliteCols.length).every((col, i) => col === sqliteCols[i])) {
-                covered = true;
-                matchedPgIdx = pgIdx.indexname;
-                break;
+                coveringCount++;
+                // Prefer exact name match
+                if (pgIdx.indexname === sqliteIdx) {
+                  exactMatchPgIdx = pgIdx.indexname;
+                }
+                // Prefer exact column list match (same columns in same order)
+                if (pgCols.length === sqliteCols.length && pgCols.every((col, i) => col === sqliteCols[i])) {
+                  exactColumnMatchPgIdx = pgIdx.indexname;
+                }
+                // First covering match as fallback
+                if (!covered) {
+                  covered = true;
+                  matchedPgIdx = pgIdx.indexname;
+                }
               }
+            }
+            // Fail loudly if a SQLite index is covered by more than one Postgres index
+            assert.ok(coveringCount <= 1, `SQLite index ${sqliteIdx} on ${table} is covered by ${coveringCount} Postgres indexes; must be exactly 1`);
+            // Prefer exact name match, then exact column match, then first covering match
+            if (exactMatchPgIdx) {
+              matchedPgIdx = exactMatchPgIdx;
+            } else if (exactColumnMatchPgIdx) {
+              matchedPgIdx = exactColumnMatchPgIdx;
             }
             assert.ok(covered, `SQLite index ${sqliteIdx} on ${table} must have a covering Postgres index with matching columns (SQLite: [${sqliteCols.join(', ')}])`);
 
@@ -596,6 +620,7 @@ SELECT count(*)
           'sqlite_autoindex_perf_regressions_1 vs perf_regressions_pkey on perf_regressions',
           'sqlite_autoindex_perf_runs_1 vs perf_runs_pkey on perf_runs',
           'sqlite_autoindex_playbook_edges_1 vs playbook_edges_pkey on playbook_edges',
+          'sqlite_autoindex_playbook_entries_1 vs playbook_entries_pkey on playbook_entries',
           'sqlite_autoindex_playbook_executions_1 vs playbook_executions_pkey on playbook_executions',
           'sqlite_autoindex_playbook_nodes_1 vs playbook_nodes_pkey on playbook_nodes',
           'sqlite_autoindex_playbook_versions_1 vs playbook_versions_pkey on playbook_versions',
