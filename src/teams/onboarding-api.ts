@@ -285,9 +285,22 @@ export class OnboardingApi {
         [workspaceId, newTeamId]
       );
 
+      // The membership row is what the tenant scope helpers and the role gates
+      // read: without it a fresh customer owns nothing usable (NOC-320). The
+      // write is idempotent by construction, so a repeated completion cannot
+      // create a second membership or fail on UNIQUE(team_id, user_id).
       this.db.run(
-        `UPDATE onboarding_sessions SET completed_at = datetime('now'), created_team_id = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ? AND ${scope.clause}`,
-        [newTeamId, sessionId, userId, ...scope.params]
+        `INSERT OR IGNORE INTO memberships (id, team_id, user_id, role, invited_at) VALUES (?, ?, ?, 'owner', datetime('now'))`,
+        [uuidv4(), newTeamId, userId]
+      );
+
+      // The completion also binds the session to the team it created: the
+      // principal now resolves that team from its membership, so the personal
+      // session row has to carry the same team scope to stay readable. The
+      // completion marker, created_team_id and updated_at are unchanged.
+      this.db.run(
+        `UPDATE onboarding_sessions SET completed_at = datetime('now'), created_team_id = ?, team_id = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ? AND ${scope.clause}`,
+        [newTeamId, newTeamId, sessionId, userId, ...scope.params]
       );
 
       res.end(JSON.stringify({
