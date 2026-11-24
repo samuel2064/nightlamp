@@ -2,11 +2,16 @@
   "name": "nightlamp-frontend",
   "version": "0.1.0",
   "private": true,
+  "//": "npm test runs the focused suite on the Node runtime declared in engines: the suite uses the native TypeScript type stripping that is unflagged from Node 22.18. CI and the release workflow pin the same runtime.",
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test": "node --import ./test/support/ts-resolver.mjs --test \"test/**/*.test.ts\""
   },
   "dependencies": {
     "@clerk/nextjs": "^6.0.0",

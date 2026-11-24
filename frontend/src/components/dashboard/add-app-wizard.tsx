@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { X, Check, Loader2, AlertCircle, Wifi, Server, Globe, Database, Github, Zap } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -13,6 +13,7 @@ import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { trpc } from '@/lib/trpc'
+import { useUnsavedWorkReporter } from '@/components/feedback/survey-provider'
 
 // TODO: Backend API for creating monitors is not yet implemented.
 // When available, add a `create` mutation to monitorsRouter and backend service.
@@ -90,6 +91,18 @@ export function AddAppWizard({ onClose, onSuccess }: { onClose: () => void; onSu
   const [errors, setErrors] = useState<Partial<Record<keyof WizardData, string>>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [testResult, setTestResult] = useState<'idle' | 'running' | 'success' | 'error'>('idle')
+  const reportUnsavedWork = useUnsavedWorkReporter()
+
+  // Unsaved wizard work suppresses automatic survey prompts: a prompt must
+  // never interrupt a founder halfway through setting up a monitor.
+  const hasUnsavedWork = JSON.stringify(data) !== JSON.stringify(INITIAL_DATA)
+  useEffect(() => {
+    reportUnsavedWork(hasUnsavedWork)
+  }, [hasUnsavedWork, reportUnsavedWork])
+
+  useEffect(() => {
+    return () => reportUnsavedWork(false)
+  }, [reportUnsavedWork])
 
   // TODO: Replace with real tRPC mutation when backend supports monitor creation
   // const createMonitor = trpc.monitors.create.useMutation({

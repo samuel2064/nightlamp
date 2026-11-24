@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { router, protectedProcedure } from '../trpc'
+import { router, protectedProcedure, tokenProcedure } from '../trpc'
 import { createBackendClient } from '../services/backend'
 
 export const incidentsRouter = router({
@@ -12,9 +12,13 @@ export const incidentsRouter = router({
     }).optional())
     .query(({ ctx, input }) => createBackendClient(ctx.token).events.list(input)),
 
-  acknowledge: protectedProcedure
-    .input(z.object({ id: z.string() }))
-    .mutation(async ({ input }) => {
-      return { success: true, id: input.id }
+  // Durable acknowledgement: the protected backend persists acknowledged = 1
+  // tenant-scoped. The router reports exactly what the backend confirms - it
+  // never synthesizes a success. A missing event answers 404 and a cross-tenant
+  // id answers 403/404 from the backend.
+  acknowledge: tokenProcedure
+    .input(z.object({ id: z.string().min(1) }).strict())
+    .mutation(async ({ ctx, input }) => {
+      return createBackendClient(ctx.token).events.acknowledge(input.id)
     }),
 })
