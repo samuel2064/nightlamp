@@ -4,6 +4,7 @@ import { createDatabase } from '../db/schema';
 import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
 import { createTestToken, TEST_CLERK_USER_ID, TEST_LOCAL_USER_ID } from './setup';
+import { mockHostResolver } from './support/dns-mock';
 
 describe('Notification Service', function () {
   let db: Database;
@@ -155,29 +156,38 @@ describe('Notification Service', function () {
   });
 
   describe('Delivery Retry', function () {
-    let server: http.Server;
+    let originalFetch: typeof fetch;
     let webhookUrl: string;
     let responseStatus = 200;
     let requestCount = 0;
 
-    before(async function () {
-      server = http.createServer((_req, res) => {
-        requestCount++;
-        res.writeHead(responseStatus, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: responseStatus < 400 }));
-      });
-      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-      const address = server.address() as any;
-      webhookUrl = `http://127.0.0.1:${address.port}/webhook`;
+    before(function () {
+      originalFetch = globalThis.fetch;
+      webhookUrl = 'http://example.com/webhook';
     });
 
-    after(async function () {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+    after(function () {
+      globalThis.fetch = originalFetch;
     });
 
     beforeEach(function () {
       responseStatus = 200;
       requestCount = 0;
+      globalThis.fetch = async (input: any, init?: any) => {
+        requestCount++;
+        const url = typeof input === 'string' ? input : input?.url;
+        if (url === webhookUrl) {
+          return new Response(JSON.stringify({ ok: responseStatus < 400 }), {
+            status: responseStatus,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return originalFetch(input, init);
+      };
+    });
+
+    afterEach(function () {
+      globalThis.fetch = originalFetch;
     });
 
     it('should succeed on first attempt for valid channel', async function () {
@@ -190,7 +200,7 @@ describe('Notification Service', function () {
       );
       const result = await deliverWithRetry(db, 'slack', config, {
         title: 'Test', description: '', failureType: 'test', severity: 'info', detectedAt: new Date().toISOString(),
-      }, 1);
+      }, 1, mockHostResolver);
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.errorMessage, null);
       assert.strictEqual(result.attempts, 1);
@@ -208,7 +218,7 @@ describe('Notification Service', function () {
       );
       const result = await deliverWithRetry(db, 'slack', config, {
         title: 'Test', description: '', failureType: 'test', severity: 'info', detectedAt: new Date().toISOString(),
-      }, 1);
+      }, 1, mockHostResolver);
       assert.strictEqual(result.success, false);
       assert.ok(result.errorMessage);
       assert.strictEqual(result.attempts, 1);
@@ -232,7 +242,7 @@ describe('Notification Service', function () {
       );
       const result = await processNotification(db, channelId, 'slack', config, {
         title: 'Test', description: 'desc', failureType: 'rate_limited', severity: 'warning', detectedAt: new Date().toISOString(), checkId: 'c1',
-      }, 5);
+      }, 5, mockHostResolver);
       assert.strictEqual(result.sent, false);
       assert.strictEqual(result.skipped, 'rate_limited');
       assert.ok(result.logId);
@@ -248,7 +258,7 @@ describe('Notification Service', function () {
       );
       const result = await processNotification(db, channelId, 'slack', config, {
         title: 'Log Test', description: 'desc', failureType: 'broken_webhook', severity: 'critical', detectedAt: new Date().toISOString(), checkId: 'c2',
-      }, 5);
+      }, 5, mockHostResolver);
       assert.ok(result.logId);
       const logResult = db.exec('SELECT status FROM alert_log WHERE id = ?', [result.logId]);
       assert.ok(logResult.length > 0);
@@ -313,7 +323,7 @@ describe('Notification Service', function () {
 
     beforeEach(function (done) {
       const { startApiServer } = require('../api/server');
-      server = startApiServer(db, { port: 0 });
+      server = startApiServer(db, { port: 0, hostResolver: mockHostResolver });
       server.on('listening', () => {
         port = server.address().port;
         done();
@@ -377,7 +387,7 @@ describe('Notification Service', function () {
     it('POST /api/notifications/channels should create email-smtp channel', async function () {
       const result = await fetchFromApi('/api/notifications/channels', {
         method: 'POST',
-        body: { name: 'Dev Email', type: 'email-smtp', config: { smtpHost: 'smtp.example.com', smtpPort: 587, smtpUser: 'u', smtpPass: 'p', fromAddress: 'a@b.com', toAddresses: ['c@d.com'] } },
+        body: { name: 'Dev Email', type: 'email-smtp', config: { smtpHost: 'example.com', smtpPort: 587, smtpUser: 'u', smtpPass: 'p', fromAddress: 'a@b.com', toAddresses: ['c@d.com'] } },
       });
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.type, 'email-smtp');
@@ -386,7 +396,7 @@ describe('Notification Service', function () {
     it('POST /api/notifications/channels should create in-app-websocket channel', async function () {
       const result = await fetchFromApi('/api/notifications/channels', {
         method: 'POST',
-        body: { name: 'Real-time WS', type: 'in-app-websocket', config: { url: 'http://localhost:9090/notify', reconnect: true } },
+        body: { name: 'Real-time WS', type: 'in-app-websocket', config: { url: 'https://example.com/notify', reconnect: true } },
       });
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.type, 'in-app-websocket');

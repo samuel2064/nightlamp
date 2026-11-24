@@ -19,13 +19,24 @@ import { OnboardingApi } from '../teams/onboarding-api';
 import { PlaybookBuilderApi } from '../playbook/playbook-builder-api';
 import { NotificationApi } from '../notifications';
 import { ReportsApi } from '../reports';
+import { AppsApi, AppsApiDeps } from '../apps';
+import { AnalyticsApi } from '../analytics';
+import {
+  assertTargetAllowed,
+  runEndpointCheck,
+  type EndpointCheckConfig,
+  type EndpointCheckDeps,
+  type EndpointCheckResult,
+  type EndpointCheckType,
+} from '../engine/endpoint-check';
+import { defaultHostResolver, defaultTargetPolicy, HostResolver } from '../engine/outbound-safety';
 import { getPolicyForSeverity, getOnCallAt, ESCALATION_POLICIES, buildSelfMonitorDashboard, computeErrorBudgetStatus, SELF_MONITOR_DEFAULTS } from '../alerting';
 import { nodeHTTPRequestHandler } from '@trpc/server/adapters/node-http';
 import { handleSSERequest } from './sse';
 import { createPlaybookEngine } from '../playbook/engine';
 import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
 import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership, authenticateRequestAsync, requireRole } from './auth';
-import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant } from './tenant';
+import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant, rowBelongsToScope, scopedTenantFilter, requireChannelOwnership } from './tenant';
 import { requireTenantScope } from './guards';
 import { getDatabaseConfig, getBootId } from '../db';
 
@@ -34,6 +45,19 @@ export interface ApiConfig {
   stripeClient?: StripeClient;
   stripeWebhookSecret?: string;
   baseUrl?: string;
+  /**
+   * Outbound dependencies for the monitored application check path.
+   *
+   * Provided by the tests to inject a resolver and a policy that permit the
+   * local targets a closed suite uses, so the suite stays hermetic and never
+   * reaches the network. Production leaves it unset and takes the real policy.
+   */
+  appsApiDeps?: AppsApiDeps;
+  /**
+   * Host resolver for outbound DNS validation. Tests inject a mock resolver
+   * to avoid live DNS lookups and keep the suite hermetic.
+   */
+  hostResolver?: HostResolver;
 }
 
 interface EndpointRule {
@@ -97,6 +121,29 @@ const AVAILABLE_ROUTES: string[] = [
 function normalizePath(path: string): string {
   const normalized = path.replace(/\/+$/, '');
   return normalized || '/';
+}
+
+/**
+ * Outbound dependencies for the monitored application check path.
+ *
+ * Both the safety policy and the resolver are taken from
+ * `src/engine/outbound-safety.ts` and `src/engine/endpoint-check.ts`, so every
+ * client-controlled destination goes through the same private, loopback,
+ * link-local and metadata rejection as the rest of the outbound surface. The
+ * resolver is injected by the tests, which keeps the suite hermetic (NOC-303
+ * blocker 10).
+ */
+function buildAppsApiDeps(): AppsApiDeps {
+  const endpointDeps: EndpointCheckDeps = {
+    resolver: defaultHostResolver,
+    policy: defaultTargetPolicy,
+  };
+
+  return {
+    assertTargetAllowed: (target: string, checkType: EndpointCheckType) => assertTargetAllowed(target, checkType),
+    runCheck: (config: EndpointCheckConfig) => runEndpointCheck(config),
+    endpointDeps,
+  };
 }
 
 const TEAM_ADMIN_ROLES: TeamRole[] = ['owner', 'admin'];
@@ -207,8 +254,10 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
   const teamApi = new TeamApi(db);
   const onboardingApi = new OnboardingApi(db);
   const playbookBuilderApi = new PlaybookBuilderApi(db);
-  const notificationApi = new NotificationApi(db);
+  const notificationApi = new NotificationApi(db, config.hostResolver ?? defaultHostResolver);
   const reportsApi = new ReportsApi(db);
+  const appsApi = new AppsApi(db, config.appsApiDeps ?? buildAppsApiDeps());
+  const analyticsApi = new AnalyticsApi(db);
   const playbookEngine = createPlaybookEngine(db);
   const latencyTracker = new ApiLatencyTracker();
   const hotCache = new ApiCache(15_000);
@@ -291,6 +340,19 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
       const scope = auth ? `${auth.userId}:${auth.teamId || 'personal'}` : 'public';
       const teamId = auth ? auth.teamId : null;
+      const userId = auth ? auth.userId : '';
+
+      // The monitored application registry owns its own tenant scoping, so it
+      // runs before the generic route chain and never falls through to it.
+      if (auth && appsApi.handle(req, res, auth)) {
+        return;
+      }
+
+      // Analytics ingestion stays reachable for anonymous callers, which the
+      // handle method decides per event inside its own contract validation.
+      if (analyticsApi.handle(req, res, auth)) {
+        return;
+      }
 
       if (path === '/api/performance/latency' || path === '/api/performance/latency/') {
         res.end(JSON.stringify({ latency: latencyTracker.summary() }));
@@ -723,22 +785,22 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
                 res.end(JSON.stringify({ error: 'type must be slack, email, or pagerduty' }));
                 return;
               }
-              const id = uuidv4();
-              db.run(
-                `INSERT INTO alert_channels (id, name, type, config, team_id) VALUES (?, ?, ?, ?, ?)`,
-                [id, name, type, JSON.stringify(config), teamId]
-              );
-              res.end(JSON.stringify({ success: true, id, name, type }));
-            } catch (err: any) {
-              res.writeHead(400);
-              res.end(JSON.stringify({ error: err.message }));
-            }
-          });
-          return;
+const id = uuidv4();
+          db.run(
+            `INSERT INTO alert_channels (id, name, type, config, team_id, owner_id) VALUES (?, ?, ?, ?, ?, ?)`,
+            [id, name, type, JSON.stringify(config), teamId, auth?.userId ?? null]
+          );
+          res.end(JSON.stringify({ success: true, id, name, type }));
+        } catch (err: any) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: err.message }));
         }
-        if (!requireTenantScope(res, teamId)) {
-          return;
-        }
+      });
+      return;
+    }
+    if (!requireTenantScope(res, teamId)) {
+      return;
+    }
         const tenantScope = tenantOwnedFilter('team_id', teamId);
         const result = db.exec(`SELECT id, name, type, enabled, team_id, created_at FROM alert_channels WHERE ${tenantScope.clause} ORDER BY created_at DESC`, tenantScope.params);
         const channels = result.length > 0 ? result[0].values.map((row: any) => ({
@@ -750,10 +812,16 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
       if (path.startsWith('/api/alerting/channels/') && req.method === 'DELETE') {
         const channelId = path.split('/').pop();
-        if (!channelId) { res.writeHead(400); res.end(JSON.stringify({ error: 'Channel ID required' })); return; }
-        if (teamId === null || !rowBelongsToTenant(db, 'alert_channels', channelId, teamId)) {
-          res.writeHead(404);
-          res.end(JSON.stringify({ error: 'Channel not found' }));
+        if (!channelId) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'Channel ID required' }));
+          return;
+        }
+        // Shared referenced-channel delete guard: scope ownership + monitored app reference check
+        const guard = requireChannelOwnership(db, channelId, teamId, userId);
+        if (guard) {
+          res.writeHead(guard.status);
+          res.end(JSON.stringify({ error: guard.error, code: guard.code }));
           return;
         }
         db.run('DELETE FROM alert_rules WHERE channel_id = ?', [channelId]);
@@ -781,8 +849,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
               return;
             }
             updates.push("updated_at = datetime('now')");
-            const tenantScope = tenantOwnedFilter('team_id', teamId);
-            db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${tenantScope.clause}`, [...params, channelId, ...tenantScope.params]);
+            const channelScope = scopedTenantFilter('alert_channels', teamId, userId);
+            db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${channelScope.clause}`, [...params, channelId, ...channelScope.params]);
             if (db.getRowsModified() === 0) {
               res.writeHead(404);
               res.end(JSON.stringify({ error: 'Channel not found' }));
@@ -809,7 +877,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
                 res.end(JSON.stringify({ error: 'name, channelId, and failureTypes are required' }));
                 return;
               }
-              if (teamId === null || !rowBelongsToTenant(db, 'alert_channels', channelId, teamId)) {
+              if (!rowBelongsToScope(db, 'alert_channels', channelId, teamId, userId)) {
                 res.writeHead(404);
                 res.end(JSON.stringify({ error: 'Channel not found' }));
                 return;
@@ -877,7 +945,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         req.on('end', () => {
           try {
             const { name, channelId, failureTypes, minSeverity, enabled } = JSON.parse(body);
-            if (channelId !== undefined && (teamId === null || !rowBelongsToTenant(db, 'alert_channels', channelId, teamId))) {
+            if (channelId !== undefined && !rowBelongsToScope(db, 'alert_channels', channelId, teamId, userId)) {
               res.writeHead(404);
               res.end(JSON.stringify({ error: 'Channel not found' }));
               return;
@@ -1319,7 +1387,6 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
         const status = parsedUrl.searchParams.get('status');
         const severity = parsedUrl.searchParams.get('severity');
-
         const eventScope = tenantOwnedFilter('fe.team_id', teamId);
         const checkScope = tenantOwnedFilter('c.team_id', teamId);
         let sql = `SELECT fe.id, fe.check_id, fe.failure_type, fe.severity, fe.title, fe.description,

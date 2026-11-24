@@ -148,9 +148,10 @@ async function createPostgresConnection(databaseUrl: string): Promise<DatabaseCo
 }
 
 async function runPostgresMigrations(pool: any): Promise<void> {
-  // Import and run the postgres migrations in order
-  const { up: up009 } = await import('./migrations/009-postgres-setup');
-  await up009(pool);
+  // Import and run the postgres migration ledger (NOC-303)
+  const { runPostgresMigrations: runLedger } = await import('./migrations/postgres-runner');
+  await runLedger(pool);
+  // Import and run the plan-tier extension migration (NOC-326)
   const { up: up010 } = await import('./migrations/010-extend-plan-tier-check');
   await up010(pool);
 }

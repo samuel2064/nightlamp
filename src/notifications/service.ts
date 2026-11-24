@@ -1,6 +1,6 @@
 import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
-import { ChannelType, ChannelConfig, sendNotification, NotificationPayload } from '../alerting/channels';
+import { ChannelType, ChannelConfig, sendNotification, NotificationPayload, HostResolver } from '../alerting/channels';
 
 export const SEVERITY_ORDER: Record<string, number> = { critical: 3, warning: 2, info: 1 };
 
@@ -155,12 +155,21 @@ export function checkDedup(db: Database, channelId: string, fingerprint: string)
   return { suppressed: false, suppressUntil: null };
 }
 
+const DEDUP_MINUTE_LIMIT = 1440;
+
+function normalizeDedupMinutes(durationMinutes: number): number {
+  const parsed = typeof durationMinutes === 'number' ? durationMinutes : Number(durationMinutes);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.min(Math.max(Math.trunc(parsed), 0), DEDUP_MINUTE_LIMIT);
+}
+
 export function setDedupSuppression(db: Database, channelId: string, fingerprint: string, durationMinutes: number): void {
+  const minutes = normalizeDedupMinutes(durationMinutes);
   db.run(
     `UPDATE notification_deduplication
-     SET suppress_until = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+${durationMinutes} minutes')
+     SET suppress_until = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+' || CAST(? AS TEXT) || ' minutes')
      WHERE channel_id = ? AND fingerprint = ?`,
-    [channelId, fingerprint]
+    [minutes, channelId, fingerprint]
   );
 }
 
@@ -173,13 +182,14 @@ export async function deliverWithRetry(
   channelType: ChannelType,
   channelConfig: ChannelConfig,
   payload: NotificationPayload,
-  maxRetries: number = 3
+  maxRetries: number = 3,
+  resolver?: HostResolver
 ): Promise<{ success: boolean; status: string; errorMessage: string | null; attempts: number }> {
   let lastError: string | null = null;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      await sendNotification(channelType, channelConfig, payload);
+      await sendNotification(channelType, channelConfig, payload, resolver);
       return { success: true, status: 'sent', errorMessage: null, attempts: attempt };
     } catch (err: any) {
       lastError = err.message;
@@ -199,7 +209,8 @@ export async function processNotification(
   channelType: ChannelType,
   channelConfig: ChannelConfig,
   payload: NotificationPayload,
-  dedupMinutes: number = 5
+  dedupMinutes: number = 5,
+  resolver?: HostResolver
 ): Promise<{ sent: boolean; logId: string | null; skipped: string | null }> {
   const fingerprint = getDedupFingerprint(payload);
   const dedupResult = checkDedup(db, channelId, fingerprint);
@@ -216,7 +227,7 @@ export async function processNotification(
 
   const logId = logDelivery(db, null, channelId, payload.eventId || null, payload.failureType, payload.severity, channelType, 'pending', null);
 
-  const result = await deliverWithRetry(db, channelType, channelConfig, payload);
+  const result = await deliverWithRetry(db, channelType, channelConfig, payload, 3, resolver);
 
   if (result.success) {
     db.run(
@@ -242,11 +253,12 @@ export async function sendDirectNotification(
   channelId: string,
   channelType: ChannelType,
   channelConfig: ChannelConfig,
-  payload: NotificationPayload
+  payload: NotificationPayload,
+  resolver?: HostResolver
 ): Promise<{ success: boolean; logId: string }> {
   const logId = logDelivery(db, null, channelId, payload.eventId || null, payload.failureType, payload.severity, channelType, 'pending', null);
 
-  const result = await deliverWithRetry(db, channelType, channelConfig, payload);
+  const result = await deliverWithRetry(db, channelType, channelConfig, payload, 3, resolver);
 
   if (result.success) {
     db.run(

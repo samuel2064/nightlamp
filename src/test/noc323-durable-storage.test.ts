@@ -150,7 +150,6 @@ describe('NOC-323 durable storage', () => {
       await assert.rejects(
         () => createDatabase(dbPath),
         (err: Error) => {
-          // The error should mention the file path or at least indicate a corrupt database
           assert.ok(
             err.message.includes(dbPath) || /database disk image is malformed|file is not a database/i.test(err.message),
             `the error must indicate a corrupt database or name the file: ${err.message}`
@@ -259,9 +258,11 @@ describe('NOC-323 durable storage', () => {
     const originalEnv = process.env.NODE_ENV;
     const originalDbPath = process.env.DB_PATH;
     const originalPersistentMountPath = process.env.PERSISTENT_MOUNT_PATH;
+    const originalDatabaseUrl = process.env.DATABASE_URL;
 
     beforeEach(() => {
       process.env.NODE_ENV = 'production';
+      delete process.env.DATABASE_URL;
     });
 
     afterEach(() => {
@@ -275,6 +276,11 @@ describe('NOC-323 durable storage', () => {
         process.env.PERSISTENT_MOUNT_PATH = originalPersistentMountPath;
       } else {
         delete process.env.PERSISTENT_MOUNT_PATH;
+      }
+      if (originalDatabaseUrl) {
+        process.env.DATABASE_URL = originalDatabaseUrl;
+      } else {
+        delete process.env.DATABASE_URL;
       }
     });
 
@@ -376,71 +382,332 @@ describe('NOC-323 durable storage', () => {
     });
   });
 
-  describe('Postgres schema parity', () => {
-    it('Postgres migration covers all tables and columns from main schema', async () => {
-      // Read the main schema from schema.ts by creating a database
+  describe('Postgres schema parity (criterion 4 lane)', () => {
+    const pgUrl = process.env.DATABASE_URL;
+    const skipIfNoPostgres = pgUrl ? it : it.skip;
+
+    // Read the main schema from schema.ts by creating a database
+    let mainTableNames: string[];
+    let mainColumns: Map<string, string[]>;
+    let mainIndexes: Map<string, Set<string>>;
+    let mainIndexColumns: Map<string, Map<string, string[]>>;
+
+    before(async () => {
       const mainDb = await createDatabase();
       const mainTables = mainDb.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
-      const mainTableNames = mainTables[0].values.map((r: any) => r[0]).sort();
+      mainTableNames = mainTables[0].values.map((r: any) => r[0]).sort();
 
-      // Get column info for each main table
-      const mainTableColumns: Record<string, string[]> = {};
+      mainColumns = new Map<string, string[]>();
       for (const table of mainTableNames) {
         const cols = mainDb.exec(`PRAGMA table_info(${table})`);
         if (cols.length > 0 && cols[0].values.length > 0) {
-          mainTableColumns[table] = cols[0].values.map((r: any) => r[1]).sort();
+          mainColumns.set(table, cols[0].values.map((row: any) => row[1]).sort());
+        }
+      }
+
+      mainIndexes = new Map<string, Set<string>>();
+      mainIndexColumns = new Map<string, Map<string, string[]>>();
+      for (const table of mainTableNames) {
+        const idxs = mainDb.exec(`PRAGMA index_list(${table})`);
+        if (idxs.length > 0 && idxs[0].values.length > 0) {
+          const indexNames = new Set<string>();
+          const idxColsMap = new Map<string, string[]>();
+          for (const row of idxs[0].values) {
+            const idxName = row[1] as string;
+            indexNames.add(idxName);
+            const idxInfo = mainDb.exec(`PRAGMA index_info(${idxName})`);
+            if (idxInfo.length > 0 && idxInfo[0].values.length > 0) {
+              const cols = idxInfo[0].values.map((r: any) => r[2] as string);
+              idxColsMap.set(idxName, cols);
+            }
+          }
+          mainIndexes.set(table, indexNames);
+          mainIndexColumns.set(table, idxColsMap);
         }
       }
       mainDb.close();
+    });
 
-      // Read the Postgres migration file and parse CREATE TABLE statements
-      const fs = require('fs');
-      const path = require('path');
-      const migrationPath = path.join(__dirname, '..', 'db', 'migrations', '009-postgres-setup.ts');
-      const migrationContent = fs.readFileSync(migrationPath, 'utf8');
+    skipIfNoPostgres('runPostgresMigrations on fresh database produces 42 tables matching SQLite', async () => {
+      const { Pool } = await import('pg');
+const { runPostgresMigrations } = await import('../db/migrations/postgres-runner');
 
-      // Extract table names and column definitions from Postgres migration
-      const pgTableRegex = /CREATE TABLE IF NOT EXISTS\s+(\w+)\s*\(([\s\S]*?)\);/g;
-      const pgTables: Record<string, string[]> = {};
-      let match;
-      while ((match = pgTableRegex.exec(migrationContent)) !== null) {
-        const tableName = match[1];
-        const columnDefs = match[2];
-        // Parse column names from definitions (first word before space or type)
-        const columnLines = columnDefs.split(',').map((line: string) => line.trim());
-        const columns: string[] = [];
-        for (const line of columnLines) {
-          // Skip constraints (lines starting with FOREIGN KEY, PRIMARY KEY, CHECK, UNIQUE, INDEX)
-          if (line.match(/^(FOREIGN KEY|PRIMARY KEY|CHECK|UNIQUE|INDEX)\b/)) continue;
-          // Extract column name (first identifier)
-          const colMatch = line.match(/^(\w+)/);
-          if (colMatch) {
-            columns.push(colMatch[1]);
+      // Use a dedicated test schema to isolate from unrelated public indexes
+      const testSchema = `test_parity_${Date.now()}`;
+      const pool = new Pool({ connectionString: pgUrl });
+      try {
+        await pool.query(`CREATE SCHEMA ${testSchema}`);
+        await pool.query(`SET search_path TO ${testSchema}, public`);
+
+        await runPostgresMigrations(pool);
+
+        // Verify table count and names
+        const tablesResult = await pool.query(`
+          SELECT table_name FROM information_schema.tables
+          WHERE table_schema = $1 AND table_type = 'BASE TABLE'
+          ORDER BY table_name
+        `, [testSchema]);
+        const pgTableNames = tablesResult.rows.map(r => r.table_name).sort();
+
+        assert.strictEqual(pgTableNames.length, 42, `Expected 42 Postgres tables, got ${pgTableNames.length}: ${pgTableNames.join(', ')}`);
+
+        // Verify table sets match
+        assert.deepStrictEqual(pgTableNames, mainTableNames, 'Postgres and SQLite table sets must be identical');
+
+        // Verify column parity for all tables
+        for (const table of mainTableNames) {
+          const colsResult = await pool.query(`
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = $1 AND table_name = $2
+            ORDER BY column_name
+          `, [testSchema, table]);
+          const pgCols = colsResult.rows.map(r => r.column_name).sort();
+          const sqliteCols = (mainColumns.get(table) ?? []).filter(c => c !== 'rowid');
+          assert.deepStrictEqual(pgCols, sqliteCols, `Column mismatch for table ${table}`);
+        }
+
+        // Verify ledger rows
+        const ledgerResult = await pool.query(`
+          SELECT migration_id FROM schema_migrations ORDER BY applied_at
+        `);
+        const ledgerIds = ledgerResult.rows.map(r => r.migration_id);
+        assert.deepStrictEqual(ledgerIds, [
+          '009-postgres-setup',
+          '008-tenant-isolation',
+          '010-monitored-apps',
+          '011-analytics-events',
+          '012-personal-ownership'
+        ], 'Ledger must have 5 rows in runner order');
+
+// Verify index parity by reading actual index columns from both destinations
+        let sqliteExplicitIndexCount = 0;
+        let sqliteTotalIndexCount = 0;
+        let pgExplicitIndexCount = 0;
+        const nameDifferences: string[] = [];
+
+        for (const table of mainTableNames) {
+          const sqliteIdxNames = mainIndexes.get(table) ?? new Set();
+          for (const sqliteIdx of sqliteIdxNames) {
+            sqliteTotalIndexCount++;
+            const isExplicit = !sqliteIdx.startsWith('sqlite_autoindex_');
+            if (isExplicit) {
+              sqliteExplicitIndexCount++;
+            }
+
+            const sqliteCols = mainIndexColumns.get(table)?.get(sqliteIdx) ?? [];
+
+            // Get Postgres indexes for this table with their column definitions from pg_index
+            // Order by column count asc (single-column first), then by index name for exact-match preference
+            const pgIdxsResult = await pool.query(`
+              SELECT x.indexrelid::regclass::text as indexname,
+                     pg_get_indexdef(x.indexrelid) as indexdef,
+                     c.relname as table_name
+                FROM pg_catalog.pg_index x
+                JOIN pg_catalog.pg_class c ON c.oid = x.indrelid
+                JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname = $1 AND c.relname = $2
+               ORDER BY array_length(regexp_split_to_array(pg_get_indexdef(x.indexrelid), ','), 1), x.indexrelid::regclass::text
+             `, [testSchema, table]);
+
+            // Check if there's a covering Postgres index
+            let covered = false;
+            let matchedPgIdx = '';
+            let coveringCount = 0;
+            let exactMatchPgIdx = '';
+            let exactColumnMatchPgIdx = '';
+            for (const pgIdx of pgIdxsResult.rows) {
+              const def = pgIdx.indexdef;
+              const match = def.match(/\(([^)]+)\)/);
+              if (!match) continue;
+              // Strip ASC/DESC from Postgres columns for comparison
+              const pgCols = match[1].split(',').map(c => c.trim().replace(/"/g, '').replace(/\s+(ASC|DESC)$/i, ''));
+              // Compare columns in SQLite index order (not alphabetically sorted)
+              // Allow leading-column coverage: SQLite columns must be a prefix of Postgres columns
+              if (pgCols.length >= sqliteCols.length && pgCols.slice(0, sqliteCols.length).every((col, i) => col === sqliteCols[i])) {
+                coveringCount++;
+                // Prefer exact name match
+                if (pgIdx.indexname === sqliteIdx) {
+                  exactMatchPgIdx = pgIdx.indexname;
+                }
+                // Prefer exact column list match (same columns in same order)
+                if (pgCols.length === sqliteCols.length && pgCols.every((col, i) => col === sqliteCols[i])) {
+                  exactColumnMatchPgIdx = pgIdx.indexname;
+                }
+                // First covering match as fallback
+                if (!covered) {
+                  covered = true;
+                  matchedPgIdx = pgIdx.indexname;
+                }
+              }
+            }
+            // Apply exact-name or exact-column preference before checking for ambiguity
+            if (exactMatchPgIdx) {
+              matchedPgIdx = exactMatchPgIdx;
+            } else if (exactColumnMatchPgIdx) {
+              matchedPgIdx = exactColumnMatchPgIdx;
+            }
+            // Now check for ambiguity - only fail if there's no exact/column match and multiple covering indexes
+            assert.ok(covered, `SQLite index ${sqliteIdx} on ${table} must have a covering Postgres index with matching columns (SQLite: [${sqliteCols.join(', ')}])`);
+            if (!exactMatchPgIdx && !exactColumnMatchPgIdx) {
+              assert.ok(coveringCount <= 1, `SQLite index ${sqliteIdx} on ${table} is covered by ${coveringCount} Postgres indexes with no exact name/column match; must be exactly 1`);
+            }
+
+            // Record name difference if the names don't match the expected pattern
+            if (matchedPgIdx && matchedPgIdx !== sqliteIdx) {
+              nameDifferences.push(`${sqliteIdx} vs ${matchedPgIdx} on ${table}`);
+            }
+          }
+
+          // Count Postgres explicit indexes (skip PK and unique constraint indexes that map to autoindexes)
+          const pgIdxsAllResult = await pool.query(`
+            SELECT i.relname as indexname
+            FROM pg_index x
+            JOIN pg_class i ON i.oid = x.indexrelid
+            JOIN pg_class c ON c.oid = x.indrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = $1 AND c.relname = $2
+          `, [testSchema, table]);
+          for (const row of pgIdxsAllResult.rows) {
+            const idxName = row.indexname;
+            // Count as explicit if not a primary key or unique constraint autoindex
+            if (!idxName.endsWith('_pkey') && !idxName.endsWith('_key')) {
+              pgExplicitIndexCount++;
+            }
           }
         }
-        pgTables[tableName] = columns.sort();
+
+        // Assert exact index counts per CTO measurement
+        // SQLite: 56 explicit + 40 PK autoindexes + 10 unique autoindexes = 106 total
+        assert.strictEqual(sqliteExplicitIndexCount, 56, `Expected 56 SQLite explicit indexes (explicit indexes only, autoindexes skipped), got ${sqliteExplicitIndexCount}`);
+        assert.strictEqual(sqliteTotalIndexCount, 106, `Expected 106 SQLite total indexes (56 explicit + 40 PK autoindexes + 10 unique autoindexes), got ${sqliteTotalIndexCount}`);
+
+        // Count Postgres indexes
+        const pgAllIdxsResult = await pool.query(`
+SELECT count(*)
+            FROM pg_index x
+            JOIN pg_class i ON i.oid = x.indexrelid
+            JOIN pg_class c ON c.oid = x.indrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = $1
+        `, [testSchema]);
+        const pgTotalIndexes = parseInt(pgAllIdxsResult.rows[0].count);
+        assert.strictEqual(pgTotalIndexes, 105, `Expected 105 Postgres total indexes (40 PK + 11 unique + 54 plain), got ${pgTotalIndexes}`);
+
+        // Assert the exact 51 name differences as data (measured by CTO)
+        nameDifferences.sort();
+        const expectedNameDifferences = [
+          // 40 PK autoindexes: sqlite_autoindex_<table>_1 vs <table>_pkey
+          'sqlite_autoindex_alert_channels_1 vs alert_channels_pkey on alert_channels',
+          'sqlite_autoindex_alert_log_1 vs alert_log_pkey on alert_log',
+          'sqlite_autoindex_alert_rules_1 vs alert_rules_pkey on alert_rules',
+          'sqlite_autoindex_analytics_events_1 vs analytics_events_dedup_key_key on analytics_events',
+          'sqlite_autoindex_check_results_1 vs check_results_pkey on check_results',
+          'sqlite_autoindex_checks_1 vs checks_pkey on checks',
+          'sqlite_autoindex_customers_1 vs customers_pkey on customers',
+          'sqlite_autoindex_custom_playbooks_1 vs custom_playbooks_pkey on custom_playbooks',
+          'sqlite_autoindex_dependencies_1 vs dependencies_pkey on dependencies',
+          'sqlite_autoindex_dependency_updates_1 vs dependency_updates_pkey on dependency_updates',
+          'sqlite_autoindex_failure_events_1 vs failure_events_pkey on failure_events',
+          'sqlite_autoindex_feedback_responses_1 vs feedback_responses_dedup_key_key on feedback_responses',
+          'sqlite_autoindex_health_snapshots_1 vs health_snapshots_pkey on health_snapshots',
+          'sqlite_autoindex_invitations_1 vs invitations_pkey on invitations',
+          'sqlite_autoindex_leads_1 vs leads_pkey on leads',
+          'sqlite_autoindex_memberships_1 vs memberships_pkey on memberships',
+          'sqlite_autoindex_monitored_apps_1 vs monitored_apps_pkey on monitored_apps',
+          'sqlite_autoindex_notification_deduplication_1 vs notification_deduplication_pkey on notification_deduplication',
+          'sqlite_autoindex_notification_rate_limits_1 vs notification_rate_limits_pkey on notification_rate_limits',
+          'sqlite_autoindex_onboarding_sessions_1 vs onboarding_sessions_pkey on onboarding_sessions',
+          'sqlite_autoindex_perf_diagnoses_1 vs perf_diagnoses_pkey on perf_diagnoses',
+          'sqlite_autoindex_perf_metrics_1 vs perf_metrics_pkey on perf_metrics',
+          'sqlite_autoindex_perf_regressions_1 vs perf_regressions_pkey on perf_regressions',
+          'sqlite_autoindex_perf_runs_1 vs perf_runs_pkey on perf_runs',
+          'sqlite_autoindex_playbook_edges_1 vs playbook_edges_pkey on playbook_edges',
+          'sqlite_autoindex_playbook_entries_1 vs playbook_entries_pkey on playbook_entries',
+          'sqlite_autoindex_playbook_executions_1 vs playbook_executions_pkey on playbook_executions',
+          'sqlite_autoindex_playbook_nodes_1 vs playbook_nodes_pkey on playbook_nodes',
+          'sqlite_autoindex_playbook_versions_1 vs playbook_versions_pkey on playbook_versions',
+          'sqlite_autoindex_remediation_actions_1 vs remediation_actions_pkey on remediation_actions',
+          'sqlite_autoindex_remediation_log_1 vs remediation_log_pkey on remediation_log',
+          'sqlite_autoindex_remediation_policies_1 vs remediation_policies_tenant_pkey on remediation_policies',
+          'sqlite_autoindex_remediation_runs_1 vs remediation_runs_pkey on remediation_runs',
+          'sqlite_autoindex_schema_migrations_1 vs schema_migrations_pkey on schema_migrations',
+          'sqlite_autoindex_subscriptions_1 vs subscriptions_pkey on subscriptions',
+          'sqlite_autoindex_team_workspaces_1 vs team_workspaces_pkey on team_workspaces',
+          'sqlite_autoindex_teams_1 vs teams_pkey on teams',
+          'sqlite_autoindex_usage_records_1 vs usage_records_pkey on usage_records',
+          'sqlite_autoindex_users_1 vs users_pkey on users',
+          'sqlite_autoindex_webhook_events_1 vs webhook_events_pkey on webhook_events',
+          'sqlite_autoindex_x_scheduled_posts_1 vs x_scheduled_posts_pkey on x_scheduled_posts',
+          'sqlite_autoindex_x_tokens_1 vs x_tokens_pkey on x_tokens',
+          // 10 unique autoindexes: sqlite_autoindex_<table>_N vs <table>_<constraint>_key
+          'sqlite_autoindex_customers_2 vs customers_stripe_customer_id_key on customers',
+          'sqlite_autoindex_invitations_2 vs invitations_token_key on invitations',
+          'sqlite_autoindex_memberships_2 vs memberships_team_id_user_id_key on memberships',
+          'sqlite_autoindex_remediation_policies_2 vs remediation_policies_tenant_team_id_failure_type_key on remediation_policies',
+          'sqlite_autoindex_subscriptions_2 vs subscriptions_stripe_subscription_id_key on subscriptions',
+          'sqlite_autoindex_team_workspaces_2 vs team_workspaces_team_id_key on team_workspaces',
+          'sqlite_autoindex_teams_2 vs teams_slug_key on teams',
+          'sqlite_autoindex_users_2 vs users_clerk_user_id_key on users',
+          // idx_remediation_policies_team (explicit) -> remediation_policies_tenant_team_id_failure_type_key UNIQUE
+          'idx_remediation_policies_team vs remediation_policies_tenant_team_id_failure_type_key on remediation_policies'
+        ];
+        const actualDiffs = nameDifferences.sort();
+        assert.deepStrictEqual(actualDiffs, expectedNameDifferences.sort(), 'Exact 51-member name-difference set must match');
+
+        // Verify 0 semantic gaps: every SQLite explicit index has a covering Postgres index
+        // (already verified by the covered check above)
+      } finally {
+        await pool.query(`DROP SCHEMA IF EXISTS ${testSchema} CASCADE`);
+        await pool.end();
       }
+    });
 
-      const pgTableNames = Object.keys(pgTables).sort();
+    skipIfNoPostgres('runPostgresMigrations on same database is a no-op (idempotent)', async () => {
+      const { Pool } = await import('pg');
+const { runPostgresMigrations } = await import('../db/migrations/postgres-runner');
 
-      // Check that all main tables exist in Postgres migration
-      for (const table of mainTableNames) {
-        assert.ok(pgTableNames.includes(table), `Postgres migration missing table: ${table}`);
+      // Use a dedicated test schema to isolate from unrelated public indexes
+      const testSchema = `test_idempotent_${Date.now()}`;
+      const pool = new Pool({ connectionString: pgUrl });
+      try {
+        await pool.query(`CREATE SCHEMA ${testSchema}`);
+        await pool.query(`SET search_path TO ${testSchema}, public`);
+
+        await runPostgresMigrations(pool);
+        const beforeTables = await pool.query(`SELECT count(*) FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, [testSchema]);
+const beforeIndexes = await pool.query(`
+          SELECT count(*)
+            FROM pg_index x
+            JOIN pg_class i ON i.oid = x.indexrelid
+            JOIN pg_class c ON c.oid = x.indrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = $1
+       `, [testSchema]);
+        const beforeLedger = await pool.query(`SELECT count(*) FROM schema_migrations`);
+
+        await runPostgresMigrations(pool);
+
+        const afterTables = await pool.query(`SELECT count(*) FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, [testSchema]);
+const afterIndexes = await pool.query(`
+          SELECT count(*)
+            FROM pg_index x
+            JOIN pg_class i ON i.oid = x.indexrelid
+            JOIN pg_class c ON c.oid = x.indrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = $1
+       `, [testSchema]);
+        const afterLedger = await pool.query(`SELECT count(*) FROM schema_migrations`);
+
+        assert.strictEqual(parseInt(beforeTables.rows[0].count), 42);
+        assert.strictEqual(parseInt(afterTables.rows[0].count), 42);
+        assert.strictEqual(parseInt(beforeIndexes.rows[0].count), 105);
+        assert.strictEqual(parseInt(afterIndexes.rows[0].count), 105);
+        assert.strictEqual(parseInt(beforeLedger.rows[0].count), 5);
+        assert.strictEqual(parseInt(afterLedger.rows[0].count), 5);
+      } finally {
+        await pool.query(`DROP SCHEMA IF EXISTS ${testSchema} CASCADE`);
+        await pool.end();
       }
-
-      // Verify column parity for all tables
-      for (const table of mainTableNames) {
-        const mainCols = mainTableColumns[table] || [];
-        const pgCols = pgTables[table] || [];
-        for (const col of mainCols) {
-          // Skip sqlite auto columns that don't need explicit definition in Postgres
-          if (col === 'rowid') continue;
-          assert.ok(pgCols.includes(col), `Postgres migration table ${table} missing column: ${col}`);
-        }
-      }
-
-      // Verify total table count matches (38 tables: 37 original + clerk_webhook_events)
-      assert.strictEqual(pgTableNames.length, 38, `Postgres migration should have 38 tables, got ${pgTableNames.length}`);
     });
   });
 
@@ -463,7 +730,6 @@ describe('NOC-323 durable storage', () => {
       await assert.rejects(
         () => createDatabase(dbPath),
         (err: Error) => {
-          // The error must name the file
           assert.ok(err.message.includes(dbPath), `the error must name the file: ${err.message}`);
           return true;
         }

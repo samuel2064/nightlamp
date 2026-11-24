@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { Database } from 'sql.js';
-import { DependencyInfo, analyzeVersionChange, pollNpmRegistry, parsePackageJson } from '../connectors/npm-registry';
+import { DependencyInfo, analyzeVersionChange, pollNpmRegistry, NpmPackageInfo, parsePackageJson } from '../connectors/npm-registry';
 
 export interface Dependency {
   id: string;
@@ -23,8 +23,13 @@ export interface DependencyUpdate {
   detectedAt: string;
 }
 
+export type RegistryPoller = (packageName: string) => Promise<NpmPackageInfo | null>;
+
 export class DependencyModel {
-  constructor(private db: Database) {}
+  constructor(
+    private db: Database,
+    private registryPoller: RegistryPoller = pollNpmRegistry
+  ) {}
 
   getAll(): Dependency[] {
     const result = this.db.exec(
@@ -79,7 +84,7 @@ export class DependencyModel {
   }
 
   async checkForUpdates(dependency: Dependency): Promise<DependencyUpdate | null> {
-    const pkgInfo = await pollNpmRegistry(dependency.name);
+    const pkgInfo = await this.registryPoller(dependency.name);
     if (!pkgInfo || pkgInfo.latestVersion === 'unknown') return null;
 
     if (pkgInfo.latestVersion === dependency.currentVersion) return null;

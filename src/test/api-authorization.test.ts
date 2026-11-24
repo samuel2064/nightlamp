@@ -1152,13 +1152,20 @@ describe('P0 API authorization', () => {
 
     it('does not deliver another tenant alert rules for a tenant event', async () => {
       const received: string[] = [];
-      const capture = createServer((req, res) => {
-        received.push(req.url || '');
-        res.writeHead(200);
-        res.end('ok');
-      });
-      await new Promise<void>((resolve) => capture.listen(0, '127.0.0.1', () => resolve()));
-      const captureUrl = `http://127.0.0.1:${(capture.address() as any).port}/notify`;
+      let originalFetch = globalThis.fetch;
+
+      // Use a public URL that passes outbound safety check
+      const captureUrl = 'http://example.com/notify';
+
+      // Mock fetch to capture calls
+      globalThis.fetch = async (input: any, init?: any) => {
+        const url = typeof input === 'string' ? input : input?.url;
+        if (url === captureUrl) {
+          received.push(url);
+          return new Response('ok', { status: 200 });
+        }
+        return originalFetch(input, init);
+      };
 
       db.run(
         `INSERT INTO alert_channels (id, name, type, config, team_id) VALUES (?, 'Foreign WS Channel', 'in-app-websocket', ?, ?)`,
@@ -1189,7 +1196,7 @@ describe('P0 API authorization', () => {
       assert.ok(ruleIds.includes('own-eval-rule'));
       assert.strictEqual(received.length, 1);
 
-      capture.close();
+      globalThis.fetch = originalFetch;
     });
 
     it('does not list another tenant in the team directory', async () => {

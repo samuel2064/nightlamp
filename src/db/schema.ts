@@ -7,6 +7,7 @@ import { up as applyPerfTenantMigration } from './migrations/013-perf-tenant';
 import { up as applyLeadsTenantMigration } from './migrations/014-leads-tenant';
 import { up as applyClerkWebhookReplayMigration } from './migrations/015-clerk-webhook-replay';
 import { up as applyPlanTierCheckMigration } from './migrations/011-extend-plan-tier-check-sqlite';
+import { runMigrations } from './migrations/runner';
 
 export interface NightlampDb {
   db: SqlJsDatabase;
@@ -594,6 +595,7 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   applyLeadsTenantMigration(db);
   applyClerkWebhookReplayMigration(db);
   applyPlanTierCheckMigration(db);
+  runMigrations(db);
 
   return db;
 }

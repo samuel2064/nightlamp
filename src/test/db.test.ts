@@ -17,8 +17,8 @@ describe('Database', () => {
 
   it('should create all tables', () => {
     const tables = db.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
-    const names = tables[0].values.map((r: any) => r[0]).sort();
-    assert.deepStrictEqual(names, ['alert_channels', 'alert_log', 'alert_rules', 'check_results', 'checks', 'clerk_webhook_events', 'custom_playbooks', 'customers', 'dependencies', 'dependency_updates', 'failure_events', 'invitations', 'leads', 'memberships', 'notification_deduplication', 'notification_rate_limits', 'onboarding_sessions', 'perf_diagnoses', 'perf_metrics', 'perf_regressions', 'perf_runs', 'playbook_edges', 'playbook_entries', 'playbook_executions', 'playbook_nodes', 'playbook_versions', 'remediation_actions', 'remediation_log', 'remediation_policies', 'remediation_runs', 'subscriptions', 'team_workspaces', 'teams', 'usage_records', 'users', 'webhook_events', 'x_scheduled_posts', 'x_tokens']);
+const names = tables[0].values.map((r: any) => r[0]).sort();
+    assert.deepStrictEqual(names, ['alert_channels', 'alert_log', 'alert_rules', 'analytics_events', 'check_results', 'checks', 'clerk_webhook_events', 'custom_playbooks', 'customers', 'dependencies', 'dependency_updates', 'failure_events', 'feedback_responses', 'health_snapshots', 'invitations', 'leads', 'memberships', 'monitored_apps', 'notification_deduplication', 'notification_rate_limits', 'onboarding_sessions', 'perf_diagnoses', 'perf_metrics', 'perf_regressions', 'perf_runs', 'playbook_edges', 'playbook_entries', 'playbook_executions', 'playbook_nodes', 'playbook_versions', 'remediation_actions', 'remediation_log', 'remediation_policies', 'remediation_runs', 'schema_migrations', 'subscriptions', 'team_workspaces', 'teams', 'usage_records', 'users', 'webhook_events', 'x_scheduled_posts', 'x_tokens']);
   });
 
   it('should insert and query a check', () => {
