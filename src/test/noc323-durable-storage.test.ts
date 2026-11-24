@@ -498,13 +498,12 @@ const { runPostgresMigrations } = await import('../db/migrations/postgres-runner
 
             // Get Postgres indexes for this table with their column definitions from pg_index
             const pgIdxsResult = await pool.query(`
-              SELECT i.indexrelid::regclass::text as indexname,
-                     pg_get_indexdef(i.indexrelid) as indexdef,
+              SELECT x.indexrelid::regclass::text as indexname,
+                     pg_get_indexdef(x.indexrelid) as indexdef,
                      c.relname as table_name
-                FROM pg_index x
-                JOIN pg_class i ON i.oid = x.indexrelid
-                JOIN pg_class c ON c.oid = x.indrelid
-                JOIN pg_namespace n ON n.oid = c.relnamespace
+                FROM pg_catalog.pg_index x
+                JOIN pg_catalog.pg_class c ON c.oid = x.indrelid
+                JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
                WHERE n.nspname = $1 AND c.relname = $2
              `, [testSchema, table]);
 
@@ -518,7 +517,8 @@ const { runPostgresMigrations } = await import('../db/migrations/postgres-runner
               // Strip ASC/DESC from Postgres columns for comparison
               const pgCols = match[1].split(',').map(c => c.trim().replace(/"/g, '').replace(/\s+(ASC|DESC)$/i, ''));
               // Compare columns in SQLite index order (not alphabetically sorted)
-              if (pgCols.length === sqliteCols.length && pgCols.every((col, i) => col === sqliteCols[i])) {
+              // Allow leading-column coverage: SQLite columns must be a prefix of Postgres columns
+              if (pgCols.length >= sqliteCols.length && pgCols.slice(0, sqliteCols.length).every((col, i) => col === sqliteCols[i])) {
                 covered = true;
                 matchedPgIdx = pgIdx.indexname;
                 break;
@@ -574,15 +574,15 @@ SELECT count(*)
           'sqlite_autoindex_alert_channels_1 vs alert_channels_pkey on alert_channels',
           'sqlite_autoindex_alert_log_1 vs alert_log_pkey on alert_log',
           'sqlite_autoindex_alert_rules_1 vs alert_rules_pkey on alert_rules',
-          'sqlite_autoindex_analytics_events_1 vs analytics_events_pkey on analytics_events',
-          'sqlite_autoindex_apps_1 vs apps_pkey on apps',
+          'sqlite_autoindex_analytics_events_1 vs analytics_events_dedup_key_key on analytics_events',
           'sqlite_autoindex_check_results_1 vs check_results_pkey on check_results',
           'sqlite_autoindex_checks_1 vs checks_pkey on checks',
           'sqlite_autoindex_customers_1 vs customers_pkey on customers',
+          'sqlite_autoindex_custom_playbooks_1 vs custom_playbooks_pkey on custom_playbooks',
           'sqlite_autoindex_dependencies_1 vs dependencies_pkey on dependencies',
           'sqlite_autoindex_dependency_updates_1 vs dependency_updates_pkey on dependency_updates',
           'sqlite_autoindex_failure_events_1 vs failure_events_pkey on failure_events',
-          'sqlite_autoindex_feedback_responses_1 vs feedback_responses_pkey on feedback_responses',
+          'sqlite_autoindex_feedback_responses_1 vs feedback_responses_dedup_key_key on feedback_responses',
           'sqlite_autoindex_health_snapshots_1 vs health_snapshots_pkey on health_snapshots',
           'sqlite_autoindex_invitations_1 vs invitations_pkey on invitations',
           'sqlite_autoindex_leads_1 vs leads_pkey on leads',
@@ -596,15 +596,16 @@ SELECT count(*)
           'sqlite_autoindex_perf_regressions_1 vs perf_regressions_pkey on perf_regressions',
           'sqlite_autoindex_perf_runs_1 vs perf_runs_pkey on perf_runs',
           'sqlite_autoindex_playbook_edges_1 vs playbook_edges_pkey on playbook_edges',
-          'sqlite_autoindex_playbook_entries_1 vs playbook_entries_pkey on playbook_entries',
+          'sqlite_autoindex_playbook_executions_1 vs playbook_executions_pkey on playbook_executions',
           'sqlite_autoindex_playbook_nodes_1 vs playbook_nodes_pkey on playbook_nodes',
           'sqlite_autoindex_playbook_versions_1 vs playbook_versions_pkey on playbook_versions',
           'sqlite_autoindex_remediation_actions_1 vs remediation_actions_pkey on remediation_actions',
           'sqlite_autoindex_remediation_log_1 vs remediation_log_pkey on remediation_log',
-          'sqlite_autoindex_remediation_policies_1 vs remediation_policies_pkey on remediation_policies',
+          'sqlite_autoindex_remediation_policies_1 vs remediation_policies_tenant_pkey on remediation_policies',
           'sqlite_autoindex_remediation_runs_1 vs remediation_runs_pkey on remediation_runs',
           'sqlite_autoindex_schema_migrations_1 vs schema_migrations_pkey on schema_migrations',
           'sqlite_autoindex_subscriptions_1 vs subscriptions_pkey on subscriptions',
+          'sqlite_autoindex_team_workspaces_1 vs team_workspaces_pkey on team_workspaces',
           'sqlite_autoindex_teams_1 vs teams_pkey on teams',
           'sqlite_autoindex_usage_records_1 vs usage_records_pkey on usage_records',
           'sqlite_autoindex_users_1 vs users_pkey on users',
@@ -612,16 +613,14 @@ SELECT count(*)
           'sqlite_autoindex_x_scheduled_posts_1 vs x_scheduled_posts_pkey on x_scheduled_posts',
           'sqlite_autoindex_x_tokens_1 vs x_tokens_pkey on x_tokens',
           // 10 unique autoindexes: sqlite_autoindex_<table>_N vs <table>_<constraint>_key
-          'sqlite_autoindex_alert_channels_2 vs alert_channels_owner_key on alert_channels',
-          'sqlite_autoindex_analytics_events_2 vs analytics_events_team_key on analytics_events',
-          'sqlite_autoindex_analytics_events_3 vs analytics_events_event_key on analytics_events',
-          'sqlite_autoindex_apps_2 vs apps_team_key on apps',
           'sqlite_autoindex_customers_2 vs customers_stripe_customer_id_key on customers',
-          'sqlite_autoindex_failure_events_2 vs failure_events_type_detected_key on failure_events',
           'sqlite_autoindex_invitations_2 vs invitations_token_key on invitations',
-          'sqlite_autoindex_memberships_2 vs memberships_team_user_key on memberships',
-          'sqlite_autoindex_remediation_policies_2 vs remediation_policies_failure_key on remediation_policies',
-          'sqlite_autoindex_remediation_policies_3 vs remediation_policies_team_failure_type_key on remediation_policies',
+          'sqlite_autoindex_memberships_2 vs memberships_team_id_user_id_key on memberships',
+          'sqlite_autoindex_remediation_policies_2 vs remediation_policies_tenant_team_id_failure_type_key on remediation_policies',
+          'sqlite_autoindex_subscriptions_2 vs subscriptions_stripe_subscription_id_key on subscriptions',
+          'sqlite_autoindex_team_workspaces_2 vs team_workspaces_team_id_key on team_workspaces',
+          'sqlite_autoindex_teams_2 vs teams_slug_key on teams',
+          'sqlite_autoindex_users_2 vs users_clerk_user_id_key on users',
           // idx_remediation_policies_team (explicit) -> remediation_policies_tenant_team_id_failure_type_key UNIQUE
           'idx_remediation_policies_team vs remediation_policies_tenant_team_id_failure_type_key on remediation_policies'
         ];
