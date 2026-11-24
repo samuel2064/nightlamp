@@ -12,9 +12,11 @@ import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'sonner'
 import { OfflineBanner } from '@/components/dashboard/OfflineBanner'
 import { useLiveConnection } from '@/components/dashboard/connection-indicator'
+import { useSurveyTrigger } from '@/components/feedback/survey-provider'
 
 export default function IncidentsPage() {
   const utils = trpc.useUtils()
+  const surveyTrigger = useSurveyTrigger()
   const { data, isLoading, isError, refetch } = trpc.incidents.list.useQuery({ limit: 100 })
   const { status: connectionStatus } = useLiveConnection()
   const isOffline = connectionStatus === 'disconnected'
@@ -35,6 +37,10 @@ export default function IncidentsPage() {
     },
     onSuccess: () => {
       toast.success('Incident acknowledged')
+      // Durable acknowledgement is the successful action behind the alert
+      // usefulness microsurvey; the scheduler still suppresses it while a
+      // critical alert or an active incident response is open.
+      surveyTrigger.alertReceived()
     },
     onError: (err, { id }, context) => {
       if (context?.prev) {

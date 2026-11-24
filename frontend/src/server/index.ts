@@ -7,6 +7,7 @@ import { activityRouter } from './routers/activity'
 import { billingRouter } from './routers/billing'
 import { playbookRouter } from './routers/playbook'
 import { remediationRouter } from './routers/remediation'
+import { feedbackRouter } from './routers/feedback'
 
 export const appRouter = router({
   monitors: monitorsRouter,
@@ -17,6 +18,7 @@ export const appRouter = router({
   billing: billingRouter,
   playbook: playbookRouter,
   remediation: remediationRouter,
+  feedback: feedbackRouter,
 })
 
 export type AppRouter = typeof appRouter

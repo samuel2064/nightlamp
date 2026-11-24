@@ -8,6 +8,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Sheet, SheetContent } from '@/components/ui/sheet'
 import { ConnectionIndicator } from '@/components/dashboard/connection-indicator'
+import { useSurveyTrigger } from '@/components/feedback/survey-provider'
 import { StepNavigator } from './StepNavigator'
 import { StepHeader } from './StepHeader'
 import { QuestionStep } from './QuestionStep'
@@ -106,6 +107,7 @@ export function PlaybookReader({ playbookId, onExit }: PlaybookReaderProps) {
   const [mobilePane, setMobilePane] = useState<'navigator' | 'content' | 'panels'>('content')
 
   const utils = trpc.useUtils()
+  const surveyTrigger = useSurveyTrigger()
 
   const { data: entryData, isLoading: entryLoading, isError: entryError } = trpc.playbook.get.useQuery(
     { id: playbookId },
@@ -247,11 +249,17 @@ export function PlaybookReader({ playbookId, onExit }: PlaybookReaderProps) {
   const handleMarkResolved = useCallback(() => {
     if (!execution) return
     const stepId = execution.steps[execution.currentStepIndex]?.id
-    decisionMutation.mutate({
-      executionId: execution.id,
-      decision: JSON.stringify({ stepId, action: 'mark_resolved' }),
-    })
-  }, [decisionMutation, execution])
+    decisionMutation.mutate(
+      {
+        executionId: execution.id,
+        decision: JSON.stringify({ stepId, action: 'mark_resolved' }),
+      },
+      {
+        // Only a durable server acceptance may schedule a contextual survey.
+        onSuccess: () => surveyTrigger.playbookCompleted(),
+      }
+    )
+  }, [decisionMutation, execution, surveyTrigger])
 
   const handleRefresh = useCallback(() => {
     if (!serverExecution) return

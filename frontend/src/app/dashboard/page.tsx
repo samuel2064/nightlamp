@@ -2,12 +2,14 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { trpc } from '@/lib/trpc'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
+import { WelcomeSurveyInvitation } from '@/components/feedback/welcome-invitation'
 import {
   Activity,
   AlertTriangle,
@@ -82,6 +84,7 @@ function InlineError({ message, retry }: { message: string; retry: () => void })
 }
 
 export default function DashboardOverview() {
+  const router = useRouter()
   const healthQuery = trpc.health.status.useQuery(undefined, {
     refetchInterval: REFRESH_INTERVAL_MS,
   })
@@ -270,16 +273,23 @@ export default function DashboardOverview() {
             {monitorsQuery.isError ? (
               <InlineError message="Couldn't load your app checks." retry={() => monitorsQuery.refetch()} />
             ) : monitors.length === 0 ? (
-              <EmptyState
-                icon={Plus}
-                title="No apps monitored yet"
-                description="Add your first app to start watching for issues."
-                action={
-                  <Link href="/dashboard/settings" className={buttonVariants({ variant: 'default', size: 'sm' })}>
-                    <Plus className="size-4 mr-1" aria-hidden /> Add app
-                  </Link>
-                }
-              />
+              <div className="grid gap-4">
+                {/* Optional welcome survey: Skip starts setup immediately and
+                    dismissal never blocks monitoring. */}
+                <WelcomeSurveyInvitation
+                  onSkipToSetup={() => router.push('/dashboard/settings?wizard=add-app')}
+                />
+                <EmptyState
+                  icon={Plus}
+                  title="No apps monitored yet"
+                  description="Add your first app to start watching for issues."
+                  action={
+                    <Link href="/dashboard/settings?wizard=add-app" className={buttonVariants({ variant: 'default', size: 'sm' })}>
+                      <Plus className="size-4 mr-1" aria-hidden /> Add app
+                    </Link>
+                  }
+                />
+              </div>
             ) : (
               <div className="grid gap-4 sm:grid-cols-2">
                 {monitors.slice(0, 6).map((monitor) => {

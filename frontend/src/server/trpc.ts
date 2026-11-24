@@ -16,3 +16,13 @@ export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {
   }
   return next({ ctx: { ...ctx, userId: ctx.userId, token: ctx.token } })
 })
+
+// For procedures that proxy a protected backend call: an authenticated user
+// without a bearer token can never reach the tenant-scoped backend, so the
+// procedure fails closed instead of sending an anonymous request.
+export const tokenProcedure = t.procedure.use(async ({ ctx, next }) => {
+  if (!ctx.userId || !ctx.token) {
+    throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Authentication required' })
+  }
+  return next({ ctx: { ...ctx, userId: ctx.userId, token: ctx.token } })
+})
