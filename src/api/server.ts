@@ -195,12 +195,12 @@ function buildCheckResultsPayload(db: Database, params: URLSearchParams, teamId:
 }
 
 export function startApiServer(db: Database, config: ApiConfig): http.Server {
-  const billingApi = config.stripeClient ? new BillingApi({
+  const billingApi = new BillingApi({
     db,
-    stripeClient: config.stripeClient,
+    stripeClient: config.stripeClient || null,
     webhookSecret: config.stripeWebhookSecret || '',
     baseUrl: config.baseUrl || 'http://localhost:3000',
-  }) : null;
+  });
 
   const perfApi = new PerfApi(db);
 
@@ -660,7 +660,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         return;
       }
 
-      if (billingApi && billingApi.handle(req, res, auth)) {
+      if (billingApi.handle(req, res, auth)) {
         return;
       }
 

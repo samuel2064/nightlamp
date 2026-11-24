@@ -406,6 +406,124 @@ describe('Billing - BillingApi', () => {
     const handled = api.handle(req, res);
     expect(handled).to.be.false;
   });
+
+  describe('GET /api/billing/access', () => {
+    function makeRequest(auth: { userId: string; email: string; teamId: string | null; role: string } | null, url?: string) {
+      return new Promise<{ statusCode: number; body: string }>((resolve) => {
+        const baseUrl = url || '/api/billing/access';
+        let responseCode = 200;
+        const req = {
+          method: 'GET',
+          url: baseUrl,
+          headers: {},
+          on: (event: string, cb: Function) => {
+            if (event === 'data' && cb) cb('');
+            if (event === 'end') cb();
+          },
+        } as any;
+        const res = {
+          writeHead: (code: number) => { responseCode = code; },
+          end: (data: string) => {
+            resolve({ statusCode: responseCode, body: data });
+          },
+        } as any;
+        api.handle(req, res, auth ? { userId: auth.userId, email: auth.email, teamId: auth.teamId, role: auth.role, token: 'verified-test-context' } : null);
+      });
+    }
+
+    function insertMembership(role: string) {
+      db.run('INSERT INTO memberships (user_id, team_id, role) VALUES (?, ?, ?)', ['billing-user', 'billing-team', role]);
+    }
+
+    it('returns owner role for authenticated owner', async () => {
+      insertMembership('owner');
+      const res = await makeRequest({ userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'owner' });
+      expect(res.statusCode).to.equal(200);
+      const data = JSON.parse(res.body);
+      expect(data.role).to.equal('owner');
+    });
+
+    it('returns admin role for authenticated admin', async () => {
+      insertMembership('admin');
+      const res = await makeRequest({ userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'admin' });
+      expect(res.statusCode).to.equal(200);
+      const data = JSON.parse(res.body);
+      expect(data.role).to.equal('admin');
+    });
+
+    it('returns member role for authenticated member', async () => {
+      insertMembership('member');
+      const res = await makeRequest({ userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'member' });
+      expect(res.statusCode).to.equal(200);
+      const data = JSON.parse(res.body);
+      expect(data.role).to.equal('member');
+    });
+
+    it('returns none for authenticated identity without membership rows', async () => {
+      // No membership row inserted; auth has a teamId but no matching membership
+      const res = await makeRequest({ userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'none' });
+      expect(res.statusCode).to.equal(200);
+      const data = JSON.parse(res.body);
+      expect(data.role).to.equal('none');
+    });
+
+    it('returns 401 for unauthenticated request', async () => {
+      const res = await makeRequest(null);
+      expect(res.statusCode).to.equal(401);
+    });
+
+    it('returns none for authenticated identity with no team membership rows (fallback to owner check)', async () => {
+      // No membership row; the method falls through to team ownership check then 'none'
+      const res = await makeRequest({ userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'none' });
+      expect(res.statusCode).to.equal(200);
+      const data = JSON.parse(res.body);
+      expect(data.role).to.equal('none');
+    });
+
+    it('rejects client-supplied customerId in query params', async () => {
+      insertMembership('owner');
+      const res = await makeRequest({ userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'owner' }, '/api/billing/access?customerId=untrusted');
+      expect(res.statusCode).to.equal(400);
+    });
+
+    it('rejects client-supplied teamId in query params', async () => {
+      insertMembership('owner');
+      const res = await makeRequest({ userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'owner' }, '/api/billing/access?teamId=untrusted');
+      expect(res.statusCode).to.equal(400);
+    });
+
+    it('rejects client-supplied orgId in query params', async () => {
+      insertMembership('owner');
+      const res = await makeRequest({ userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'owner' }, '/api/billing/access?orgId=untrusted');
+      expect(res.statusCode).to.equal(400);
+    });
+
+    it('rejects client-supplied stripeCustomerId in query params', async () => {
+      insertMembership('owner');
+      const res = await makeRequest({ userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'owner' }, '/api/billing/access?stripeCustomerId=untrusted');
+      expect(res.statusCode).to.equal(400);
+    });
+
+    it('rejects client-supplied subscriptionId in query params', async () => {
+      insertMembership('owner');
+      const res = await makeRequest({ userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'owner' }, '/api/billing/access?subscriptionId=untrusted');
+      expect(res.statusCode).to.equal(400);
+    });
+
+    it('returns 405 for non-GET method', async () => {
+      insertMembership('owner');
+      const res = await new Promise<{ statusCode: number; body: string }>((resolve) => {
+        let capturedCode = 200;
+        const req = { method: 'POST', url: '/api/billing/access', headers: {} } as IncomingMessage;
+        const res = {
+          writeHead: (code: number) => { capturedCode = code; },
+          end: (data: string) => { resolve({ statusCode: capturedCode, body: data }); },
+        } as any;
+        api.handle(req, res, { userId: 'billing-user', email: 'billing@test.com', teamId: 'billing-team', role: 'owner', token: 'verified-test-context' });
+      });
+      expect(res.statusCode).to.equal(405);
+    });
+  });
 });
 
 describe('Billing - Webhook Processing', () => {
