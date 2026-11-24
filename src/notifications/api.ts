@@ -1,26 +1,30 @@
 import { Database } from 'sql.js';
 import { IncomingMessage, ServerResponse } from 'http';
 import { v4 as uuidv4 } from 'uuid';
-import { ChannelType, ChannelConfig } from '../alerting/channels';
+import { ChannelType, ChannelConfig, validateDeliveryDestination, HostResolver } from '../alerting/channels';
 import { processNotification, sendDirectNotification, getChannelType, getChannelConfig, checkRateLimit, logDelivery, markDelivered } from './service';
 import { AuthContext } from '../api/auth';
-import { tenantOwnedFilter, rowBelongsToTenant } from '../api/tenant';
+import { rowBelongsToScope, scopedTenantFilter, requireChannelOwnership } from '../api/tenant';
 
 export class NotificationApi {
   private validTypes: Set<string> = new Set(['slack-webhook', 'email-smtp', 'in-app-websocket']);
 
-  constructor(private db: Database) {}
+  constructor(
+    private db: Database,
+    private resolver?: HostResolver
+  ) {}
 
   handle(req: IncomingMessage, res: ServerResponse, auth: AuthContext | null = null): boolean {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = parsedUrl.pathname;
     const teamId = auth ? auth.teamId : null;
+    const userId = auth ? auth.userId : '';
 
     const channelMatch = path.match(/^\/api\/notifications\/channels(?:\/([a-zA-Z0-9-]+))?$/);
 
     if (path === '/api/notifications/channels' || path === '/api/notifications/channels/') {
-      if (req.method === 'GET') { this.handleListChannels(req, res, teamId); return true; }
-      if (req.method === 'POST') { this.handleCreateChannel(req, res, teamId); return true; }
+      if (req.method === 'GET') { this.handleListChannels(req, res, teamId, userId); return true; }
+      if (req.method === 'POST') { this.handleCreateChannel(req, res, teamId, userId); return true; }
       res.writeHead(405);
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return true;
@@ -28,31 +32,56 @@ export class NotificationApi {
 
     if (channelMatch && channelMatch[1]) {
       const channelId = channelMatch[1];
-      if (req.method === 'PATCH') { this.handleUpdateChannel(req, channelId, res, teamId); return true; }
-      if (req.method === 'DELETE') { this.handleDeleteChannel(channelId, res, teamId); return true; }
+      if (req.method === 'PATCH') { this.handleUpdateChannel(req, channelId, res, teamId, userId); return true; }
+      if (req.method === 'DELETE') { this.handleDeleteChannel(channelId, res, teamId, userId); return true; }
       res.writeHead(405);
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return true;
     }
 
     if ((path === '/api/notifications/send' || path === '/api/notifications/send/') && req.method === 'POST') {
-      this.handleSendNotification(req, res, teamId);
+      this.handleSendNotification(req, res, teamId, userId);
       return true;
     }
 
     if ((path === '/api/notifications/deliver' || path === '/api/notifications/deliver/') && req.method === 'POST') {
-      this.handleMarkDelivered(req, res, teamId);
+      this.handleMarkDelivered(req, res, teamId, userId);
       return true;
     }
 
     return false;
   }
 
-  private handleListChannels(req: IncomingMessage, res: ServerResponse, teamId: string | null): void {
-    const scope = tenantOwnedFilter('team_id', teamId);
-    const sql = `SELECT id, name, type, enabled, team_id, created_at, updated_at FROM alert_channels WHERE ${scope.clause} ORDER BY created_at DESC`;
-    const result = this.db.exec(sql, scope.params);
-    const channels = result.length > 0 ? result[0].values.map((row: any) => ({
+  private handleListChannels(req: IncomingMessage, res: ServerResponse, teamId: string | null, userId: string): void {
+    // The scope never widens to the owner-less bucket, so a caller without a
+    // team membership and without a personal channel sees nothing rather than
+    // another user's rows (finding 5), and a personal channel stays invisible to
+    // other personal users.
+    const channels = this.scopedChannels(teamId, userId);
+
+    // A signed-in caller without a team membership and without a personally
+    // owned channel has no scope to list. Answer 403 rather than an empty list,
+    // so a caller who owns nothing is refused instead of told that nothing
+    // exists anywhere.
+    if (teamId === null && channels.length === 0) {
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: 'Notification channels require an organization or a personal channel', code: 'FORBIDDEN' }));
+      return;
+    }
+
+    res.end(JSON.stringify({ channels, count: channels.length }));
+  }
+
+  private scopedChannels(teamId: string | null, userId: string) {
+    // The scope never widens to the owner-less bucket, so a caller without a
+    // team membership and without a personal channel sees nothing rather than
+    // another user's rows (NOC-303 finding 5).
+    const scope = scopedTenantFilter('alert_channels', teamId, userId);
+    const result = this.db.exec(
+      `SELECT id, name, type, enabled, team_id, created_at, updated_at FROM alert_channels WHERE ${scope.clause} ORDER BY created_at DESC`,
+      scope.params,
+    );
+    return result.length > 0 ? result[0].values.map((row: any) => ({
       id: row[0],
       name: row[1],
       type: row[2],
@@ -61,14 +90,12 @@ export class NotificationApi {
       createdAt: row[5],
       updatedAt: row[6],
     })) : [];
-
-    res.end(JSON.stringify({ channels, count: channels.length }));
   }
 
-  private handleCreateChannel(req: IncomingMessage, res: ServerResponse, teamId: string | null): void {
+  private handleCreateChannel(req: IncomingMessage, res: ServerResponse, teamId: string | null, userId: string): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
-    req.on('end', () => {
+    req.on('end', async () => {
       try {
         const { name, type, config } = JSON.parse(body);
         if (!name || !type || !config) {
@@ -85,10 +112,18 @@ export class NotificationApi {
 
         const mappedType = type === 'slack-webhook' ? 'slack' : type === 'email-smtp' ? 'email' : type;
 
+        try {
+          await validateDeliveryDestination(mappedType as ChannelType, config as any, this.resolver);
+        } catch (err: any) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: err.message }));
+          return;
+        }
+
         const id = uuidv4();
         this.db.run(
-          `INSERT INTO alert_channels (id, name, type, config, team_id) VALUES (?, ?, ?, ?, ?)`,
-          [id, name, mappedType, JSON.stringify(config), teamId]
+          `INSERT INTO alert_channels (id, name, type, config, team_id, owner_id) VALUES (?, ?, ?, ?, ?, ?)`,
+          [id, name, mappedType, JSON.stringify(config), teamId, userId || null]
         );
 
         res.end(JSON.stringify({ success: true, id, name, type, teamId }));
@@ -99,10 +134,10 @@ export class NotificationApi {
     });
   }
 
-  private handleUpdateChannel(req: IncomingMessage, channelId: string, res: ServerResponse, teamId: string | null): void {
+  private handleUpdateChannel(req: IncomingMessage, channelId: string, res: ServerResponse, teamId: string | null, userId: string): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
-    req.on('end', () => {
+    req.on('end', async () => {
       try {
         const { name, config, enabled } = JSON.parse(body);
         const updates: string[] = [];
@@ -118,8 +153,28 @@ export class NotificationApi {
           return;
         }
 
+        // If config is being updated, validate the new destination
+        if (config !== undefined) {
+          const scope = scopedTenantFilter('alert_channels', teamId, userId);
+          const currentChannel = this.db.exec(`SELECT type FROM alert_channels WHERE id = ? AND ${scope.clause}`, [channelId, ...scope.params]);
+          if (currentChannel.length === 0 || currentChannel[0].values.length === 0) {
+            res.writeHead(404);
+            res.end(JSON.stringify({ error: 'Channel not found' }));
+            return;
+          }
+          const currentType = currentChannel[0].values[0][0] as string;
+          const mappedType = currentType === 'slack-webhook' ? 'slack' : currentType === 'email-smtp' ? 'email' : currentType;
+          try {
+            await validateDeliveryDestination(mappedType as ChannelType, config as any, this.resolver);
+          } catch (err: any) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: err.message }));
+            return;
+          }
+        }
+
         updates.push("updated_at = datetime('now')");
-        const scope = tenantOwnedFilter('team_id', teamId);
+        const scope = scopedTenantFilter('alert_channels', teamId, userId);
         this.db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${scope.clause}`, [...params, channelId, ...scope.params]);
         if (this.db.getRowsModified() === 0) {
           res.writeHead(404);
@@ -134,10 +189,12 @@ export class NotificationApi {
     });
   }
 
-  private handleDeleteChannel(channelId: string, res: ServerResponse, teamId: string | null): void {
-    if (teamId === null || !rowBelongsToTenant(this.db, 'alert_channels', channelId, teamId)) {
-      res.writeHead(404);
-      res.end(JSON.stringify({ error: 'Channel not found' }));
+  private handleDeleteChannel(channelId: string, res: ServerResponse, teamId: string | null, userId: string): void {
+    // Shared referenced-channel delete guard: scope ownership + monitored app reference check
+    const guard = requireChannelOwnership(this.db, channelId, teamId, userId);
+    if (guard) {
+      res.writeHead(guard.status);
+      res.end(JSON.stringify({ error: guard.error, code: guard.code }));
       return;
     }
     this.db.run('DELETE FROM alert_rules WHERE channel_id = ?', [channelId]);
@@ -147,7 +204,7 @@ export class NotificationApi {
     res.end(JSON.stringify({ success: true }));
   }
 
-  private handleSendNotification(req: IncomingMessage, res: ServerResponse, teamId: string | null): void {
+  private handleSendNotification(req: IncomingMessage, res: ServerResponse, teamId: string | null, userId: string): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', async () => {
@@ -160,13 +217,16 @@ export class NotificationApi {
           return;
         }
 
-        if (teamId === null) {
-          res.writeHead(403);
-          res.end(JSON.stringify({ error: 'A team membership is required to access this resource', code: 'FORBIDDEN' }));
-          return;
-        }
-
-        if (!rowBelongsToTenant(this.db, 'alert_channels', channelId, teamId)) {
+        // The send is authorized against the authenticated principal, never against
+        // only a client-supplied channel id: the caller must either belong to the
+        // channel's team or personally own the channel.
+        const inScope = rowBelongsToScope(this.db, 'alert_channels', channelId, teamId, userId);
+        if (!inScope) {
+          if (teamId === null) {
+            res.writeHead(403);
+            res.end(JSON.stringify({ error: 'A team membership is required to access this resource', code: 'FORBIDDEN' }));
+            return;
+          }
           res.writeHead(404);
           res.end(JSON.stringify({ error: 'Channel not found' }));
           return;
@@ -213,7 +273,7 @@ export class NotificationApi {
     });
   }
 
-  private handleMarkDelivered(req: IncomingMessage, res: ServerResponse, teamId: string | null): void {
+  private handleMarkDelivered(req: IncomingMessage, res: ServerResponse, teamId: string | null, userId: string): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
@@ -224,9 +284,9 @@ export class NotificationApi {
           res.end(JSON.stringify({ error: 'logId is required' }));
           return;
         }
-        const scope = tenantOwnedFilter('c.team_id', teamId);
+        const scope = scopedTenantFilter('alert_channels', teamId, userId, false);
         const owned = this.db.exec(
-          `SELECT al.id FROM alert_log al JOIN alert_channels c ON c.id = al.channel_id WHERE al.id = ? AND ${scope.clause}`,
+          `SELECT al.id FROM alert_log al JOIN alert_channels c ON c.id = al.channel_id WHERE al.id = ? AND ${scope.clause.replace('alert_channels.', 'c.')}`,
           [logId, ...scope.params],
         );
         if (owned.length === 0 || owned[0].values.length === 0) {
