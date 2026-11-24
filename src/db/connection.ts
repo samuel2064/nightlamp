@@ -1,4 +1,4 @@
-import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
+﻿import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
 import { Pool, PoolClient } from 'pg';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -148,11 +148,13 @@ async function createPostgresConnection(databaseUrl: string): Promise<DatabaseCo
 }
 
 async function runPostgresMigrations(pool: any): Promise<void> {
-  // Import and run the postgres migrations in order
-  const { up: up009 } = await import('./migrations/009-postgres-setup');
-  await up009(pool);
-  const { up: up010 } = await import('./migrations/010-extend-plan-tier-check');
-  await up010(pool);
+  // Import and run the postgres migration ledger
+  const { runPostgresMigrations: runLedger } = await import('./migrations/postgres-runner');
+  await runLedger(pool);
+
+  // Then run the plan-tier extension (NOC-326) which alters subscriptions
+  const { up: upPlanTier } = await import('./migrations/010-extend-plan-tier-check');
+  await upPlanTier(pool);
 }
 
 export function getStorageMode(config: DatabaseConfig): StorageMode {
@@ -203,24 +205,3 @@ export function shouldWarnAboutEphemeralStorage(config: DatabaseConfig): string 
   }
   return `WARNING: Running in production with SQLite file storage on local container filesystem. Data will be lost on restart/deploy! DB_PATH must point at the mounted disk at ${getExpectedDatabasePath()}.`;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
