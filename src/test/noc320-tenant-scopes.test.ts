@@ -368,5 +368,64 @@ describe('NOC-320 residual tenant scopes and onboarding owner binding', () => {
       assert.strictEqual(asA2.body.team.totalMembers, 2);
       assert.strictEqual(asA2.body.incidents.totalLast30d, 1);
     });
+
+    it('billing webhook attributes the audit row to the team resolved from verified rows', async () => {
+      const eventId = 'evt_noc320_for_team_a';
+      const eventPayload = {
+        id: eventId,
+        type: 'invoice.payment_succeeded',
+        data: { object: { customer: 'cus_A' } },
+      };
+
+      // The delivery is made by a member of team B while the event references
+      // team A's customer row: the attribution must come from the verified
+      // event, not from the caller's session. The route is not in the
+      // server's public list, so the delivery carries a session token, and
+      // the billing handler still refuses an unsigned body before parsing.
+      const unsigned = await probe(port, 'POST', '/api/billing/webhook', tokenB, eventPayload);
+      assert.strictEqual(unsigned.status, 400);
+      assert.match(unsigned.body.error, /stripe-signature/i);
+
+      // With a signature header the mock verifies any body, so the delivery
+      // reaches the audit path and the row is attributed to the team that owns
+      // the referenced customer row, not to the caller's team and not to the
+      // unscoped bucket.
+      const signed = await new Promise<ProbeResult>((resolve, reject) => {
+        const body = JSON.stringify(eventPayload);
+        const req = http.request({
+          host: '127.0.0.1',
+          port,
+          path: '/api/billing/webhook',
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(body).toString(),
+            authorization: `Bearer ${tokenB}`,
+            'stripe-signature': 't=1,v1=test',
+          },
+        }, (res) => {
+          let raw = '';
+          res.on('data', (chunk) => { raw += chunk; });
+          res.on('end', () => {
+            let parsed: any = null;
+            try { parsed = raw ? JSON.parse(raw) : null; } catch { parsed = raw; }
+            resolve({ status: res.statusCode || 0, body: parsed });
+          });
+        });
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+      });
+      assert.strictEqual(signed.status, 200, JSON.stringify(signed.body));
+
+      const row = db.exec('SELECT team_id, status FROM webhook_events WHERE id = ?', [eventId]);
+      assert.strictEqual(row.length > 0 ? row[0].values.length : 0, 1);
+      assert.deepStrictEqual(row[0].values[0], [teamA, 'processed']);
+
+      const asA = await probe(port, 'GET', '/api/billing/webhook-events', tokenA);
+      assert.strictEqual(asA.status, 200);
+      const idsA = (asA.body.events as Array<{ id: string }>).map((event) => event.id);
+      assert.ok(idsA.includes(eventId));
+    });
   });
 });
