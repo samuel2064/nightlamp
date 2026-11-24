@@ -1,7 +1,7 @@
 import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
 import * as fs from 'fs';
 import * as path from 'path';
-import { up as applyTenantIsolationMigration } from './migrations/008-tenant-isolation';
+import { runMigrations } from './migrations/runner';
 import { up as applyPlaybookExecutionsTenantMigration } from './migrations/012-playbook-executions-tenant';
 import { up as applyPerfTenantMigration } from './migrations/013-perf-tenant';
 import { up as applyLeadsTenantMigration } from './migrations/014-leads-tenant';
@@ -587,7 +587,7 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   `);
   db.run(`CREATE INDEX IF NOT EXISTS idx_clerk_webhook_events_received ON clerk_webhook_events(received_at)`);
 
-  applyTenantIsolationMigration(db);
+  await runMigrations(db);
   applyPlaybookExecutionsTenantMigration(db);
   applyPerfTenantMigration(db);
   applyLeadsTenantMigration(db);
