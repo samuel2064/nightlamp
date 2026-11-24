@@ -540,15 +540,17 @@ const { runPostgresMigrations } = await import('../db/migrations/postgres-runner
                 }
               }
             }
-            // Fail loudly if a SQLite index is covered by more than one Postgres index
-            assert.ok(coveringCount <= 1, `SQLite index ${sqliteIdx} on ${table} is covered by ${coveringCount} Postgres indexes; must be exactly 1`);
-            // Prefer exact name match, then exact column match, then first covering match
+            // Apply exact-name or exact-column preference before checking for ambiguity
             if (exactMatchPgIdx) {
               matchedPgIdx = exactMatchPgIdx;
             } else if (exactColumnMatchPgIdx) {
               matchedPgIdx = exactColumnMatchPgIdx;
             }
+            // Now check for ambiguity - only fail if there's no exact/column match and multiple covering indexes
             assert.ok(covered, `SQLite index ${sqliteIdx} on ${table} must have a covering Postgres index with matching columns (SQLite: [${sqliteCols.join(', ')}])`);
+            if (!exactMatchPgIdx && !exactColumnMatchPgIdx) {
+              assert.ok(coveringCount <= 1, `SQLite index ${sqliteIdx} on ${table} is covered by ${coveringCount} Postgres indexes with no exact name/column match; must be exactly 1`);
+            }
 
             // Record name difference if the names don't match the expected pattern
             if (matchedPgIdx && matchedPgIdx !== sqliteIdx) {
