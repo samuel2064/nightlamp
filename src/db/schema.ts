@@ -6,6 +6,7 @@ import { up as applyPlaybookExecutionsTenantMigration } from './migrations/012-p
 import { up as applyPerfTenantMigration } from './migrations/013-perf-tenant';
 import { up as applyLeadsTenantMigration } from './migrations/014-leads-tenant';
 import { up as applyClerkWebhookReplayMigration } from './migrations/015-clerk-webhook-replay';
+import { up as applyPlanTierCheckMigration } from './migrations/011-extend-plan-tier-check-sqlite';
 
 export interface NightlampDb {
   db: SqlJsDatabase;
@@ -123,7 +124,7 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
       id TEXT PRIMARY KEY,
       customer_id TEXT NOT NULL,
       stripe_subscription_id TEXT UNIQUE,
-      plan_tier TEXT NOT NULL CHECK(plan_tier IN ('basic', 'advanced', 'white_glove')),
+      plan_tier TEXT NOT NULL CHECK(plan_tier IN ('free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'enterprise', 'basic', 'advanced', 'white_glove')),
       status TEXT NOT NULL DEFAULT 'incomplete' CHECK(status IN ('incomplete', 'active', 'past_due', 'canceled', 'trialing', 'incomplete_expired')),
       current_period_start TEXT,
       current_period_end TEXT,
@@ -592,6 +593,7 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   applyPerfTenantMigration(db);
   applyLeadsTenantMigration(db);
   applyClerkWebhookReplayMigration(db);
+  applyPlanTierCheckMigration(db);
 
   return db;
 }

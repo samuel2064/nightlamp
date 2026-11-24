@@ -1,8 +1,8 @@
 import { Database } from 'sql.js';
 import { IncomingMessage, ServerResponse } from 'http';
 import { v4 as uuid } from 'uuid';
-import { StripeClient, createCheckoutSession, createCustomerPortalSession, constructWebhookEvent } from './stripe-client';
-import { SubscriptionModel, PlanTier, Subscription, PLAN_TIERS } from './subscription';
+import { StripeClient, createCheckoutSession, createCustomerPortalSession, constructWebhookEvent, resolvePriceId } from './stripe-client';
+import { SubscriptionModel, PlanTier, Subscription, PLAN_TIERS, getPlanDisplayName, getPlanMonthlyPrice, getPlanInterval, getPlanPrice, toCatalogueTier } from './subscription';
 import { TierEnforcer } from './tier-enforcer';
 import { UsageTracker } from './usage';
 import { AuthContext, requireRole } from '../api/auth';
@@ -66,7 +66,7 @@ export class BillingApi {
     }
 
     if (path === '/api/billing/invoices' && req.method === 'GET') {
-      this.handleInvoices(res, auth!);
+      this.handleInvoices(req, res, auth!);
       return true;
     }
     if ((path === '/api/billing/change-plan' || path === '/api/billing/cancel') && req.method === 'POST') {
@@ -116,6 +116,7 @@ export class BillingApi {
       res.end(JSON.stringify({ role: auth ? this.resolveBillingAccessRole(auth) : 'none' }));
       return true;
     }
+
     if (path === '/api/billing/subscription' && req.method === 'GET') {
       this.handleGetSubscription(req, res, auth!);
       return true;
@@ -198,18 +199,6 @@ export class BillingApi {
     return null;
   }
 
-  private handleListPlans(res: ServerResponse): void {
-    const plans = Object.entries(PLAN_TIERS).map(([tier, config]) => ({
-      id: tier,
-      name: config.name,
-      price: config.price,
-      monitors: config.monitors,
-      reports: config.reports,
-      storageMb: config.storageMb,
-    }));
-    res.end(JSON.stringify({ plans }));
-  }
-
   private rejectIdentity(input: Record<string, unknown>, res: ServerResponse): boolean {
     if (['customerId', 'teamId', 'orgId', 'stripeCustomerId', 'subscriptionId'].some(key => Object.hasOwn(input, key))) {
       res.writeHead(400);
@@ -228,10 +217,10 @@ export class BillingApi {
       `SELECT id FROM customers WHERE ${scope.clause}${personal} ORDER BY created_at DESC, id DESC LIMIT 1`,
       [...scope.params, ...(auth.teamId === null ? [auth.email] : [])],
     );
-    return rows.length ? this.subscriptions.getCustomer(rows[0].values[0][0] as string, auth.teamId) : null;
+return rows.length ? this.subscriptions.getCustomer(rows[0].values[0][0] as string, auth.teamId) : null;
   }
 
-  private async handleInvoices(res: ServerResponse, auth: AuthContext): Promise<void> {
+  private async handleInvoices(req: IncomingMessage, res: ServerResponse, auth: AuthContext): Promise<void> {
     const stripe = this.requireStripeClient(res);
     if (!stripe) return;
     try {
@@ -269,10 +258,29 @@ export class BillingApi {
         return;
       }
       if (this.rejectIdentity(input, res)) return;
-      if (!cancel && (typeof input.planTier !== 'string' || !Object.hasOwn(PLAN_TIERS, input.planTier))) {
+      let priceId: string | null = null;
+      // white_glove is withdrawn from sale (CEO ratified on NOC-327); existing
+      // subscriptions are honoured but new signups and plan changes to white_glove
+      // are not allowed.
+      // Legacy aliases basic and advanced are honoured (map to pro_monthly and team_monthly).
+      // free has a $0 Stripe price and is purchasable via checkout.
+      // enterprise has no Stripe price and is not purchasable.
+      const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
+      if (!cancel && (typeof input.planTier !== 'string' || !allowedPlanTiers.includes(input.planTier as PlanTier))) {
         res.writeHead(400);
         res.end(JSON.stringify({ error: 'Invalid plan tier' }));
         return;
+      }
+      if (!cancel) {
+        // Fail closed before any Stripe call: a missing price id refuses with
+        // the missing variable named instead of reaching Stripe (NOC-318).
+        try {
+          priceId = resolvePriceId(stripe, input.planTier as PlanTier);
+        } catch (err: any) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: err.message }));
+          return;
+        }
       }
       try {
         const customer = this.resolveCustomer(auth);
@@ -292,8 +300,8 @@ export class BillingApi {
           this.deps.db.run(`UPDATE subscriptions SET cancel_at_period_end = 1, updated_at = datetime('now') WHERE id = ? AND ${scope.clause}`, [sub.id, ...scope.params]);
         } else {
           const planTier = input.planTier as PlanTier;
-          const price = stripe.priceIds[planTier];
-          if (!price || remote.items?.data?.length !== 1) throw new Error('Unsupported subscription configuration');
+          const price = priceId ?? resolvePriceId(stripe, planTier);
+          if (remote.items?.data?.length !== 1) throw new Error('Unsupported subscription configuration');
           // Leave proration_behavior unspecified: retain Stripe's configured/default
           // policy rather than accepting a client-controlled billing policy.
           await stripeSubscription.subscriptions.update(sub.stripeSubscriptionId, {
@@ -358,9 +366,25 @@ export class BillingApi {
           return;
         }
 
-        if (!Object.hasOwn(PLAN_TIERS, planTier)) {
+        // Legacy aliases basic and advanced are honoured (map to pro_monthly and team_monthly).
+        // free has a $0 Stripe price and is purchasable via checkout.
+        // enterprise has no Stripe price and is not purchasable.
+        // white_glove is withdrawn from sale (CEO ratified on NOC-327); existing
+        // subscriptions are honoured but new signups to white_glove are not allowed.
+        const allowedPlanTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
+        if (!allowedPlanTiers.includes(planTier as PlanTier)) {
           res.writeHead(400);
           res.end(JSON.stringify({ error: `Invalid plan tier: ${planTier}` }));
+          return;
+        }
+
+        // Fail closed before any Stripe call: an unconfigured price id refuses
+        // with the missing variable named instead of reaching Stripe (NOC-318).
+        try {
+          resolvePriceId(stripe, planTier as PlanTier);
+        } catch (err: any) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: err.message }));
           return;
         }
 
@@ -370,7 +394,7 @@ export class BillingApi {
         const session = await createCheckoutSession(
           stripe,
           customer.stripeCustomerId,
-          planTier,
+          planTier as PlanTier,
           successUrl,
           cancelUrl,
         );
@@ -445,10 +469,10 @@ export class BillingApi {
   private handleWebhook(req: IncomingMessage, res: ServerResponse, teamId: string | null): void {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
-    req.on('end', async () => {
-      const stripe = this.requireStripeClient(res);
-      if (!stripe) return;
-      const signature = req.headers['stripe-signature'] as string;
+      req.on('end', async () => {
+        const stripe = this.requireStripeClient(res);
+        if (!stripe) return;
+        const signature = req.headers['stripe-signature'] as string;
       if (!signature) {
         res.writeHead(400);
         res.end(JSON.stringify({ error: 'Missing stripe-signature header' }));
@@ -622,8 +646,9 @@ export class BillingApi {
     }
 
     const limits = this.tierEnforcer.getLimits(sub.planTier);
-    res.end(JSON.stringify({ subscription: { ...sub, limits, price: PLAN_TIERS[sub.planTier].price,
-      currency: 'usd', billingPeriod: 'month', nextBillingDate: sub.cancelAtPeriodEnd ? null : sub.currentPeriodEnd } }));
+    const interval = getPlanInterval(sub.planTier);
+    const price = getPlanPrice(sub.planTier);
+    res.end(JSON.stringify({ subscription: { ...sub, limits, price, currency: 'usd', billingPeriod: interval, nextBillingDate: sub.cancelAtPeriodEnd ? null : sub.currentPeriodEnd } }));
   }
 
   private handleGetUsage(req: IncomingMessage, res: ServerResponse, auth: AuthContext): void {
@@ -641,6 +666,28 @@ export class BillingApi {
         storageMb: Math.max(0, limits.storageMb - usage.storageMb),
       },
     }));
+  }
+
+  private handleListPlans(res: ServerResponse): void {
+    // Return self-serve purchasable plans only (catalogue tiers with Stripe prices).
+    // free has a $0 Stripe price and is purchasable via checkout.
+    // enterprise has no Stripe price and is not purchasable via checkout.
+    // Legacy aliases basic and advanced are honoured (map to pro_monthly and team_monthly).
+    // white_glove is withdrawn (CEO ratified NOC-327).
+    const selfServeTiers: PlanTier[] = ['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly'];
+    const plans = selfServeTiers.map(tier => {
+      const config = PLAN_TIERS[tier];
+      return {
+        id: tier,
+        name: config.name,
+        price: config.price,
+        interval: config.interval,
+        monitors: config.monitors,
+        reports: config.reports,
+        storageMb: config.storageMb,
+      };
+    });
+    res.end(JSON.stringify({ plans }));
   }
 
   private handleSummary(res: ServerResponse, teamId: string | null): void {
@@ -667,9 +714,8 @@ export class BillingApi {
     const planResult = this.deps.db.exec(`SELECT plan_tier, COUNT(*) FROM subscriptions WHERE ${subscriptionScope.clause} AND status = 'active' GROUP BY plan_tier`, subscriptionScope.params);
     let mrr = 0;
     if (planResult.length > 0) {
-      const planPrices: Record<string, number> = { basic: 99, advanced: 299, white_glove: 499 };
       for (const row of planResult[0].values) {
-        mrr += (planPrices[row[0] as string] || 0) * (row[1] as number);
+        mrr += getPlanMonthlyPrice(row[0] as PlanTier) * (row[1] as number);
       }
     }
 

@@ -2,10 +2,10 @@ import { expect } from 'chai';
 import { Database } from 'sql.js';
 import { Server, IncomingMessage } from 'http';
 import { createDatabase } from '../db/schema';
-import { SubscriptionModel, PLAN_TIERS } from '../billing/subscription';
+import { SubscriptionModel, PLAN_TIERS, getPlanDisplayName, getPlanMonthlyPrice, toCatalogueTier } from '../billing/subscription';
 import { TierEnforcer } from '../billing/tier-enforcer';
 import { UsageTracker } from '../billing/usage';
-import { createStripeClient, createCheckoutSession, createCustomerPortalSession, constructWebhookEvent } from '../billing/stripe-client';
+import { createStripeClient, createCheckoutSession, createCustomerPortalSession, constructWebhookEvent, resolvePriceId } from '../billing/stripe-client';
 import { BillingApi } from '../billing/billing-api';
 
 describe('Billing - Subscription Model', () => {
@@ -39,17 +39,23 @@ describe('Billing - Subscription Model', () => {
     expect(found!.id).to.equal(c.id);
   });
 
-  it('creates a subscription', () => {
+  it('creates a subscription with catalogue tier', () => {
     const c = subs.createCustomer('test@test.com');
-    const sub = subs.createSubscription(c.id, 'advanced');
+    const sub = subs.createSubscription(c.id, 'team_monthly');
     expect(sub.id).to.be.a('string');
-    expect(sub.planTier).to.equal('advanced');
+    expect(sub.planTier).to.equal('team_monthly');
     expect(sub.status).to.equal('incomplete');
+  });
+
+  it('creates a subscription with legacy tier', () => {
+    const c = subs.createCustomer('legacy@test.com');
+    const sub = subs.createSubscription(c.id, 'advanced');
+    expect(sub.planTier).to.equal('advanced');
   });
 
   it('gets subscription by customer', () => {
     const c = subs.createCustomer('x@y.com');
-    const sub = subs.createSubscription(c.id, 'basic');
+    const sub = subs.createSubscription(c.id, 'pro_monthly');
     const found = subs.getSubscriptionByCustomer(c.id);
     expect(found).to.not.be.null;
     expect(found!.id).to.equal(sub.id);
@@ -75,28 +81,60 @@ describe('Billing - Subscription Model', () => {
 });
 
 describe('Billing - Plan Tiers', () => {
-  it('defines three pricing tiers', () => {
+  it('defines catalogue pricing tiers', () => {
+    expect(PLAN_TIERS.free.price).to.equal(0);
+    expect(PLAN_TIERS.pro_monthly.price).to.equal(99);
+    expect(PLAN_TIERS.pro_yearly.price).to.equal(990);
+    expect(PLAN_TIERS.team_monthly.price).to.equal(299);
+    expect(PLAN_TIERS.team_yearly.price).to.equal(2990);
+    expect(PLAN_TIERS.enterprise.price).to.equal(0);
+  });
+
+  it('defines legacy pricing tiers (backward compatibility)', () => {
     expect(PLAN_TIERS.basic.price).to.equal(99);
     expect(PLAN_TIERS.advanced.price).to.equal(299);
     expect(PLAN_TIERS.white_glove.price).to.equal(499);
   });
 
-  it('basic has 5 monitors, 100 reports, 100MB', () => {
-    expect(PLAN_TIERS.basic.monitors).to.equal(5);
-    expect(PLAN_TIERS.basic.reports).to.equal(100);
-    expect(PLAN_TIERS.basic.storageMb).to.equal(100);
+  it('pro_monthly has 5 monitors, 100 reports, 100MB', () => {
+    expect(PLAN_TIERS.pro_monthly.monitors).to.equal(5);
+    expect(PLAN_TIERS.pro_monthly.reports).to.equal(100);
+    expect(PLAN_TIERS.pro_monthly.storageMb).to.equal(100);
   });
 
-  it('advanced has 20 monitors, 500 reports, 500MB', () => {
-    expect(PLAN_TIERS.advanced.monitors).to.equal(20);
-    expect(PLAN_TIERS.advanced.reports).to.equal(500);
-    expect(PLAN_TIERS.advanced.storageMb).to.equal(500);
+  it('team_monthly has 20 monitors, 500 reports, 500MB', () => {
+    expect(PLAN_TIERS.team_monthly.monitors).to.equal(20);
+    expect(PLAN_TIERS.team_monthly.reports).to.equal(500);
+    expect(PLAN_TIERS.team_monthly.storageMb).to.equal(500);
   });
 
   it('white_glove has 100 monitors, 2000 reports, 2000MB', () => {
     expect(PLAN_TIERS.white_glove.monitors).to.equal(100);
     expect(PLAN_TIERS.white_glove.reports).to.equal(2000);
     expect(PLAN_TIERS.white_glove.storageMb).to.equal(2000);
+  });
+
+  it('getPlanDisplayName returns correct names', () => {
+    expect(getPlanDisplayName('pro_monthly')).to.equal('Pro (Monthly)');
+    expect(getPlanDisplayName('team_yearly')).to.equal('Team (Yearly)');
+    expect(getPlanDisplayName('basic')).to.equal('Basic Support');
+  });
+
+  it('getPlanMonthlyPrice returns correct monthly prices', () => {
+    expect(getPlanMonthlyPrice('pro_monthly')).to.equal(99);
+    expect(getPlanMonthlyPrice('pro_yearly')).to.equal(99);
+    expect(getPlanMonthlyPrice('team_monthly')).to.equal(299);
+    expect(getPlanMonthlyPrice('team_yearly')).to.equal(299);
+    expect(getPlanMonthlyPrice('basic')).to.equal(99);
+    expect(getPlanMonthlyPrice('advanced')).to.equal(299);
+  });
+
+  it('toCatalogueTier maps legacy tiers to catalogue tier+interval', () => {
+    expect(toCatalogueTier('basic')).to.equal('pro:month');
+    expect(toCatalogueTier('advanced')).to.equal('team:month');
+    expect(toCatalogueTier('white_glove')).to.equal('white_glove');
+    expect(toCatalogueTier('pro_monthly')).to.equal('pro:month');
+    expect(toCatalogueTier('team_yearly')).to.equal('team:year');
   });
 });
 
@@ -110,7 +148,15 @@ describe('Billing - Tier Enforcer', () => {
     expect(limits.storageMb).to.equal(0);
   });
 
-  it('returns correct limits per tier', () => {
+  it('returns correct limits per catalogue tier', () => {
+    const pro = enforcer.getLimits('pro_monthly');
+    expect(pro.monitors).to.equal(5);
+
+    const team = enforcer.getLimits('team_monthly');
+    expect(team.monitors).to.equal(20);
+  });
+
+  it('returns correct limits per legacy tier', () => {
     const basic = enforcer.getLimits('basic');
     expect(basic.monitors).to.equal(5);
 
@@ -119,7 +165,7 @@ describe('Billing - Tier Enforcer', () => {
   });
 
   it('checks limit - allowed when under', () => {
-    const sub = { planTier: 'basic' as const, status: 'active' } as any;
+    const sub = { planTier: 'pro_monthly' as const, status: 'active' } as any;
     const check = enforcer.checkLimit(sub, 'monitors', 2);
     expect(check.allowed).to.be.true;
     expect(check.limit).to.equal(5);
@@ -182,39 +228,59 @@ describe('Billing - Usage Tracker', () => {
 });
 
 describe('Billing - Stripe Client', () => {
-  it('creates a stripe client with default price IDs', () => {
+  it('leaves price ids unset when no price env vars are provided (fails closed, no placeholder)', () => {
     const client = createStripeClient({ secretKey: 'sk_test_fake' });
     expect(client.stripe).to.exist;
-    expect(client.priceIds.basic).to.equal('price_basic');
-    expect(client.priceIds.advanced).to.equal('price_advanced');
-    expect(client.priceIds.white_glove).to.equal('price_white_glove');
+    expect(Object.keys(client.priceIds)).to.have.lengthOf(0);
   });
 
-  it('creates a stripe client with custom price IDs', () => {
+  it('creates a stripe client with custom price IDs including free', () => {
     const client = createStripeClient({
       secretKey: 'sk_test_fake',
-      priceBasic: 'price_basic_custom',
-      priceAdvanced: 'price_adv_custom',
-      priceWhiteGlove: 'price_wg_custom',
+      priceFreeMonthly: 'price_free_monthly_custom',
+      priceProMonthly: 'price_pro_monthly_custom',
+      priceProYearly: 'price_pro_yearly_custom',
+      priceTeamMonthly: 'price_team_monthly_custom',
+      priceTeamYearly: 'price_team_yearly_custom',
     });
-    expect(client.priceIds.basic).to.equal('price_basic_custom');
-    expect(client.priceIds.advanced).to.equal('price_adv_custom');
-    expect(client.priceIds.white_glove).to.equal('price_wg_custom');
+    expect(client.priceIds['free:month']).to.equal('price_free_monthly_custom');
+    expect(client.priceIds['pro:month']).to.equal('price_pro_monthly_custom');
+    expect(client.priceIds['pro:year']).to.equal('price_pro_yearly_custom');
+    expect(client.priceIds['team:month']).to.equal('price_team_monthly_custom');
+    expect(client.priceIds['team:year']).to.equal('price_team_yearly_custom');
   });
 
-  it('creates a checkout session', async () => {
+  it('creates a checkout session with catalogue tier', async () => {
     const mockStripe = { checkout: { sessions: { create: async (params: any) => ({ id: 'cs_test_123', url: 'https://checkout.stripe.com/test', ...params }) } } };
-    const client: any = { stripe: mockStripe, priceIds: { basic: 'price_basic' } };
+    const client: any = { stripe: mockStripe, priceIds: { 'pro:month': 'price_pro_monthly' } };
 
-    const session = await createCheckoutSession(client, 'cus_123', 'basic', 'https://example.com/success', 'https://example.com/cancel');
+    const session = await createCheckoutSession(client, 'cus_123', 'pro:month', 'https://example.com/success', 'https://example.com/cancel');
     expect(session.id).to.equal('cs_test_123');
     expect(session.url).to.include('checkout.stripe.com');
     expect(session.mode).to.equal('subscription');
-    expect(session.line_items[0].price).to.equal('price_basic');
+    expect(session.line_items[0].price).to.equal('price_pro_monthly');
+  });
+
+  it('creates a checkout session with legacy tier', async () => {
+    const mockStripe = { checkout: { sessions: { create: async (params: any) => ({ id: 'cs_test_123', url: 'https://checkout.stripe.com/test', ...params }) } } };
+    const client: any = { stripe: mockStripe, priceIds: { 'pro:month': 'price_pro_monthly' } };
+
+    const session = await createCheckoutSession(client, 'cus_123', 'basic', 'https://example.com/success', 'https://example.com/cancel');
+    expect(session.id).to.equal('cs_test_123');
+    expect(session.line_items[0].price).to.equal('price_pro_monthly');
+  });
+
+  it('creates a checkout session with free tier', async () => {
+    const mockStripe = { checkout: { sessions: { create: async (params: any) => ({ id: 'cs_test_123', url: 'https://checkout.stripe.com/test', ...params }) } } };
+    const client: any = { stripe: mockStripe, priceIds: { 'free:month': 'price_free_monthly' } };
+
+    const session = await createCheckoutSession(client, 'cus_123', 'free', 'https://example.com/success', 'https://example.com/cancel');
+    expect(session.id).to.equal('cs_test_123');
+    expect(session.line_items[0].price).to.equal('price_free_monthly');
   });
 
   it('throws on unknown plan tier for checkout session', async () => {
-    const client: any = { stripe: null, priceIds: { basic: 'price_basic' } };
+    const client: any = { stripe: null, priceIds: { 'pro:month': 'price_pro_monthly' } };
     try {
       await createCheckoutSession(client, 'cus_123', 'nonexistent_tier', 'url', 'url');
       expect.fail('should have thrown');
@@ -278,7 +344,7 @@ describe('Billing - BillingApi', () => {
           constructEvent: (payload: string, signature: string, secret: string) => JSON.parse(payload),
         },
       },
-      priceIds: { basic: 'price_basic_monthly', advanced: 'price_advanced_monthly', white_glove: 'price_white_glove_monthly' },
+      priceIds: { 'free:month': 'price_free_monthly', 'pro:month': 'price_pro_monthly', 'team:month': 'price_team_monthly', 'pro:year': 'price_pro_yearly' },
     };
 
     api = new BillingApi({
@@ -290,13 +356,12 @@ describe('Billing - BillingApi', () => {
 
   });
 
-  it('GET /api/billing/plans returns all plans', async () => {
+  it('GET /api/billing/plans returns self-serve purchasable plans', async () => {
     const res = await handleRequest(api, 'GET', '/api/billing/plans');
     const data = JSON.parse(res.body);
-    expect(data.plans).to.have.lengthOf(3);
-    expect(data.plans[0].id).to.equal('basic');
-    expect(data.plans[1].id).to.equal('advanced');
-    expect(data.plans[2].id).to.equal('white_glove');
+    expect(data.plans).to.have.lengthOf(5);
+    const planIds = data.plans.map((p: any) => p.id).sort();
+    expect(planIds).to.deep.equal(['free', 'pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly']);
   });
 
   it('POST /api/billing/customer creates a customer', async () => {
@@ -314,7 +379,18 @@ describe('Billing - BillingApi', () => {
     expect(data.error).to.include('email is required');
   });
 
-  it('POST /api/billing/create-checkout-session creates checkout', async () => {
+  it('POST /api/billing/create-checkout-session creates checkout with catalogue tier', async () => {
+    const subs = new SubscriptionModel(db);
+    const cust = subs.createCustomer('billing@test.com');
+    subs.updateStripeCustomerId(cust.id, 'cus_test');
+    const res = await handleRequest(api, 'POST', '/api/billing/create-checkout-session', JSON.stringify({ planTier: 'team_monthly' }));
+    const data = JSON.parse(res.body);
+    expect(data.url).to.be.a('string');
+    expect(data.sessionId).to.be.a('string');
+    expect(data.subscriptionId).to.be.a('string');
+  });
+
+  it('POST /api/billing/create-checkout-session creates checkout with legacy tier', async () => {
     const subs = new SubscriptionModel(db);
     const cust = subs.createCustomer('billing@test.com');
     subs.updateStripeCustomerId(cust.id, 'cus_test');
@@ -340,19 +416,30 @@ describe('Billing - BillingApi', () => {
     expect(data.error).to.include('Invalid plan tier');
   });
 
+  it('POST /api/billing/create-checkout-session creates checkout with free tier', async () => {
+    const subs = new SubscriptionModel(db);
+    const cust = subs.createCustomer('billing@test.com');
+    subs.updateStripeCustomerId(cust.id, 'cus_test');
+    const res = await handleRequest(api, 'POST', '/api/billing/create-checkout-session', JSON.stringify({ planTier: 'free' }));
+    const data = JSON.parse(res.body);
+    expect(data.url).to.be.a('string');
+    expect(data.sessionId).to.be.a('string');
+    expect(data.subscriptionId).to.be.a('string');
+  });
+
   it('POST /api/billing/create-checkout-session rejects unknown customer', async () => {
-    const res = await handleRequest(api, 'POST', '/api/billing/create-checkout-session', JSON.stringify({ planTier: 'basic' }));
+    const res = await handleRequest(api, 'POST', '/api/billing/create-checkout-session', JSON.stringify({ planTier: 'pro_monthly' }));
     expect(res.statusCode).to.equal(404);
   });
 
   it('GET /api/billing/subscription returns subscription with limits', async () => {
     const subs = new SubscriptionModel(db);
     const cust = subs.createCustomer('billing@test.com');
-    subs.createSubscription(cust.id, 'basic');
+    subs.createSubscription(cust.id, 'pro_monthly');
     const res = await handleRequest(api, 'GET', '/api/billing/subscription');
     const data = JSON.parse(res.body);
     expect(data.subscription).to.not.be.null;
-    expect(data.subscription.planTier).to.equal('basic');
+    expect(data.subscription.planTier).to.equal('pro_monthly');
     expect(data.subscription.limits.monitors).to.equal(5);
   });
 
@@ -370,7 +457,7 @@ describe('Billing - BillingApi', () => {
   it('GET /api/billing/usage returns usage with remaining', async () => {
     const subs = new SubscriptionModel(db);
     const cust = subs.createCustomer('billing@test.com');
-    subs.createSubscription(cust.id, 'advanced');
+    subs.createSubscription(cust.id, 'team_monthly');
     const usage = new UsageTracker(db);
     usage.recordUsage(cust.id, 'monitors', 3);
     usage.recordUsage(cust.id, 'reports', 10);
@@ -539,7 +626,7 @@ describe('Billing - Webhook Processing', () => {
         billingPortal: { sessions: { create: async (p: any) => ({ id: 'bps_test_' + Date.now(), url: 'https://billing.stripe.com/test', ...p }) } },
         webhooks: { constructEvent: (payload: string, sig: string, secret: string) => JSON.parse(payload) },
       },
-      priceIds: { basic: 'price_basic' },
+      priceIds: { 'free:month': 'price_free_monthly', 'pro:month': 'price_pro_monthly' },
     };
 
     api = new BillingApi({ db, stripeClient: mockStripe, webhookSecret: 'whsec_test', baseUrl: 'http://localhost:3001' });
@@ -552,7 +639,7 @@ describe('Billing - Webhook Processing', () => {
 
   it('processes checkout.session.completed - marks subscription active', async () => {
     const cust = subs.createCustomer('checkout-complete@test.com');
-    const sub = subs.createSubscription(cust.id, 'basic');
+    const sub = subs.createSubscription(cust.id, 'pro_monthly');
 
     subs.updateStripeSubscriptionId(sub.id, 'cs_test_completed', 'incomplete');
 
@@ -571,7 +658,7 @@ describe('Billing - Webhook Processing', () => {
 
   it('processes customer.subscription.created - updates status and periods', async () => {
     const cust = subs.createCustomer('sub-created@test.com');
-    const sub = subs.createSubscription(cust.id, 'advanced');
+    const sub = subs.createSubscription(cust.id, 'team_monthly');
     const now = Math.floor(Date.now() / 1000);
     const in30 = now + 2592000;
 
@@ -594,7 +681,7 @@ describe('Billing - Webhook Processing', () => {
 
   it('processes customer.subscription.updated - updates status', async () => {
     const cust = subs.createCustomer('sub-updated@test.com');
-    const sub = subs.createSubscription(cust.id, 'basic');
+    const sub = subs.createSubscription(cust.id, 'pro_monthly');
     subs.updateStripeSubscriptionId(sub.id, 'sub_updated_123', 'active');
     subs.updateSubscriptionStatus('sub_updated_123', 'active');
 
@@ -647,7 +734,7 @@ describe('Billing - Webhook Processing', () => {
 
   it('returns received:true for valid webhook', async () => {
     const cust = subs.createCustomer('valid-webhook@test.com');
-    subs.createSubscription(cust.id, 'basic');
+    subs.createSubscription(cust.id, 'pro_monthly');
 
     const payload = buildWebhookEvent('customer.subscription.created', {
       id: 'sub_valid_webhook',
@@ -673,7 +760,7 @@ describe('Billing - Webhook Idempotency, Audit & Lifecycle (NOC-183)', () => {
       stripe: {
         webhooks: { constructEvent: (payload: string) => JSON.parse(payload) },
       },
-      priceIds: { basic: 'price_basic' },
+      priceIds: { 'free:month': 'price_free_monthly', 'pro:month': 'price_pro_monthly' },
     };
     api = new BillingApi({ db, stripeClient: mockStripe, webhookSecret: 'whsec_test', baseUrl: 'http://localhost:3001' });
     subs = new SubscriptionModel(db);
@@ -692,7 +779,7 @@ describe('Billing - Webhook Idempotency, Audit & Lifecycle (NOC-183)', () => {
 
   it('records an audit row for every webhook event', async () => {
     const cust = subs.createCustomer('audit@test.com');
-    const sub = subs.createSubscription(cust.id, 'basic');
+    const sub = subs.createSubscription(cust.id, 'pro_monthly');
     subs.updateStripeSubscriptionId(sub.id, 'sub_audit_1', 'incomplete');
 
     const res = await handleRequest(api, 'POST', '/api/billing/webhook', evt('customer.subscription.created', {
@@ -709,7 +796,7 @@ describe('Billing - Webhook Idempotency, Audit & Lifecycle (NOC-183)', () => {
 
   it('records livemode events with live mode', async () => {
     const cust = subs.createCustomer('live@test.com');
-    const sub = subs.createSubscription(cust.id, 'basic');
+    const sub = subs.createSubscription(cust.id, 'pro_monthly');
     subs.updateStripeSubscriptionId(sub.id, 'sub_live_1', 'incomplete');
 
     await handleRequest(api, 'POST', '/api/billing/webhook', evt('customer.subscription.created', {
@@ -723,7 +810,7 @@ describe('Billing - Webhook Idempotency, Audit & Lifecycle (NOC-183)', () => {
 
   it('is idempotent for duplicate event ids', async () => {
     const cust = subs.createCustomer('dupe@test.com');
-    const sub = subs.createSubscription(cust.id, 'basic');
+    const sub = subs.createSubscription(cust.id, 'pro_monthly');
     subs.updateStripeSubscriptionId(sub.id, 'sub_dupe_1', 'incomplete');
 
     const payload = evt('customer.subscription.created', { id: 'sub_dupe_1', status: 'active' }, { id: 'evt_fixed_dupe' });
@@ -740,7 +827,7 @@ describe('Billing - Webhook Idempotency, Audit & Lifecycle (NOC-183)', () => {
 
   it('processes invoice.payment_succeeded - marks active and sets period', async () => {
     const cust = subs.createCustomer('paid@test.com');
-    const sub = subs.createSubscription(cust.id, 'advanced');
+    const sub = subs.createSubscription(cust.id, 'team_monthly');
     subs.updateStripeSubscriptionId(sub.id, 'sub_paid_1', 'past_due');
     subs.updateSubscriptionStatus('sub_paid_1', 'past_due');
 
@@ -757,7 +844,7 @@ describe('Billing - Webhook Idempotency, Audit & Lifecycle (NOC-183)', () => {
 
   it('processes customer.subscription.trial_will_end and audits the notice', async () => {
     const cust = subs.createCustomer('trial@test.com');
-    const sub = subs.createSubscription(cust.id, 'basic');
+    const sub = subs.createSubscription(cust.id, 'pro_monthly');
     subs.updateStripeSubscriptionId(sub.id, 'sub_trial_1', 'trialing');
     subs.updateSubscriptionStatus('sub_trial_1', 'trialing');
 
@@ -782,7 +869,7 @@ describe('Billing - Webhook Idempotency, Audit & Lifecycle (NOC-183)', () => {
     db.run('INSERT INTO teams (id, name, slug, owner_id) VALUES (?, ?, ?, ?)',
       [auditTeamId, 'Billing Audit Team', 'billing-audit-team', 'billing-user']);
     const cust = subs.createCustomer('audit-endpoint@test.com', undefined, auditTeamId);
-    const sub = subs.createSubscription(cust.id, 'basic', auditTeamId);
+    const sub = subs.createSubscription(cust.id, 'pro_monthly', auditTeamId);
     subs.updateStripeSubscriptionId(sub.id, 'sub_audit_ep', 'incomplete', auditTeamId);
 
     await handleRequest(api, 'POST', '/api/billing/webhook', evt('customer.subscription.created', {
@@ -798,7 +885,7 @@ describe('Billing - Webhook Idempotency, Audit & Lifecycle (NOC-183)', () => {
 
   it('GET /api/billing/webhook-events refuses a caller with no membership', async () => {
     const cust = subs.createCustomer('audit-teamless@test.com');
-    const sub = subs.createSubscription(cust.id, 'basic');
+    const sub = subs.createSubscription(cust.id, 'pro_monthly');
     subs.updateStripeSubscriptionId(sub.id, 'sub_audit_teamless', 'incomplete');
 
     await handleRequest(api, 'POST', '/api/billing/webhook', evt('customer.subscription.created', {
@@ -812,7 +899,7 @@ describe('Billing - Webhook Idempotency, Audit & Lifecycle (NOC-183)', () => {
 
   it('GET /api/billing/summary fails closed for a caller with no membership', async () => {
     const cust = subs.createCustomer('summary-shared@test.com');
-    subs.createSubscription(cust.id, 'basic');
+    subs.createSubscription(cust.id, 'pro_monthly');
 
     const res = await handleRequest(api, 'GET', '/api/billing/summary');
     expect(res.statusCode).to.equal(200);
@@ -826,7 +913,7 @@ describe('Billing - Webhook Idempotency, Audit & Lifecycle (NOC-183)', () => {
 
   it('GET /api/billing/subscriptions fails closed for a caller with no membership', async () => {
     const cust = subs.createCustomer('subscriptions-shared@test.com');
-    subs.createSubscription(cust.id, 'basic');
+    subs.createSubscription(cust.id, 'pro_monthly');
 
     const res = await handleRequest(api, 'GET', '/api/billing/subscriptions');
     expect(res.statusCode).to.equal(200);
