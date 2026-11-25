@@ -1,4 +1,5 @@
 import { Pool, PoolClient } from 'pg';
+import { up as extendPlanTierUp } from './010-extend-plan-tier-check';
 
 interface PostgresMigrationDefinition {
   id: string;
@@ -74,6 +75,15 @@ async function checkSchemaStillApplied(client: PoolClient, migrationId: string):
     const perfDiagnosesTeamId = await hasColumn(client, 'perf_diagnoses', 'team_id');
     const playbookExecutionsTeamId = await hasColumn(client, 'playbook_executions', 'team_id');
     return clerkWebhook && clerkTeamId && leadsTeamId && perfRunsTeamId && perfRegressionsTeamId && perfDiagnosesTeamId && playbookExecutionsTeamId;
+  }
+  if (migrationId === '010-extend-plan-tier-check') {
+    const constraintResult = await client.query(`
+      SELECT pg_get_constraintdef(oid) AS def
+        FROM pg_constraint
+       WHERE conrelid = 'subscriptions'::regclass
+         AND conname = 'subscriptions_plan_tier_check'
+    `);
+    return constraintResult.rows.length > 0 && constraintResult.rows[0].def.includes('pro_monthly');
   }
   return false;
 }
@@ -912,6 +922,10 @@ export const POSTGRES_MIGRATIONS = [
         await client.query('CREATE INDEX IF NOT EXISTS idx_monitored_apps_owner ON monitored_apps(owner_id)');
       }
     },
+  },
+  {
+    id: '010-extend-plan-tier-check',
+    up: extendPlanTierUp,
   },
   {
     id: '011-analytics-events',

@@ -508,10 +508,11 @@ const { runPostgresMigrations } = await import('../db/migrations/postgres-runner
           '009-postgres-setup',
           '008-tenant-isolation',
           '010-monitored-apps',
+          '010-extend-plan-tier-check',
           '011-analytics-events',
           '012-personal-ownership',
           '013-clerk-webhook-events'
-        ], 'Ledger must have 6 rows in runner order');
+        ], 'Ledger must have 7 rows in runner order');
 
 // Verify index parity by reading actual index columns from both destinations
         let sqliteExplicitIndexCount = 0;
@@ -742,8 +743,8 @@ const afterIndexes = await pool.query(`
         assert.strictEqual(parseInt(afterTables.rows[0].count), 43);
         assert.strictEqual(parseInt(beforeIndexes.rows[0].count), 113);
         assert.strictEqual(parseInt(afterIndexes.rows[0].count), 113);
-        assert.strictEqual(parseInt(beforeLedger.rows[0].count), 6);
-        assert.strictEqual(parseInt(afterLedger.rows[0].count), 6);
+        assert.strictEqual(parseInt(beforeLedger.rows[0].count), 7);
+        assert.strictEqual(parseInt(afterLedger.rows[0].count), 7);
 
         await pool.query(`DROP SCHEMA IF EXISTS ${testSchema} CASCADE`);
         await assertDestinationLeftClean(pool, ['test_parity_%', 'test_idempotent_%']);
