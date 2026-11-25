@@ -499,11 +499,13 @@ const { runPostgresMigrations } = await import('../db/migrations/postgres-runner
           assert.deepStrictEqual(pgCols, sqliteCols, `Column mismatch for table ${table}`);
         }
 
-        // Verify ledger rows
+        // Verify ledger rows - the order is carried by the monotonic sequence,
+        // because applied_at ties on every row of one transaction-time boot
         const ledgerResult = await pool.query(`
-          SELECT migration_id FROM schema_migrations ORDER BY applied_at
+          SELECT migration_id, seq FROM schema_migrations ORDER BY seq
         `);
-        const ledgerIds = ledgerResult.rows.map(r => r.migration_id);
+        const ledgerRows = ledgerResult.rows;
+        const ledgerIds = ledgerRows.map(r => r.migration_id);
         assert.deepStrictEqual(ledgerIds, [
           '009-postgres-setup',
           '008-tenant-isolation',
@@ -512,7 +514,13 @@ const { runPostgresMigrations } = await import('../db/migrations/postgres-runner
           '011-analytics-events',
           '012-personal-ownership',
           '013-clerk-webhook-events'
-        ], 'Ledger must have 7 rows in runner order');
+        ], 'Ledger must have 7 rows in runner order, ordered by the ledger sequence');
+
+        const ledgerSeqs = ledgerRows.map(r => parseInt(r.seq, 10));
+        assert.ok(
+          ledgerSeqs.every((seq, i) => i === 0 || seq > ledgerSeqs[i - 1]),
+          `Ledger sequence must be strictly increasing in runner order: ${ledgerSeqs.join(', ')}`
+        );
 
 // Verify index parity by reading actual index columns from both destinations
         let sqliteExplicitIndexCount = 0;
@@ -714,9 +722,10 @@ const { runPostgresMigrations } = await import('../db/migrations/postgres-runner
         await pool.query(`CREATE SCHEMA ${testSchema}`);
         await pool.query(`SET search_path TO ${testSchema}, public`);
 
-        await runPostgresMigrations(pool);
+await runPostgresMigrations(pool);
         const beforeTables = await pool.query(`SELECT count(*) FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, [testSchema]);
-const beforeIndexes = await pool.query(`
+        const beforeLedgerOrder = await pool.query(`SELECT migration_id, seq FROM schema_migrations ORDER BY seq`);
+        const beforeIndexes = await pool.query(`
           SELECT count(*)
             FROM pg_index x
             JOIN pg_class i ON i.oid = x.indexrelid
@@ -726,10 +735,11 @@ const beforeIndexes = await pool.query(`
        `, [testSchema]);
         const beforeLedger = await pool.query(`SELECT count(*) FROM schema_migrations`);
 
-        await runPostgresMigrations(pool);
+await runPostgresMigrations(pool);
 
         const afterTables = await pool.query(`SELECT count(*) FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, [testSchema]);
-const afterIndexes = await pool.query(`
+        const afterLedgerOrder = await pool.query(`SELECT migration_id, seq FROM schema_migrations ORDER BY seq`);
+        const afterIndexes = await pool.query(`
           SELECT count(*)
             FROM pg_index x
             JOIN pg_class i ON i.oid = x.indexrelid
@@ -745,6 +755,23 @@ const afterIndexes = await pool.query(`
         assert.strictEqual(parseInt(afterIndexes.rows[0].count), 113);
         assert.strictEqual(parseInt(beforeLedger.rows[0].count), 7);
         assert.strictEqual(parseInt(afterLedger.rows[0].count), 7);
+
+        // the second boot must rewrite nothing: same rows, same sequence, same order
+        assert.deepStrictEqual(
+          afterLedgerOrder.rows,
+          beforeLedgerOrder.rows,
+          'the second boot must leave the ledger rows and their sequence unchanged'
+        );
+        const idempotentIds = afterLedgerOrder.rows.map((r: any) => r.migration_id);
+        assert.deepStrictEqual(idempotentIds, [
+          '009-postgres-setup',
+          '008-tenant-isolation',
+          '010-monitored-apps',
+          '010-extend-plan-tier-check',
+          '011-analytics-events',
+          '012-personal-ownership',
+          '013-clerk-webhook-events'
+        ], 'ledger must stay in runner order after the second boot');
 
         await pool.query(`DROP SCHEMA IF EXISTS ${testSchema} CASCADE`);
         await assertDestinationLeftClean(pool, ['test_parity_%', 'test_idempotent_%']);

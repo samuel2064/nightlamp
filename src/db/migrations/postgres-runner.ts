@@ -38,6 +38,49 @@ async function ledgerContains(client: PoolClient, migrationId: string): Promise<
   return (result.rowCount ?? 0) > 0;
 }
 
+const LEDGER_SEQUENCE = 'schema_migrations_seq_seq';
+
+// The ledger order is carried by seq, not applied_at: every row of one boot
+// shares the transaction-start CURRENT_TIMESTAMP, so applied_at cannot order
+// them. The sequence is monotonic and total, and every recorded row gets one.
+async function ensureLedgerShape(client: PoolClient): Promise<void> {
+  await client.query(`CREATE SEQUENCE IF NOT EXISTS ${LEDGER_SEQUENCE} AS bigint START 1`);
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      migration_id TEXT PRIMARY KEY,
+      seq BIGINT NOT NULL DEFAULT nextval('${LEDGER_SEQUENCE}'),
+      applied_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+    )
+  `);
+  // A ledger table created before the sequence column is upgraded in place.
+  await client.query('ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS seq BIGINT');
+  await client.query(`ALTER TABLE schema_migrations ALTER COLUMN seq SET DEFAULT nextval('${LEDGER_SEQUENCE}')`);
+  // Backfill in runner order, then any remaining row, so the order stays total.
+  for (const migration of POSTGRES_MIGRATIONS) {
+    await client.query(
+      'UPDATE schema_migrations SET seq = DEFAULT WHERE migration_id = $1 AND seq IS NULL',
+      [migration.id]
+    );
+  }
+  await client.query('UPDATE schema_migrations SET seq = DEFAULT WHERE seq IS NULL');
+  await client.query('ALTER TABLE schema_migrations ALTER COLUMN seq SET NOT NULL');
+}
+
+// Record one entry at its runner position: entries applied before it keep
+// their sequence, later entries shift up, so an upgraded destination still
+// ends with the ledger in runner order.
+async function recordLedgerEntry(client: PoolClient, migrationId: string, position: number): Promise<void> {
+  const prior = POSTGRES_MIGRATIONS.slice(0, position).map(m => m.id);
+  const targetResult = await client.query(`
+    SELECT COALESCE(MAX(seq), 0) + 1 AS target
+      FROM schema_migrations
+     WHERE migration_id = ANY($1::text[])
+  `, [prior]);
+  const target = parseInt(targetResult.rows[0].target, 10);
+  await client.query('UPDATE schema_migrations SET seq = seq + 1 WHERE seq >= $1', [target]);
+  await client.query('INSERT INTO schema_migrations (migration_id, seq) VALUES ($1, $2)', [migrationId, target]);
+}
+
 async function checkSchemaStillApplied(client: PoolClient, migrationId: string): Promise<boolean> {
   if (migrationId === '009-postgres-setup') {
     const teams = await tableExists(client, 'teams');
@@ -755,12 +798,7 @@ export const POSTGRES_MIGRATIONS = [
       `);
 
       // schema_migrations
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS schema_migrations (
-          migration_id TEXT PRIMARY KEY,
-          applied_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
-        );
-      `);
+      await ensureLedgerShape(client);
 
       // Indexes
       await client.query('CREATE INDEX IF NOT EXISTS idx_failure_events_detected ON failure_events(detected_at)');
@@ -1035,22 +1073,18 @@ export async function runPostgresMigrations(pool: any): Promise<void> {
   try {
     await client.query('BEGIN');
 
-    // First ensure the schema_migrations table exists
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS schema_migrations (
-        migration_id TEXT PRIMARY KEY,
-        applied_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
-      )
-    `);
+    // First ensure the ledger table exists, upgraded with its sequence column
+    await ensureLedgerShape(client);
 
-    for (const migration of POSTGRES_MIGRATIONS) {
+    for (let position = 0; position < POSTGRES_MIGRATIONS.length; position++) {
+      const migration = POSTGRES_MIGRATIONS[position];
       const alreadyInLedger = await ledgerContains(client, migration.id);
 
       if (!alreadyInLedger) {
         await client.query('SAVEPOINT sp_migration');
         try {
           await migration.up(client);
-          await client.query('INSERT INTO schema_migrations (migration_id) VALUES ($1)', [migration.id]);
+          await recordLedgerEntry(client, migration.id, position);
         } catch (error) {
           await client.query('ROLLBACK TO SAVEPOINT sp_migration');
           throw error;
