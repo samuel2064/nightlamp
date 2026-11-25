@@ -15,6 +15,12 @@ import { tenantFilter, tenantOwnedFilter } from '../api/tenant';
  */
 export type BillingAccessRole = 'owner' | 'admin' | 'member' | 'none';
 
+/**
+ * Plan tiers that can be selected for a new or changed subscription.
+ * Excludes withdrawn (white_glove) and enterprise (custom) tiers.
+ */
+const CHANGEABLE_PLAN_TIERS: PlanTier[] = ['pro_monthly', 'pro_yearly', 'team_monthly', 'team_yearly', 'basic', 'advanced'];
+
 interface BillingApiDeps {
   db: Database;
   stripeClient: StripeClient | null;
@@ -274,10 +280,12 @@ export class BillingApi {
         return;
       }
       if (this.rejectIdentity(input, res)) return;
-      if (!cancel && (typeof input.planTier !== 'string' || !Object.hasOwn(PLAN_TIERS, input.planTier))) {
-        res.writeHead(400);
-        res.end(JSON.stringify({ error: 'Invalid plan tier' }));
-        return;
+      if (!cancel) {
+        if (typeof input.planTier !== 'string' || !CHANGEABLE_PLAN_TIERS.includes(input.planTier as PlanTier)) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'Invalid plan tier' }));
+          return;
+        }
       }
       try {
         const customer = this.resolveCustomer(auth);

@@ -35,7 +35,7 @@ import { nodeHTTPRequestHandler } from '@trpc/server/adapters/node-http';
 import { handleSSERequest } from './sse';
 import { createPlaybookEngine } from '../playbook/engine';
 import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
-import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership, authenticateRequestAsync, requireRole } from './auth';
+import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership, authenticateRequestAsync, requireRole, extractBearerToken } from './auth';
 import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant, rowBelongsToScope, scopedTenantFilter, requireChannelOwnership } from './tenant';
 import { getDatabaseConfig, getBootId } from '../db';
 
@@ -62,16 +62,17 @@ export interface ApiConfig {
 interface EndpointRule {
   path: string;
   method?: string;
+  exact?: boolean;
 }
 
 const PUBLIC_ENDPOINTS: EndpointRule[] = [
-  { path: '/api/health' },
-  { path: '/api/performance/latency' },
-  { path: '/api/leads', method: 'POST' },
-  { path: '/api/webhooks/clerk', method: 'POST' },
-  { path: '/api/billing/webhook', method: 'POST' },
-  { path: '/api/x/auth' },
-  { path: '/api/x/callback' },
+  { path: '/api/health', exact: true },
+  { path: '/api/performance/latency', exact: true },
+  { path: '/api/leads', method: 'POST', exact: true },
+  { path: '/api/webhooks/clerk', method: 'POST', exact: true },
+  { path: '/api/billing/webhook', method: 'POST', exact: true },
+  { path: '/api/x/auth', exact: true },
+  { path: '/api/x/callback', exact: true },
 ];
 
 const PUBLIC_PATH_PATTERNS: RegExp[] = [
@@ -138,7 +139,10 @@ function matchesEndpoint(path: string, method: string | undefined, rules: Endpoi
   const normalized = normalizePath(path);
   return rules.some((rule) => {
     const rulePath = normalizePath(rule.path);
-    const pathMatches = normalized === rulePath || normalized.startsWith(`${rulePath}/`);
+    const prefix = rulePath + '/';
+    const pathMatches = rule.exact
+      ? normalized === rulePath
+      : normalized === rulePath || normalized.startsWith(prefix);
     const methodMatches = !rule.method || rule.method === method;
     return pathMatches && methodMatches;
   });
@@ -273,18 +277,31 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
     try {
       let auth: AuthContext | null = null;
-      if (!isPublicEndpoint(path, req.method)) {
+      const token = extractBearerToken(req.headers);
+      if (token) {
         try {
           auth = await authenticateRequestAsync(db, req);
         } catch (err: any) {
           if (err instanceof ApiAuthError) {
-            res.writeHead(err.statusCode);
-            res.end(JSON.stringify({ error: err.message, code: err.code }));
-            return;
+            if (!isPublicEndpoint(path, req.method)) {
+              res.writeHead(err.statusCode);
+              res.end(JSON.stringify({ error: err.message, code: err.code }));
+              return;
+            }
+            auth = null;
+          } else {
+            throw err;
           }
-          throw err;
         }
+      }
 
+      if (!isPublicEndpoint(path, req.method) && !auth) {
+        res.writeHead(401);
+        res.end(JSON.stringify({ error: 'Authentication required', code: 'UNAUTHORIZED' }));
+        return;
+      }
+
+      if (auth) {
         const teamPathMatch = path.match(/^\/api\/teams\/([^/]+)(\/.*)?$/);
         if (teamPathMatch) {
           const requestedTeamId = teamPathMatch[1];
@@ -1378,7 +1395,7 @@ const id = uuidv4();
         const severity = parsedUrl.searchParams.get('severity');
         const eventScope = tenantOwnedFilter('fe.team_id', teamId);
         const checkScope = tenantOwnedFilter('c.team_id', teamId);
-        let sql = `SELECT fe.id, fe.check_id, fe.failure_type, fe.severity, fe.title, fe.description, 
+        let sql = `SELECT fe.id, fe.check_id, fe.failure_type, fe.severity, fe.title, fe.description
                           fe.raw_data, fe.detected_at, fe.acknowledged,
                           c.name as check_name, c.source as check_source
                    FROM failure_events fe
@@ -1611,10 +1628,15 @@ const id = uuidv4();
                 return;
               }
 
-              const existing = db.exec('SELECT id FROM leads WHERE email = ? AND team_id = ?', [normalized, teamId]);
-              if (existing.length > 0 && existing[0].values.length > 0) {
+              let existing;
+              if (teamId === null) {
+                existing = db.exec('SELECT id FROM leads WHERE email = ? AND team_id IS NULL', [normalized]);
+              } else {
+                existing = db.exec('SELECT id FROM leads WHERE email = ? AND team_id = ?', [normalized, teamId]);
+              }
+if (existing.length > 0 && existing[0].values.length > 0) {
                 res.writeHead(409);
-                res.end(JSON.stringify({ error: 'This email is already registered', id: existing[0].values[0][0] }));
+                res.end(JSON.stringify({ error: 'This email is already registered' }));
                 return;
               }
 
@@ -1641,8 +1663,14 @@ const id = uuidv4();
         const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
         const source = parsedUrl.searchParams.get('source') || '';
 
-        let sql = 'SELECT id, email, source, name, created_at FROM leads WHERE team_id = ?';
-        const params: any[] = [teamId];
+let sql: string;
+        const params: any[] = [];
+        if (teamId === null) {
+          sql = 'SELECT id, email, source, name, created_at FROM leads WHERE team_id IS NULL';
+        } else {
+          sql = 'SELECT id, email, source, name, created_at FROM leads WHERE team_id = ?';
+          params.push(teamId);
+        }
         if (source) {
           sql += ' AND source = ?';
           params.push(source);

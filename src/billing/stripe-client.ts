@@ -155,6 +155,10 @@ export function resolvePriceId(client: StripeClient, planTier: string, originalP
 
 export function getStripePriceIds(): Record<string, string> {
   return {
+    'pro:month': 'price_pro_monthly',
+    'pro:year': 'price_pro_yearly',
+    'team:month': 'price_team_monthly',
+    'team:year': 'price_team_yearly',
     basic: 'price_basic',
     advanced: 'price_advanced',
     white_glove: 'price_white_glove',

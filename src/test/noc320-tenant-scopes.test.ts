@@ -191,7 +191,15 @@ describe('NOC-320 residual tenant scopes and onboarding owner binding', () => {
           },
           webhooks: { constructEvent: (payload: string) => JSON.parse(payload) },
         },
-        priceIds: { basic: 'price_basic', advanced: 'price_advanced', white_glove: 'price_white_glove' },
+        priceIds: {
+          'pro:month': 'price_pro_monthly',
+          'pro:year': 'price_pro_yearly',
+          'team:month': 'price_team_monthly',
+          'team:year': 'price_team_yearly',
+          basic: 'price_basic',
+          advanced: 'price_advanced',
+          white_glove: 'price_white_glove'
+        },
       } as any,
     });
     const addr = server.address() as any;

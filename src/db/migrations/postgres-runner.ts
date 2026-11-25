@@ -67,8 +67,13 @@ async function checkSchemaStillApplied(client: PoolClient, migrationId: string):
   }
   if (migrationId === '013-clerk-webhook-events') {
     const clerkWebhook = await tableExists(client, 'clerk_webhook_events');
-    const teamId = await hasColumn(client, 'clerk_webhook_events', 'team_id');
-    return clerkWebhook && teamId;
+    const clerkTeamId = await hasColumn(client, 'clerk_webhook_events', 'team_id');
+    const leadsTeamId = await hasColumn(client, 'leads', 'team_id');
+    const perfRunsTeamId = await hasColumn(client, 'perf_runs', 'team_id');
+    const perfRegressionsTeamId = await hasColumn(client, 'perf_regressions', 'team_id');
+    const perfDiagnosesTeamId = await hasColumn(client, 'perf_diagnoses', 'team_id');
+    const playbookExecutionsTeamId = await hasColumn(client, 'playbook_executions', 'team_id');
+    return clerkWebhook && clerkTeamId && leadsTeamId && perfRunsTeamId && perfRegressionsTeamId && perfDiagnosesTeamId && playbookExecutionsTeamId;
   }
   return false;
 }
@@ -644,6 +649,7 @@ export const POSTGRES_MIGRATIONS = [
           email TEXT NOT NULL,
           source TEXT NOT NULL DEFAULT 'webinar',
           name TEXT,
+          team_id TEXT,
           created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
         );
       `);
@@ -778,7 +784,7 @@ export const POSTGRES_MIGRATIONS = [
       await client.query('CREATE INDEX IF NOT EXISTS idx_playbook_failure_type ON playbook_entries(failure_type)');
       await client.query('CREATE INDEX IF NOT EXISTS idx_x_posts_schedule ON x_scheduled_posts(status, scheduled_at)');
 
-      await client.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email ON leads(email)');
+      await client.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_team ON leads(email, team_id)');
 
       await client.query('CREATE INDEX IF NOT EXISTS idx_failure_events_severity ON failure_events(severity)');
 
@@ -805,7 +811,8 @@ export const POSTGRES_MIGRATIONS = [
         'dependencies', 'dependency_updates', 'customers', 'subscriptions',
         'remediation_log', 'remediation_runs', 'remediation_policies',
         'alert_channels', 'alert_rules', 'onboarding_sessions',
-        'x_scheduled_posts', 'usage_records', 'webhook_events'
+        'x_scheduled_posts', 'usage_records', 'webhook_events',
+        'clerk_webhook_events'
       ];
 
       for (const table of tables) {

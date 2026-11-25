@@ -551,11 +551,11 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
       email TEXT NOT NULL,
       source TEXT NOT NULL DEFAULT 'webinar',
       name TEXT,
+      team_id TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
-
-  db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email ON leads(email)');
+  db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_team ON leads(email, team_id)');
 
   db.run('CREATE INDEX IF NOT EXISTS idx_failure_events_severity ON failure_events(severity)');
 
@@ -623,3 +623,4 @@ export function saveDatabase(db: SqlJsDatabase, dbPath: string): void {
     throw error;
   }
 }
+

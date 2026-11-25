@@ -578,9 +578,9 @@ const { runPostgresMigrations } = await import('../db/migrations/postgres-runner
         }
 
         // Assert exact index counts per CTO measurement
-        // SQLite: 63 explicit + 40 PK autoindexes + 11 unique autoindexes = 114 total (merged tree)
+        // SQLite: 63 explicit + 51 autoindexes = 114 total (merged tree)
         assert.strictEqual(sqliteExplicitIndexCount, 63, `Expected 63 SQLite explicit indexes (explicit indexes only, autoindexes skipped), got ${sqliteExplicitIndexCount}`);
-        assert.strictEqual(sqliteTotalIndexCount, 114, `Expected 114 SQLite total indexes (63 explicit + 40 PK autoindexes + 11 unique autoindexes), got ${sqliteTotalIndexCount}`);
+        assert.strictEqual(sqliteTotalIndexCount, 114, `Expected 114 SQLite total indexes (63 explicit + 51 autoindexes), got ${sqliteTotalIndexCount}`);
 
         // Count Postgres indexes
         const pgAllIdxsResult = await pool.query(`
@@ -592,9 +592,9 @@ SELECT count(*)
            WHERE n.nspname = $1
         `, [testSchema]);
         const pgTotalIndexes = parseInt(pgAllIdxsResult.rows[0].count);
-        assert.strictEqual(pgTotalIndexes, 107, `Expected 107 Postgres total indexes (merged tree), got ${pgTotalIndexes}`);
+        assert.strictEqual(pgTotalIndexes, 113, `Expected 113 Postgres total indexes (merged tree), got ${pgTotalIndexes}`);
 
-        // Assert the exact 51 name differences as data (measured by CTO)
+        // Assert the exact 52 name differences as data (measured by CTO)
         nameDifferences.sort();
         const expectedNameDifferences = [
           // 40 PK autoindexes: sqlite_autoindex_<table>_1 vs <table>_pkey
@@ -654,7 +654,7 @@ SELECT count(*)
           'idx_remediation_policies_team vs remediation_policies_tenant_team_id_failure_type_key on remediation_policies'
         ];
         const actualDiffs = nameDifferences.sort();
-        assert.deepStrictEqual(actualDiffs, expectedNameDifferences.sort(), 'Exact 51-member name-difference set must match');
+        assert.deepStrictEqual(actualDiffs, expectedNameDifferences.sort(), 'Exact 52-member name-difference set must match');
 
         // Verify 0 semantic gaps: every SQLite explicit index has a covering Postgres index
         // (already verified by the covered check above)
@@ -702,8 +702,8 @@ const afterIndexes = await pool.query(`
 
         assert.strictEqual(parseInt(beforeTables.rows[0].count), 43);
         assert.strictEqual(parseInt(afterTables.rows[0].count), 43);
-        assert.strictEqual(parseInt(beforeIndexes.rows[0].count), 107);
-        assert.strictEqual(parseInt(afterIndexes.rows[0].count), 107);
+        assert.strictEqual(parseInt(beforeIndexes.rows[0].count), 113);
+        assert.strictEqual(parseInt(afterIndexes.rows[0].count), 113);
         assert.strictEqual(parseInt(beforeLedger.rows[0].count), 6);
         assert.strictEqual(parseInt(afterLedger.rows[0].count), 6);
       } finally {
