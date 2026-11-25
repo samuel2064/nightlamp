@@ -130,7 +130,7 @@ export function createStripeClient(config: {
  * or any secret) so a misconfiguration is visible at the point of use instead
  * of silently issuing a Stripe request against a placeholder id.
  */
-export function resolvePriceId(client: StripeClient, planTier: string): string {
+export function resolvePriceId(client: StripeClient, planTier: string, originalPlanTier?: string): string {
   // Map the plan tier to the internal price lookup key
   const priceLookupKey = toPriceLookupKey(planTier);
 
@@ -146,8 +146,10 @@ export function resolvePriceId(client: StripeClient, planTier: string): string {
     throw new Error(`Unknown plan tier: ${planTier}`);
   }
 
+  // Use original plan tier for error message if provided, otherwise use mapped tier
+  const displayTier = originalPlanTier ?? planTier;
   throw new Error(
-    `Missing Stripe price configuration for plan tier "${planTier}": set ${envVar}`,
+    `Missing Stripe price configuration for plan tier "${displayTier}": set ${envVar}`,
   );
 }
 

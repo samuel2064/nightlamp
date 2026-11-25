@@ -428,7 +428,7 @@ describe('NOC-323 durable storage', () => {
       mainDb.close();
     });
 
-    skipIfNoPostgres('runPostgresMigrations on fresh database produces 42 tables matching SQLite', async () => {
+    skipIfNoPostgres('runPostgresMigrations on fresh database produces 43 tables matching SQLite', async () => {
       const { Pool } = await import('pg');
 const { runPostgresMigrations } = await import('../db/migrations/postgres-runner');
 
@@ -449,7 +449,7 @@ const { runPostgresMigrations } = await import('../db/migrations/postgres-runner
         `, [testSchema]);
         const pgTableNames = tablesResult.rows.map(r => r.table_name).sort();
 
-        assert.strictEqual(pgTableNames.length, 42, `Expected 42 Postgres tables, got ${pgTableNames.length}: ${pgTableNames.join(', ')}`);
+        assert.strictEqual(pgTableNames.length, 43, `Expected 43 Postgres tables, got ${pgTableNames.length}: ${pgTableNames.join(', ')}`);
 
         // Verify table sets match
         assert.deepStrictEqual(pgTableNames, mainTableNames, 'Postgres and SQLite table sets must be identical');
@@ -476,8 +476,9 @@ const { runPostgresMigrations } = await import('../db/migrations/postgres-runner
           '008-tenant-isolation',
           '010-monitored-apps',
           '011-analytics-events',
-          '012-personal-ownership'
-        ], 'Ledger must have 5 rows in runner order');
+          '012-personal-ownership',
+          '013-clerk-webhook-events'
+        ], 'Ledger must have 6 rows in runner order');
 
 // Verify index parity by reading actual index columns from both destinations
         let sqliteExplicitIndexCount = 0;
@@ -577,9 +578,9 @@ const { runPostgresMigrations } = await import('../db/migrations/postgres-runner
         }
 
         // Assert exact index counts per CTO measurement
-        // SQLite: 56 explicit + 40 PK autoindexes + 10 unique autoindexes = 106 total
-        assert.strictEqual(sqliteExplicitIndexCount, 56, `Expected 56 SQLite explicit indexes (explicit indexes only, autoindexes skipped), got ${sqliteExplicitIndexCount}`);
-        assert.strictEqual(sqliteTotalIndexCount, 106, `Expected 106 SQLite total indexes (56 explicit + 40 PK autoindexes + 10 unique autoindexes), got ${sqliteTotalIndexCount}`);
+        // SQLite: 63 explicit + 40 PK autoindexes + 11 unique autoindexes = 114 total (merged tree)
+        assert.strictEqual(sqliteExplicitIndexCount, 63, `Expected 63 SQLite explicit indexes (explicit indexes only, autoindexes skipped), got ${sqliteExplicitIndexCount}`);
+        assert.strictEqual(sqliteTotalIndexCount, 114, `Expected 114 SQLite total indexes (63 explicit + 40 PK autoindexes + 11 unique autoindexes), got ${sqliteTotalIndexCount}`);
 
         // Count Postgres indexes
         const pgAllIdxsResult = await pool.query(`
@@ -591,7 +592,7 @@ SELECT count(*)
            WHERE n.nspname = $1
         `, [testSchema]);
         const pgTotalIndexes = parseInt(pgAllIdxsResult.rows[0].count);
-        assert.strictEqual(pgTotalIndexes, 105, `Expected 105 Postgres total indexes (40 PK + 11 unique + 54 plain), got ${pgTotalIndexes}`);
+        assert.strictEqual(pgTotalIndexes, 107, `Expected 107 Postgres total indexes (merged tree), got ${pgTotalIndexes}`);
 
         // Assert the exact 51 name differences as data (measured by CTO)
         nameDifferences.sort();
@@ -637,6 +638,7 @@ SELECT count(*)
           'sqlite_autoindex_usage_records_1 vs usage_records_pkey on usage_records',
           'sqlite_autoindex_users_1 vs users_pkey on users',
           'sqlite_autoindex_webhook_events_1 vs webhook_events_pkey on webhook_events',
+          'sqlite_autoindex_clerk_webhook_events_1 vs clerk_webhook_events_pkey on clerk_webhook_events',
           'sqlite_autoindex_x_scheduled_posts_1 vs x_scheduled_posts_pkey on x_scheduled_posts',
           'sqlite_autoindex_x_tokens_1 vs x_tokens_pkey on x_tokens',
           // 10 unique autoindexes: sqlite_autoindex_<table>_N vs <table>_<constraint>_key
@@ -698,12 +700,12 @@ const afterIndexes = await pool.query(`
        `, [testSchema]);
         const afterLedger = await pool.query(`SELECT count(*) FROM schema_migrations`);
 
-        assert.strictEqual(parseInt(beforeTables.rows[0].count), 42);
-        assert.strictEqual(parseInt(afterTables.rows[0].count), 42);
-        assert.strictEqual(parseInt(beforeIndexes.rows[0].count), 105);
-        assert.strictEqual(parseInt(afterIndexes.rows[0].count), 105);
-        assert.strictEqual(parseInt(beforeLedger.rows[0].count), 5);
-        assert.strictEqual(parseInt(afterLedger.rows[0].count), 5);
+        assert.strictEqual(parseInt(beforeTables.rows[0].count), 43);
+        assert.strictEqual(parseInt(afterTables.rows[0].count), 43);
+        assert.strictEqual(parseInt(beforeIndexes.rows[0].count), 107);
+        assert.strictEqual(parseInt(afterIndexes.rows[0].count), 107);
+        assert.strictEqual(parseInt(beforeLedger.rows[0].count), 6);
+        assert.strictEqual(parseInt(afterLedger.rows[0].count), 6);
       } finally {
         await pool.query(`DROP SCHEMA IF EXISTS ${testSchema} CASCADE`);
         await pool.end();

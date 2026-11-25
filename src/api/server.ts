@@ -19,14 +19,24 @@ import { OnboardingApi } from '../teams/onboarding-api';
 import { PlaybookBuilderApi } from '../playbook/playbook-builder-api';
 import { NotificationApi } from '../notifications';
 import { ReportsApi } from '../reports';
+import { AppsApi, AppsApiDeps } from '../apps';
+import { AnalyticsApi } from '../analytics';
+import {
+  assertTargetAllowed,
+  runEndpointCheck,
+  type EndpointCheckConfig,
+  type EndpointCheckDeps,
+  type EndpointCheckResult,
+  type EndpointCheckType,
+} from '../engine/endpoint-check';
+import { defaultHostResolver, defaultTargetPolicy, HostResolver } from '../engine/outbound-safety';
 import { getPolicyForSeverity, getOnCallAt, ESCALATION_POLICIES, buildSelfMonitorDashboard, computeErrorBudgetStatus, SELF_MONITOR_DEFAULTS } from '../alerting';
 import { nodeHTTPRequestHandler } from '@trpc/server/adapters/node-http';
 import { handleSSERequest } from './sse';
 import { createPlaybookEngine } from '../playbook/engine';
 import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
 import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership, authenticateRequestAsync, requireRole } from './auth';
-import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant } from './tenant';
-import { requireTenantScope } from './guards';
+import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant, rowBelongsToScope, scopedTenantFilter, requireChannelOwnership } from './tenant';
 import { getDatabaseConfig, getBootId } from '../db';
 
 export interface ApiConfig {
@@ -34,22 +44,34 @@ export interface ApiConfig {
   stripeClient?: StripeClient;
   stripeWebhookSecret?: string;
   baseUrl?: string;
+  /**
+   * Outbound dependencies for the monitored application check path.
+   *
+   * Provided by the tests to inject a resolver and a policy that permit the
+   * local targets a closed suite uses, so the suite stays hermetic and never
+   * reaches the network. Production leaves it unset and takes the real policy.
+   */
+  appsApiDeps?: AppsApiDeps;
+  /**
+   * Host resolver for outbound DNS validation. Tests inject a mock resolver
+   * to avoid live DNS lookups and keep the suite hermetic.
+   */
+  hostResolver?: HostResolver;
 }
 
 interface EndpointRule {
   path: string;
   method?: string;
-  exact?: boolean;
 }
 
 const PUBLIC_ENDPOINTS: EndpointRule[] = [
-  { path: '/api/health', exact: true },
-  { path: '/api/performance/latency', exact: true },
-  { path: '/api/leads', method: 'POST', exact: true },
-  { path: '/api/webhooks/clerk', method: 'POST', exact: true },
-  { path: '/api/billing/webhook', method: 'POST', exact: true },
-  { path: '/api/x/auth', exact: true },
-  { path: '/api/x/callback', exact: true },
+  { path: '/api/health' },
+  { path: '/api/performance/latency' },
+  { path: '/api/leads', method: 'POST' },
+  { path: '/api/webhooks/clerk', method: 'POST' },
+  { path: '/api/billing/webhook', method: 'POST' },
+  { path: '/api/x/auth' },
+  { path: '/api/x/callback' },
 ];
 
 const PUBLIC_PATH_PATTERNS: RegExp[] = [
@@ -73,30 +95,32 @@ const ADMIN_ENDPOINTS: EndpointRule[] = [
   { path: '/api/playbook/remediate', method: 'POST' },
 ];
 
-
-
-const AVAILABLE_ROUTES: string[] = [
-  '/api/remediation/runs', '/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search',
-  '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs',
-  '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve',
-  '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules',
-  '/api/alerting/log', '/api/alerting/escalation', '/api/notifications/channels', '/api/notifications/send',
-  '/api/notifications/deliver', '/api/x/auth', '/api/x/callback', '/api/x/status', '/api/x/refresh',
-  '/api/x/schedule', '/api/x/schedule-thread', '/api/x/post', '/api/x/posts', '/api/leads', '/api/health',
-  '/api/monitors', '/api/incidents', '/api/dependency-health', '/api/activity', '/api/webhooks/clerk',
-  '/api/teams', '/api/teams/:id', '/api/teams/:id/members', '/api/teams/:id/members/:userId',
-  '/api/teams/:id/workspace', '/api/teams/:id/invitations', '/api/invitations/:token', '/api/invitations/:token/accept',
-  '/api/onboarding/start', '/api/onboarding/:sessionId/status', '/api/onboarding/:sessionId/step',
-  '/api/onboarding/:sessionId/complete', '/api/playbooks/custom', '/api/playbooks/custom/:id',
-  '/api/playbooks/custom/:id/publish', '/api/playbooks/custom/:id/nodes', '/api/playbooks/custom/:id/versions',
-  '/api/playbooks/custom/:id/versions/:versionId', '/api/reports/incident-trends', '/api/reports/uptime-stats',
-  '/api/reports/playbook-effectiveness', '/api/reports/team-summary', '/api/performance/latency',
-  '/api/alerting/escalation', '/api/alerting/self-monitor',
-];
-
 function normalizePath(path: string): string {
   const normalized = path.replace(/\/+$/, '');
   return normalized || '/';
+}
+
+/**
+ * Outbound dependencies for the monitored application check path.
+ *
+ * Both the safety policy and the resolver are taken from
+ * `src/engine/outbound-safety.ts` and `src/engine/endpoint-check.ts`, so every
+ * client-controlled destination goes through the same private, loopback,
+ * link-local and metadata rejection as the rest of the outbound surface. The
+ * resolver is injected by the tests, which keeps the suite hermetic (NOC-303
+ * blocker 10).
+ */
+function buildAppsApiDeps(): AppsApiDeps {
+  const endpointDeps: EndpointCheckDeps = {
+    resolver: defaultHostResolver,
+    policy: defaultTargetPolicy,
+  };
+
+  return {
+    assertTargetAllowed: (target: string, checkType: EndpointCheckType) => assertTargetAllowed(target, checkType),
+    runCheck: (config: EndpointCheckConfig) => runEndpointCheck(config),
+    endpointDeps,
+  };
 }
 
 const TEAM_ADMIN_ROLES: TeamRole[] = ['owner', 'admin'];
@@ -114,10 +138,7 @@ function matchesEndpoint(path: string, method: string | undefined, rules: Endpoi
   const normalized = normalizePath(path);
   return rules.some((rule) => {
     const rulePath = normalizePath(rule.path);
-    const prefix = rulePath + '/';
-    const pathMatches = rule.exact
-      ? normalized === rulePath
-      : normalized === rulePath || normalized.startsWith(prefix);
+    const pathMatches = normalized === rulePath || normalized.startsWith(`${rulePath}/`);
     const methodMatches = !rule.method || rule.method === method;
     return pathMatches && methodMatches;
   });
@@ -126,6 +147,24 @@ function matchesEndpoint(path: string, method: string | undefined, rules: Endpoi
 function isPublicEndpoint(path: string, method: string | undefined): boolean {
   if (PUBLIC_PATH_PATTERNS.some((pattern) => pattern.test(normalizePath(path)))) return true;
   return matchesEndpoint(path, method, PUBLIC_ENDPOINTS);
+}
+
+/**
+ * Guard for resources that are always owned by a tenant.
+ *
+ * The monitoring tables have no owner column, so a signed-in user without a
+ * team membership has no rows of its own. Those routes fail closed with 403
+ * instead of answering with the unscoped bucket that every personal identity
+ * shares (NOC-319).
+ */
+function requireTenantScope(res: ServerResponse, teamId: string | null): boolean {
+  if (teamId !== null) return true;
+  res.writeHead(403);
+  res.end(JSON.stringify({
+    error: 'A team membership is required to access this resource',
+    code: 'FORBIDDEN',
+  }));
+  return false;
 }
 
 function buildEventsPayload(db: Database, params: URLSearchParams, teamId: string | null): { events: any[]; count: number; limit: number; offset: number } {
@@ -195,9 +234,14 @@ function buildCheckResultsPayload(db: Database, params: URLSearchParams, teamId:
 }
 
 export function startApiServer(db: Database, config: ApiConfig): http.Server {
-  const billingApi = new BillingApi({
+  const billingApi = config.stripeClient ? new BillingApi({
     db,
-    stripeClient: config.stripeClient || null,
+    stripeClient: config.stripeClient,
+    webhookSecret: config.stripeWebhookSecret || '',
+    baseUrl: config.baseUrl || 'http://localhost:3000',
+  }) : new BillingApi({
+    db,
+    stripeClient: null,
     webhookSecret: config.stripeWebhookSecret || '',
     baseUrl: config.baseUrl || 'http://localhost:3000',
   });
@@ -207,8 +251,10 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
   const teamApi = new TeamApi(db);
   const onboardingApi = new OnboardingApi(db);
   const playbookBuilderApi = new PlaybookBuilderApi(db);
-  const notificationApi = new NotificationApi(db);
+  const notificationApi = new NotificationApi(db, config.hostResolver ?? defaultHostResolver);
   const reportsApi = new ReportsApi(db);
+  const appsApi = new AppsApi(db, config.appsApiDeps ?? buildAppsApiDeps());
+  const analyticsApi = new AnalyticsApi(db);
   const playbookEngine = createPlaybookEngine(db);
   const latencyTracker = new ApiLatencyTracker();
   const hotCache = new ApiCache(15_000);
@@ -227,26 +273,18 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
     try {
       let auth: AuthContext | null = null;
-      const isPublic = isPublicEndpoint(path, req.method);
-
-      // Attempt authentication for all endpoints; for public ones, treat auth failure as no auth
-      try {
-        auth = await authenticateRequestAsync(db, req);
-      } catch (err: any) {
-        if (err instanceof ApiAuthError) {
-          if (!isPublic) {
+      if (!isPublicEndpoint(path, req.method)) {
+        try {
+          auth = await authenticateRequestAsync(db, req);
+        } catch (err: any) {
+          if (err instanceof ApiAuthError) {
             res.writeHead(err.statusCode);
             res.end(JSON.stringify({ error: err.message, code: err.code }));
             return;
           }
-          // For public endpoints, invalid auth is treated as no auth
-          auth = null;
-        } else {
           throw err;
         }
-      }
 
-      if (!isPublic) {
         const teamPathMatch = path.match(/^\/api\/teams\/([^/]+)(\/.*)?$/);
         if (teamPathMatch) {
           const requestedTeamId = teamPathMatch[1];
@@ -259,7 +297,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
           }
           let teamRole: TeamRole;
           try {
-            teamRole = assertTeamMembership(db, auth!.userId, requestedTeamId);
+            teamRole = assertTeamMembership(db, auth.userId, requestedTeamId);
           } catch (err: any) {
             if (err instanceof ApiAuthError) {
               res.writeHead(err.statusCode);
@@ -277,7 +315,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
         if (matchesEndpoint(path, req.method, ADMIN_ENDPOINTS)) {
           try {
-            requireRole(auth!, ['owner', 'admin']);
+            requireRole(auth, ['owner', 'admin']);
           } catch (err: any) {
             if (err instanceof ApiAuthError) {
               res.writeHead(err.statusCode);
@@ -291,6 +329,19 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
       const scope = auth ? `${auth.userId}:${auth.teamId || 'personal'}` : 'public';
       const teamId = auth ? auth.teamId : null;
+      const userId = auth ? auth.userId : '';
+
+      // The monitored application registry owns its own tenant scoping, so it
+      // runs before the generic route chain and never falls through to it.
+      if (auth && appsApi.handle(req, res, auth)) {
+        return;
+      }
+
+      // Analytics ingestion stays reachable for anonymous callers, which the
+      // handle method decides per event inside its own contract validation.
+      if (analyticsApi.handle(req, res, auth)) {
+        return;
+      }
 
       if (path === '/api/performance/latency' || path === '/api/performance/latency/') {
         res.end(JSON.stringify({ latency: latencyTracker.summary() }));
@@ -660,7 +711,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         return;
       }
 
-      if (billingApi.handle(req, res, auth)) {
+      if (billingApi && billingApi.handle(req, res, auth)) {
         return;
       }
 
@@ -723,22 +774,22 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
                 res.end(JSON.stringify({ error: 'type must be slack, email, or pagerduty' }));
                 return;
               }
-              const id = uuidv4();
-              db.run(
-                `INSERT INTO alert_channels (id, name, type, config, team_id) VALUES (?, ?, ?, ?, ?)`,
-                [id, name, type, JSON.stringify(config), teamId]
-              );
-              res.end(JSON.stringify({ success: true, id, name, type }));
-            } catch (err: any) {
-              res.writeHead(400);
-              res.end(JSON.stringify({ error: err.message }));
-            }
-          });
-          return;
+const id = uuidv4();
+          db.run(
+            `INSERT INTO alert_channels (id, name, type, config, team_id, owner_id) VALUES (?, ?, ?, ?, ?, ?)`,
+            [id, name, type, JSON.stringify(config), teamId, auth?.userId ?? null]
+          );
+          res.end(JSON.stringify({ success: true, id, name, type }));
+        } catch (err: any) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: err.message }));
         }
-        if (!requireTenantScope(res, teamId)) {
-          return;
-        }
+      });
+      return;
+    }
+    if (!requireTenantScope(res, teamId)) {
+      return;
+    }
         const tenantScope = tenantOwnedFilter('team_id', teamId);
         const result = db.exec(`SELECT id, name, type, enabled, team_id, created_at FROM alert_channels WHERE ${tenantScope.clause} ORDER BY created_at DESC`, tenantScope.params);
         const channels = result.length > 0 ? result[0].values.map((row: any) => ({
@@ -750,10 +801,16 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
 
       if (path.startsWith('/api/alerting/channels/') && req.method === 'DELETE') {
         const channelId = path.split('/').pop();
-        if (!channelId) { res.writeHead(400); res.end(JSON.stringify({ error: 'Channel ID required' })); return; }
-        if (teamId === null || !rowBelongsToTenant(db, 'alert_channels', channelId, teamId)) {
-          res.writeHead(404);
-          res.end(JSON.stringify({ error: 'Channel not found' }));
+        if (!channelId) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'Channel ID required' }));
+          return;
+        }
+        // Shared referenced-channel delete guard: scope ownership + monitored app reference check
+        const guard = requireChannelOwnership(db, channelId, teamId, userId);
+        if (guard) {
+          res.writeHead(guard.status);
+          res.end(JSON.stringify({ error: guard.error, code: guard.code }));
           return;
         }
         db.run('DELETE FROM alert_rules WHERE channel_id = ?', [channelId]);
@@ -781,8 +838,8 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
               return;
             }
             updates.push("updated_at = datetime('now')");
-            const tenantScope = tenantOwnedFilter('team_id', teamId);
-            db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${tenantScope.clause}`, [...params, channelId, ...tenantScope.params]);
+            const channelScope = scopedTenantFilter('alert_channels', teamId, userId);
+            db.run(`UPDATE alert_channels SET ${updates.join(', ')} WHERE id = ? AND ${channelScope.clause}`, [...params, channelId, ...channelScope.params]);
             if (db.getRowsModified() === 0) {
               res.writeHead(404);
               res.end(JSON.stringify({ error: 'Channel not found' }));
@@ -809,7 +866,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
                 res.end(JSON.stringify({ error: 'name, channelId, and failureTypes are required' }));
                 return;
               }
-              if (teamId === null || !rowBelongsToTenant(db, 'alert_channels', channelId, teamId)) {
+              if (!rowBelongsToScope(db, 'alert_channels', channelId, teamId, userId)) {
                 res.writeHead(404);
                 res.end(JSON.stringify({ error: 'Channel not found' }));
                 return;
@@ -877,7 +934,7 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         req.on('end', () => {
           try {
             const { name, channelId, failureTypes, minSeverity, enabled } = JSON.parse(body);
-            if (channelId !== undefined && (teamId === null || !rowBelongsToTenant(db, 'alert_channels', channelId, teamId))) {
+            if (channelId !== undefined && !rowBelongsToScope(db, 'alert_channels', channelId, teamId, userId)) {
               res.writeHead(404);
               res.end(JSON.stringify({ error: 'Channel not found' }));
               return;
@@ -1319,10 +1376,9 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
         const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
         const status = parsedUrl.searchParams.get('status');
         const severity = parsedUrl.searchParams.get('severity');
-
         const eventScope = tenantOwnedFilter('fe.team_id', teamId);
         const checkScope = tenantOwnedFilter('c.team_id', teamId);
-        let sql = `SELECT fe.id, fe.check_id, fe.failure_type, fe.severity, fe.title, fe.description,
+        let sql = `SELECT fe.id, fe.check_id, fe.failure_type, fe.severity, fe.title, fe.description, 
                           fe.raw_data, fe.detected_at, fe.acknowledged,
                           c.name as check_name, c.source as check_source
                    FROM failure_events fe
@@ -1555,20 +1611,20 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
                 return;
               }
 
-              const existing = db.exec('SELECT id FROM leads WHERE email = ?', [normalized]);
+              const existing = db.exec('SELECT id FROM leads WHERE email = ? AND team_id = ?', [normalized, teamId]);
               if (existing.length > 0 && existing[0].values.length > 0) {
                 res.writeHead(409);
-                res.end(JSON.stringify({ error: 'This email is already registered' }));
+                res.end(JSON.stringify({ error: 'This email is already registered', id: existing[0].values[0][0] }));
                 return;
               }
 
-const id = uuidv4();
-                const leadSource = (source && typeof source === 'string' && source.trim()) ? source.trim() : 'webinar';
-                db.run(
-                  `INSERT INTO leads (id, email, source, name, team_id) VALUES (?, ?, ?, ?, ?)`,
-                  [id, normalized, leadSource, name ? String(name) : null, teamId]
-                );
-                res.end(JSON.stringify({ success: true, id, email: normalized, source: leadSource }));
+              const id = uuidv4();
+              const leadSource = (source && typeof source === 'string' && source.trim()) ? source.trim() : 'webinar';
+              db.run(
+                `INSERT INTO leads (id, email, source, name, team_id) VALUES (?, ?, ?, ?, ?)`,
+                [id, normalized, leadSource, name ? String(name) : null, teamId]
+              );
+              res.end(JSON.stringify({ success: true, id, email: normalized, source: leadSource }));
             } catch (err: any) {
               res.writeHead(400);
               res.end(JSON.stringify({ error: err.message }));
@@ -1577,7 +1633,10 @@ const id = uuidv4();
           return;
         }
 
-        if (!requireTenantScope(res, teamId)) return;
+        if (!requireTenantScope(res, teamId)) {
+          return;
+        }
+
         const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit') || '100', 10), 500);
         const offset = parseInt(parsedUrl.searchParams.get('offset') || '0', 10);
         const source = parsedUrl.searchParams.get('source') || '';
@@ -1608,14 +1667,15 @@ const id = uuidv4();
       }
 
       if (path === '/api/playbook/executions' || path === '/api/playbook/executions/') {
-        if (!requireTenantScope(res, teamId)) return;
+        if (!requireTenantScope(res, teamId)) {
+          return;
+        }
         if (req.method === 'GET') {
           const playbookId = parsedUrl.searchParams.get('playbookId') || undefined;
-          // Filter executions by team using playbook_executions.team_id
           let sql = `SELECT pe.id, pe.playbook_id, pe.status, pe.current_step_id, pe.context, pe.step_results,
-                            pe.created_at, pe.updated_at, pe.completed_at, pe.error
-                     FROM playbook_executions pe
-                     WHERE pe.team_id = ?`;
+                             pe.created_at, pe.updated_at, pe.completed_at, pe.error
+                      FROM playbook_executions pe
+                      WHERE pe.team_id = ?`;
           const params: any[] = [teamId];
           if (playbookId) {
             sql += ' AND pe.playbook_id = ?';
@@ -1643,18 +1703,6 @@ const id = uuidv4();
                   res.end(JSON.stringify({ error: 'playbookId is required' }));
                   return;
                 }
-                // Verify playbook belongs to the authenticated team
-                const playbookTeam = db.exec('SELECT team_id FROM custom_playbooks WHERE id = ?', [playbookId]);
-                if (!playbookTeam.length || playbookTeam[0].values.length === 0) {
-                  res.writeHead(404);
-                  res.end(JSON.stringify({ error: 'Playbook not found' }));
-                  return;
-                }
-                if (playbookTeam[0].values[0][0] !== teamId) {
-                  res.writeHead(403);
-                  res.end(JSON.stringify({ error: 'Playbook not accessible from this team' }));
-                  return;
-                }
                 const playbook = playbookEngine.getPlaybookDefinition(playbookId);
                 if (!playbook) {
                   res.writeHead(404);
@@ -1662,7 +1710,6 @@ const id = uuidv4();
                   return;
                 }
                 const execution = await playbookEngine.createExecution(playbook, context || {});
-                // Update execution with team_id
                 db.run('UPDATE playbook_executions SET team_id = ? WHERE id = ?', [teamId, execution.id]);
                 await playbookEngine.startExecution(execution.id);
                 res.end(JSON.stringify({ execution: playbookEngine.getExecution(execution.id) }));
@@ -1681,12 +1728,13 @@ const id = uuidv4();
 
       const executionMatch = path.match(/^\/api\/playbook\/executions\/([a-zA-Z0-9-]+)(\/[a-z-]+)?\/?$/);
       if (executionMatch) {
-        if (!requireTenantScope(res, teamId)) return;
+        if (!requireTenantScope(res, teamId)) {
+          return;
+        }
         const executionId = executionMatch[1];
         const action = executionMatch[2] || '';
 
         if (!action && req.method === 'GET') {
-          // Verify execution belongs to the authenticated team using playbook_executions.team_id
           const execTeam = db.exec(
             `SELECT pe.team_id FROM playbook_executions pe WHERE pe.id = ? AND pe.team_id = ?`,
             [executionId, teamId]
@@ -1707,7 +1755,6 @@ const id = uuidv4();
         }
 
         if (action === '/decision' && req.method === 'POST') {
-          // Verify execution belongs to the authenticated team using playbook_executions.team_id
           const execTeam = db.exec(
             `SELECT pe.team_id FROM playbook_executions pe WHERE pe.id = ? AND pe.team_id = ?`,
             [executionId, teamId]
@@ -1740,7 +1787,6 @@ const id = uuidv4();
         }
 
         if (action === '/cancel' && req.method === 'POST') {
-          // Verify execution belongs to the authenticated team using playbook_executions.team_id
           const execTeam = db.exec(
             `SELECT pe.team_id FROM playbook_executions pe WHERE pe.id = ? AND pe.team_id = ?`,
             [executionId, teamId]
@@ -1750,19 +1796,6 @@ const id = uuidv4();
             res.end(JSON.stringify({ error: 'Execution not found' }));
             return;
           }
-          (async () => {
-            try {
-              const execution = await playbookEngine.cancelExecution(executionId);
-              res.end(JSON.stringify({ execution }));
-            } catch (err: any) {
-              res.writeHead(err.message.includes('not found') ? 404 : 400);
-              res.end(JSON.stringify({ error: err.message }));
-            }
-          })();
-          return;
-        }
-
-        if (action === '/cancel' && req.method === 'POST') {
           (async () => {
             try {
               const execution = await playbookEngine.cancelExecution(executionId);
@@ -1864,7 +1897,7 @@ const id = uuidv4();
       }
 
       res.writeHead(404);
-      res.end(JSON.stringify({ error: 'Not found', available: AVAILABLE_ROUTES }));
+      res.end(JSON.stringify({ error: 'Not found', available: ['/api/remediation/runs', '/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules', '/api/alerting/log', '/api/alerting/escalation', '/api/notifications/channels', '/api/notifications/send', '/api/notifications/deliver', '/api/x/auth', '/api/x/callback', '/api/x/status', '/api/x/refresh', '/api/x/schedule', '/api/x/schedule-thread', '/api/x/post', '/api/x/posts', '/api/leads', '/api/health', '/api/monitors', '/api/incidents', '/api/dependency-health', '/api/activity', '/api/webhooks/clerk', '/api/teams', '/api/teams/:id', '/api/teams/:id/members', '/api/teams/:id/members/:userId', '/api/teams/:id/workspace', '/api/teams/:id/invitations', '/api/invitations/:token', '/api/invitations/:token/accept', '/api/onboarding/start', '/api/onboarding/:sessionId/status', '/api/onboarding/:sessionId/step', '/api/onboarding/:sessionId/complete', '/api/playbooks/custom', '/api/playbooks/custom/:id', '/api/playbooks/custom/:id/publish', '/api/playbooks/custom/:id/nodes', '/api/playbooks/custom/:id/versions', '/api/playbooks/custom/:id/versions/:versionId', '/api/reports/incident-trends', '/api/reports/uptime-stats', '/api/reports/playbook-effectiveness', '/api/reports/team-summary', '/api/performance/latency', '/api/alerting/escalation', '/api/alerting/self-monitor'] }));
     } catch (err: any) {
       res.writeHead(500);
       res.end(JSON.stringify({ error: err.message }));

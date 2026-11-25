@@ -65,6 +65,11 @@ async function checkSchemaStillApplied(client: PoolClient, migrationId: string):
     const monitored = await hasColumn(client, 'monitored_apps', 'owner_id');
     return alert && monitored;
   }
+  if (migrationId === '013-clerk-webhook-events') {
+    const clerkWebhook = await tableExists(client, 'clerk_webhook_events');
+    const teamId = await hasColumn(client, 'clerk_webhook_events', 'team_id');
+    return clerkWebhook && teamId;
+  }
   return false;
 }
 
@@ -993,6 +998,13 @@ export const POSTGRES_MIGRATIONS = [
       if (!(await hasIndex(client, 'idx_alert_channels_owner'))) {
         await client.query('CREATE INDEX IF NOT EXISTS idx_alert_channels_owner ON alert_channels(owner_id)');
       }
+    },
+  },
+  {
+    id: '013-clerk-webhook-events',
+    up: async (client: PoolClient) => {
+      const { up: upClerkWebhookEvents } = await import('./013-clerk-webhook-events-postgres');
+      await upClerkWebhookEvents(client);
     },
   },
 ];
