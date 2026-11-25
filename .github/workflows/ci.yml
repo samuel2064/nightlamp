@@ -26,6 +26,20 @@ jobs:
     name: Backend (lint / typecheck / test)
     runs-on: ubuntu-latest
     needs: encoding-check
+    services:
+      postgres:
+        image: postgres:16.4-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: nightlamp_lane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -45,6 +59,9 @@ jobs:
         run: npx tsc --noEmit --pretty
 
       - name: Run tests
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/nightlamp_lane
+          NOC323_DISPOSABLE_DESTINATION: '1'
         run: |
           set -o pipefail
           npm test 2>&1 | tee ci-test-output.txt

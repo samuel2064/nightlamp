@@ -384,7 +384,38 @@ describe('NOC-323 durable storage', () => {
 
   describe('Postgres schema parity (criterion 4 lane)', () => {
     const pgUrl = process.env.DATABASE_URL;
+    const pgDisposable = Boolean(process.env.NOC323_DISPOSABLE_DESTINATION);
     const skipIfNoPostgres = pgUrl ? it : it.skip;
+
+    function assertMarkedDisposableDestination(): void {
+      assert.ok(
+        pgDisposable,
+        'DATABASE_URL is set but the destination is not marked disposable: set NOC323_DISPOSABLE_DESTINATION to opt in. The Postgres lane refuses to run migrations against an unmarked destination.'
+      );
+    }
+
+    async function assertDestinationLeftClean(pool: any, markedPatterns: string[]): Promise<void> {
+      const leftover = await pool.query(
+        `SELECT schema_name FROM information_schema.schemata WHERE ${markedPatterns.map((_, i) => `schema_name LIKE $${i + 1}`).join(' OR ')}`,
+        markedPatterns
+      );
+      assert.strictEqual(leftover.rows.length, 0, 'the lane must drop its own marked schema and leave no test schema behind');
+
+      const publicTables = await pool.query(
+        `SELECT count(*) AS n FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`
+      );
+      assert.strictEqual(parseInt(publicTables.rows[0].n, 10), 0, 'the lane must not create tables in the ambient public schema');
+
+      const publicIndexes = await pool.query(`
+        SELECT count(*) AS n
+          FROM pg_index x
+          JOIN pg_class i ON i.oid = x.indexrelid
+          JOIN pg_class c ON c.oid = x.indrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public'
+      `);
+      assert.strictEqual(parseInt(publicIndexes.rows[0].n, 10), 0, 'the lane must not create indexes in the ambient public schema');
+    }
 
     // Read the main schema from schema.ts by creating a database
     let mainTableNames: string[];
@@ -429,12 +460,14 @@ describe('NOC-323 durable storage', () => {
     });
 
     skipIfNoPostgres('runPostgresMigrations on fresh database produces 43 tables matching SQLite', async () => {
+      assertMarkedDisposableDestination();
+
       const { Pool } = await import('pg');
 const { runPostgresMigrations } = await import('../db/migrations/postgres-runner');
 
       // Use a dedicated test schema to isolate from unrelated public indexes
       const testSchema = `test_parity_${Date.now()}`;
-      const pool = new Pool({ connectionString: pgUrl });
+      const pool = new Pool({ connectionString: pgUrl, max: 1 });
       try {
         await pool.query(`CREATE SCHEMA ${testSchema}`);
         await pool.query(`SET search_path TO ${testSchema}, public`);
@@ -658,6 +691,9 @@ SELECT count(*)
 
         // Verify 0 semantic gaps: every SQLite explicit index has a covering Postgres index
         // (already verified by the covered check above)
+
+        await pool.query(`DROP SCHEMA IF EXISTS ${testSchema} CASCADE`);
+        await assertDestinationLeftClean(pool, ['test_parity_%', 'test_idempotent_%']);
       } finally {
         await pool.query(`DROP SCHEMA IF EXISTS ${testSchema} CASCADE`);
         await pool.end();
@@ -665,12 +701,14 @@ SELECT count(*)
     });
 
     skipIfNoPostgres('runPostgresMigrations on same database is a no-op (idempotent)', async () => {
+      assertMarkedDisposableDestination();
+
       const { Pool } = await import('pg');
 const { runPostgresMigrations } = await import('../db/migrations/postgres-runner');
 
       // Use a dedicated test schema to isolate from unrelated public indexes
       const testSchema = `test_idempotent_${Date.now()}`;
-      const pool = new Pool({ connectionString: pgUrl });
+      const pool = new Pool({ connectionString: pgUrl, max: 1 });
       try {
         await pool.query(`CREATE SCHEMA ${testSchema}`);
         await pool.query(`SET search_path TO ${testSchema}, public`);
@@ -706,6 +744,9 @@ const afterIndexes = await pool.query(`
         assert.strictEqual(parseInt(afterIndexes.rows[0].count), 113);
         assert.strictEqual(parseInt(beforeLedger.rows[0].count), 6);
         assert.strictEqual(parseInt(afterLedger.rows[0].count), 6);
+
+        await pool.query(`DROP SCHEMA IF EXISTS ${testSchema} CASCADE`);
+        await assertDestinationLeftClean(pool, ['test_parity_%', 'test_idempotent_%']);
       } finally {
         await pool.query(`DROP SCHEMA IF EXISTS ${testSchema} CASCADE`);
         await pool.end();
