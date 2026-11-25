@@ -61,6 +61,7 @@ jobs:
       - name: Run tests
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/nightlamp_lane
+          NOC323_DISPOSABLE_DESTINATION: '1'
         run: |
           set -o pipefail
           npm test 2>&1 | tee ci-test-output.txt
