@@ -176,9 +176,11 @@ describe('NOC-303 release blockers and feedback contracts', () => {
     const probe = startApiServer(db, { port: 0 });
     const port = (probe.address() as any).port;
     await new Promise<void>((resolve) => probe.close(() => resolve()));
+    const childEnv = { ...process.env, DB_PATH: dbPath, PORT: String(port), NODE_ENV: 'test' };
+    delete childEnv.DATABASE_URL;
     const child = spawn(process.execPath, ['-r', 'ts-node/register', 'src/index.ts'], {
       cwd: path.resolve(__dirname, '..', '..'),
-      env: { ...process.env, DB_PATH: dbPath, PORT: String(port), NODE_ENV: 'test' },
+      env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     try {
