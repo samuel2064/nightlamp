@@ -37,7 +37,7 @@ import { createPlaybookEngine } from '../playbook/engine';
 import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
 import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership, authenticateRequestAsync, requireRole, extractBearerToken } from './auth';
 import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant, rowBelongsToScope, scopedTenantFilter, requireChannelOwnership } from './tenant';
-import { getBootId, describeActiveStorageMode, type PersistenceStatus } from '../db';
+import { getBootId, describeActiveStorageMode, getDatabaseConfig, getSqliteDatabasePath, isPathOnPersistentMount, getPersistentMountPath, type PersistenceStatus } from '../db';
 
 export interface ApiConfig {
   port: number;
@@ -1919,18 +1919,33 @@ let sql: string;
         const storageMode = describeActiveStorageMode(db);
         const persistenceStatus = config.getPersistenceStatus?.();
 
+        // The deployed storage state a deploy gate can read (NOC-425): the mode
+        // the environment configures (`postgres` whenever DATABASE_URL is set,
+        // even while the sql.js adapter serves), the sqlite path the process
+        // writes, the declared persistent mount, and the product's own on-mount
+        // decision. Read at request time through the connection helpers so the
+        // published facts never disagree with the boot decisions.
+        const configuredStorageMode = getDatabaseConfig().mode;
+        const storagePath = getSqliteDatabasePath();
+        const persistentMountPath = getPersistentMountPath();
+        const storageOnPersistentMount = isPathOnPersistentMount(storagePath);
+
         const selfMonitor = {
           status: 'ok',
           timestamp: new Date().toISOString(),
           uptimeSeconds,
           storageMode,
+          configuredStorageMode,
+          storagePath,
+          persistentMountPath,
           bootId,
           persistence: persistenceStatus
             ? {
                 persistIntervalSeconds: persistenceStatus.persistIntervalSeconds,
                 lastPersistedAt: persistenceStatus.lastPersistedAt,
+                storageOnPersistentMount,
               }
-            : { persistIntervalSeconds: null, lastPersistedAt: null },
+            : { persistIntervalSeconds: null, lastPersistedAt: null, storageOnPersistentMount },
           stats: {
             checks: checkCount[0]?.values[0]?.[0] || 0,
             failureEvents: eventCount[0]?.values[0]?.[0] || 0,
