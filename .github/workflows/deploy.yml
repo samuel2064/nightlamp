@@ -108,6 +108,10 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ github.ref == 'refs/heads/main' }}
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
       - name: Wait for deployment to stabilize
         run: sleep 60
       - name: Check backend health
@@ -119,6 +123,13 @@ jobs:
             sleep 20
           done
           test "$STATUS" = "200" && echo "Backend healthy" || { echo "Backend smoke failed"; exit 1; }
+      - name: Check backend storage durability state
+        run: |
+          # The deploy gate must be able to see the two states that lose tenant
+          # data: a backend serving the postgres adapter, and a SQLite file that
+          # is not on the declared persistent mount. The gate reads the public
+          # health endpoint only - no credential, no production setting.
+          node scripts/deploy-storage-gate.mjs --url "https://nightlamp-api.onrender.com/api/health"
       - name: Check backend authorization gate (protected route must answer 401)
         run: |
           # A protected backend route must answer 401 for an anonymous caller.
