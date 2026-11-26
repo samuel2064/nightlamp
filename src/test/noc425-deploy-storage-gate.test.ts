@@ -184,6 +184,22 @@ describe('NOC-425 deploy storage gate', () => {
     );
   });
 
+  it('reports the off-mount file once when the health surface already says it is off the mount', () => {
+    const health = durableHealth();
+    health.storagePath = '/opt/render/project/src/data/nightlamp.db';
+    (health.persistence as Record<string, unknown>).storageOnPersistentMount = false;
+    const result = runGate(health);
+    assert.strictEqual(result.code, 1, 'the gate must fail on an ephemeral database file');
+    assert.ok(
+      !result.stderr.includes('published storage facts disagree'),
+      `the facts do not disagree when the health surface says the file is off the mount: ${result.stderr}`
+    );
+    assert.ok(
+      !result.stderr.includes('storageOnPersistentMount=true'),
+      `the gate must not claim a flag value the health surface did not publish: ${result.stderr}`
+    );
+  });
+
   it('fails when the bounded flush does not advance between two samples', () => {
     const first = durableHealth();
     const second = durableHealth();

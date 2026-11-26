@@ -44,7 +44,7 @@ async function fetchHealth(url, attempts, retryIntervalSec) {
   let lastError = 'no attempt was made';
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      const response = await fetch(url, { headers: { accept: 'application/json' } });
+      const response = await fetch(url, { headers: { accept: 'application/json', connection: 'close' } });
       const text = await response.text();
       if (response.status !== 200) {
         lastError = `HTTP ${response.status}`;
@@ -125,7 +125,7 @@ function evaluateHealth(health) {
     );
   }
 
-  if (typeof storagePath === 'string' && typeof persistentMountPath === 'string' && persistentMountPath.length > 0) {
+  if (persistence.storageOnPersistentMount === true && typeof storagePath === 'string' && typeof persistentMountPath === 'string' && persistentMountPath.length > 0) {
     const onMount = storagePath === persistentMountPath || storagePath.startsWith(`${persistentMountPath}/`);
     if (!onMount) {
       failures.push(
