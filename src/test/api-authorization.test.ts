@@ -809,9 +809,14 @@ describe('P0 API authorization', () => {
       });
       const token = createTestToken();
       assert.strictEqual((await post(ownEventId)).status, 401);
-      assert.strictEqual((await post(foreignEventId, token)).status, 403);
+      const foreign = await post(foreignEventId, token);
+      assert.strictEqual(foreign.status, 404);
       assert.strictEqual(db.exec('SELECT acknowledged FROM failure_events WHERE id = ?', [foreignEventId])[0].values[0][0], 0);
-      assert.strictEqual((await post('missing-event', token)).status, 404);
+      const absent = await post('missing-event', token);
+      assert.strictEqual(absent.status, 404);
+      // Byte for byte the same body, so the status code and the body cannot
+      // tell a foreign event from a missing one (NOC-342).
+      assert.strictEqual(await foreign.text(), await absent.text());
       const before = await getJson('/api/events?type=own_type');
       assert.strictEqual(before.events.find((event: any) => event.id === ownEventId).acknowledged, false);
       const res = await post(ownEventId, token);
