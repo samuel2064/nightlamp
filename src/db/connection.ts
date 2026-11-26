@@ -161,6 +161,18 @@ export function getStorageMode(config: DatabaseConfig): StorageMode {
   return config.mode;
 }
 
+/**
+ * Reports the adapter actually serving the process. `getDatabaseConfig()` reads
+ * the environment, so it answers `postgres` whenever `DATABASE_URL` is set even
+ * though boot wires the sql.js adapter; callers that must describe the live
+ * process (NOC-416 `/api/health`) use this instead.
+ */
+export function describeActiveStorageMode(db: SqlJsDatabase | PostgresAdapter): StorageMode {
+  // The sql.js adapter exposes a synchronous export(); the Postgres adapter
+  // defined in this module does not.
+  return typeof (db as any).export === 'function' ? 'sqlite' : 'postgres';
+}
+
 export function isProduction(): boolean {
   return process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
 }

@@ -5,7 +5,7 @@ import * as cron from 'node-cron';
 import { Database } from 'sql.js';
 import * as dotenv from 'dotenv';
 import { v4 as uuidv4 } from 'uuid';
-import { createDatabase, saveDatabase, getDatabaseConfig, isProduction, getBootId, shouldWarnAboutEphemeralStorage } from './db';
+import { createDatabase, saveDatabase, getDatabaseConfig, isProduction, getBootId, shouldWarnAboutEphemeralStorage, createPersistenceController, getPersistIntervalSeconds, type PersistenceController } from './db';
 import { SentryConfig, SentryIssue, UptimeRobotConfig, UptimeRobotMonitor, XConfig, buildAuthorizeUrl, postThread, verifyCredentials, refreshAccessToken, exchangeCodeForToken, parseLaunchThread, isSentryConfigPlaceholder, isUptimeRobotConfigPlaceholder } from './connectors';
 import { runSentryCheck, runUptimeRobotCheck, sanitizeChecks } from './engine';
 import { createStripeClient } from './billing';
@@ -31,6 +31,7 @@ const API_PORT = parseInt(process.env.PORT || process.env.API_PORT || '3001', 10
 let db: Database;
 let sentryIssueCache: SentryIssue[] = [];
 let uptimeRobotMonitorCache: UptimeRobotMonitor[] = [];
+let persistence: PersistenceController | null = null;
 const bootId: string = getBootId();
 
 async function init(): Promise<void> {
@@ -52,6 +53,13 @@ const warning = shouldWarnAboutEphemeralStorage(dbConfig);
   db = await createDatabase(dbConfig.sqlitePath);
   setDb(db);
   initEngine();
+
+  // NOC-416: the API serves from an in-memory image, so an acknowledged write
+  // only reaches DB_PATH when something saves it. Bound that delay explicitly
+  // and publish the bound on /api/health instead of relying on a save cron.
+  persistence = createPersistenceController(db, DB_PATH);
+  persistence.start();
+  console.log(`[Nightlamp] Persisting acknowledged writes every ${getPersistIntervalSeconds()}s to ${DB_PATH}`);
 
   // Repair monitor rows left behind by older deployments: collapsed duplicate
   // monitor rows and disabled any still holding placeholder credentials.
@@ -141,10 +149,14 @@ const warning = shouldWarnAboutEphemeralStorage(dbConfig);
       stripeClient,
       stripeWebhookSecret,
       baseUrl,
+      getPersistenceStatus: () => persistence?.getStatus(),
     });
     console.log(`[Nightlamp] Billing API configured (port ${API_PORT})`);
   } else {
-    startApiServer(db, { port: API_PORT });
+    startApiServer(db, {
+      port: API_PORT,
+      getPersistenceStatus: () => persistence?.getStatus(),
+    });
     console.log(`[Nightlamp] API server started without billing (port ${API_PORT})`);
     console.log('[Nightlamp] Set STRIPE_SECRET_KEY to enable subscription billing');
   }
@@ -298,10 +310,20 @@ init().catch((err) => {
   }).listen(API_PORT);
 });
 
-process.on('SIGINT', () => {
+function shutdown(): void {
   console.log('[Nightlamp] Shutting down...');
-  if (db) {
+  if (persistence) {
+    // Stop the bounded flush first so the final write is the only one racing
+    // the exit, then flush the image with the same atomic save.
+    persistence.stop();
+    persistence.flush();
+  } else if (db) {
     saveDatabase(db, DB_PATH);
   }
   process.exit(0);
-});
+}
+
+process.on('SIGINT', shutdown);
+// Render signals SIGTERM on deploy; without this handler every write since the
+// last bounded flush is lost on each release (NOC-416).
+process.on('SIGTERM', shutdown);

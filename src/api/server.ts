@@ -37,7 +37,7 @@ import { createPlaybookEngine } from '../playbook/engine';
 import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
 import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership, authenticateRequestAsync, requireRole, extractBearerToken } from './auth';
 import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant, rowBelongsToScope, scopedTenantFilter, requireChannelOwnership } from './tenant';
-import { getDatabaseConfig, getBootId } from '../db';
+import { getBootId, describeActiveStorageMode, type PersistenceStatus } from '../db';
 
 export interface ApiConfig {
   port: number;
@@ -57,6 +57,12 @@ export interface ApiConfig {
    * to avoid live DNS lookups and keep the suite hermetic.
    */
   hostResolver?: HostResolver;
+  /**
+   * Live status of the bounded persistence flush (NOC-416), reported on
+   * `/api/health` so the operator can read the RPO instead of assuming it.
+   * Absent when the process runs the API without a persistence controller.
+   */
+  getPersistenceStatus?: () => PersistenceStatus | undefined;
 }
 
 interface EndpointRule {
@@ -1897,15 +1903,26 @@ let sql: string;
           : 0;
         const errorBudgetObjectivePct = SELF_MONITOR_DEFAULTS.maxErrorRate * 100;
 
-        const dbConfig = getDatabaseConfig();
         const bootId = getBootId();
+        // The reported mode must describe the adapter serving this process.
+        // getDatabaseConfig() reads the environment and answers `postgres`
+        // whenever DATABASE_URL is set, while boot wires the sql.js adapter,
+        // so the live adapter is inspected instead (NOC-416 / NOC-414).
+        const storageMode = describeActiveStorageMode(db);
+        const persistenceStatus = config.getPersistenceStatus?.();
 
         const selfMonitor = {
           status: 'ok',
           timestamp: new Date().toISOString(),
           uptimeSeconds,
-          storageMode: dbConfig.mode,
+          storageMode,
           bootId,
+          persistence: persistenceStatus
+            ? {
+                persistIntervalSeconds: persistenceStatus.persistIntervalSeconds,
+                lastPersistedAt: persistenceStatus.lastPersistedAt,
+              }
+            : { persistIntervalSeconds: null, lastPersistedAt: null },
           stats: {
             checks: checkCount[0]?.values[0]?.[0] || 0,
             failureEvents: eventCount[0]?.values[0]?.[0] || 0,
