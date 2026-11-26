@@ -103,15 +103,26 @@ describe('Clerk JWKS verification (NOC-237)', () => {
     assert.strictEqual(fetchCalls.length, 1);
   });
 
-  it('refetches the JWKS when the token kid is unknown', async () => {
+  it('does not refetch the JWKS on unknown-kid requests thanks to the negative cache', async () => {
     const token = rsToken({ iss: ISSUER }, rotated.privateKey, 'kid-rotated');
 
+    // // 1. Unknown-`kid` token: 401 with one fetch (base-head acceptance)
     await assert.rejects(
       () => verifyAccessTokenAsync(token),
       (err: any) => err instanceof ApiAuthError && err.statusCode === 401
     );
     assert.strictEqual(fetchCalls.length, 1);
 
+    // // 2. Same unknown `kid` again: 401 with one fetch (negative entry active, zero fetches)
+    await assert.rejects(
+      () => verifyAccessTokenAsync(token),
+      (err: any) => err instanceof ApiAuthError && err.statusCode === 401
+    );
+    assert.strictEqual(fetchCalls.length, 1);
+
+    // // 3. After clearing the negative cache and updating the JWKS key set,
+    // the rotated token is accepted with two fetches total
+    clearJwksCache();
     jwksKeys = [jwkFor(primary.publicKey, 'kid-primary'), jwkFor(rotated.publicKey, 'kid-rotated')];
     const claims = await verifyAccessTokenAsync(token);
 

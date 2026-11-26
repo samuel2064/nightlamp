@@ -143,6 +143,8 @@ describe('Clerk JWKS rotation fallback (NOC-375)', () => {
 
     // Phase 2: the instance rotates. The publisher now serves only the new key,
     // while the configured pin still names the pre-rotation key.
+    // With the negative cache enabled, the stale key is refetched once,
+    // the rotated key is discovered, and authentication succeeds.
     jwksKeys = [jwkFor(rotated.publicKey, 'kid-rotated')];
     process.env.CLERK_JWT_PUBLIC_KEY = pemOf(primary.publicKey);
 
@@ -150,7 +152,9 @@ describe('Clerk JWKS rotation fallback (NOC-375)', () => {
 
     assert.strictEqual(claims.sub, 'jwks-user');
     assert.strictEqual(claims.issuer, ISSUER);
-    // Exactly one bounded refetch of the stale cached key set.
+    // Exactly one bounded refetch of the stale cached key set, then the rotated
+    // key is discovered and accepted. The negative entry is cleared because the
+    // key set carries the kid.
     assert.strictEqual(fetchCalls.length, 2);
   });
 
@@ -169,8 +173,23 @@ describe('Clerk JWKS rotation fallback (NOC-375)', () => {
     await expectUnauthorized(token);
     assert.strictEqual(fetchCalls.length, 1);
 
+    // Second request with same unknown kid: negative cache should prevent
+    // a refetch, staying 401 without additional network fetches.
     await expectUnauthorized(token);
-    assert.strictEqual(fetchCalls.length, 2);
+    assert.strictEqual(fetchCalls.length, 1);
+
+    // // 4a. A different unknown `kid` for the same issuer adds no additional fetch
+    // (measured: one fetch total for two different unknown kids).
+    const token2 = rsToken({ iss: ISSUER }, rotated.privateKey, 'kid-unknown2');
+    await expectUnauthorized(token2);
+    assert.strictEqual(fetchCalls.length, 1);
+
+    // // 4b. The rotated key is discovered again after `clearJwksCache()`
+    // (measured: two fetches total and acceptance).
+    clearJwksCache();
+    jwksKeys = [jwkFor(primary.publicKey, 'kid-primary'), jwkFor(rotated.publicKey, 'kid-rotated')];
+    const claims = await verifyAccessTokenAsync(rsToken({ iss: ISSUER }, rotated.privateKey, 'kid-rotated'));
+    assert.strictEqual(claims.sub, 'jwks-user');
   });
 
   it('still rejects a wrong issuer on the JWKS fallback path', async () => {
