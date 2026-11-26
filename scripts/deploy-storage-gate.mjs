@@ -232,4 +232,5 @@ async function main() {
   return 0;
 }
 
-process.exit(await main());
+const exitCode = await main();
+process.exitCode = exitCode;
