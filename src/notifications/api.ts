@@ -2,9 +2,21 @@ import { Database } from 'sql.js';
 import { IncomingMessage, ServerResponse } from 'http';
 import { v4 as uuidv4 } from 'uuid';
 import { ChannelType, ChannelConfig, validateDeliveryDestination, HostResolver } from '../alerting/channels';
-import { processNotification, sendDirectNotification, getChannelType, getChannelConfig, checkRateLimit, logDelivery, markDelivered } from './service';
+import { processNotification, sendDirectNotification, getChannelType, getChannelConfig, checkRateLimit, logDelivery, markDelivered, DEDUP_MINUTE_LIMIT } from './service';
 import { AuthContext } from '../api/auth';
 import { rowBelongsToScope, scopedTenantFilter, requireChannelOwnership } from '../api/tenant';
+
+// The accepted suppression window. The lower bound is the one the route has
+// always clamped to; the upper bound is the service-side clamp, imported so
+// the two cannot drift apart.
+const DEDUP_MINUTES_MIN = 1;
+
+function isAcceptedDedupMinutes(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isFinite(value)
+    && value >= DEDUP_MINUTES_MIN
+    && value <= DEDUP_MINUTE_LIMIT;
+}
 
 export class NotificationApi {
   private validTypes: Set<string> = new Set(['slack-webhook', 'email-smtp', 'in-app-websocket']);
@@ -217,6 +229,17 @@ export class NotificationApi {
           return;
         }
 
+        // Validate the suppression window before the channel is read or any row
+        // is written. The value is bound into the suppression statement (never
+        // interpolated), so the remaining defence is coercing it: a non-numeric
+        // or out-of-range value would degrade the statement instead of being
+        // refused, and a NaN silently disables the window.
+        if (dedupMinutes !== undefined && !isAcceptedDedupMinutes(dedupMinutes)) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: `dedupMinutes must be a number between ${DEDUP_MINUTES_MIN} and ${DEDUP_MINUTE_LIMIT}` }));
+          return;
+        }
+
         // The send is authorized against the authenticated principal, never against
         // only a client-supplied channel id: the caller must either belong to the
         // channel's team or personally own the channel.
@@ -251,6 +274,8 @@ export class NotificationApi {
           eventId,
         };
 
+        // Second layer, not the defence: the accepted range was validated at
+        // the edge above, and this clamp only bounds the default.
         const dedupWindow = Math.max(1, dedupMinutes || 5);
         const result = await processNotification(
           this.db,

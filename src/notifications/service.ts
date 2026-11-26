@@ -155,7 +155,7 @@ export function checkDedup(db: Database, channelId: string, fingerprint: string)
   return { suppressed: false, suppressUntil: null };
 }
 
-const DEDUP_MINUTE_LIMIT = 1440;
+export const DEDUP_MINUTE_LIMIT = 1440;
 
 function normalizeDedupMinutes(durationMinutes: number): number {
   const parsed = typeof durationMinutes === 'number' ? durationMinutes : Number(durationMinutes);
