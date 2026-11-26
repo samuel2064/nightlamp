@@ -443,12 +443,23 @@ describe('P0 security regression gate', () => {
       assert.strictEqual(scalar('SELECT acknowledged FROM failure_events WHERE id = ?', [legacyEventId]), 0);
     });
 
-    it('answers 404 when a teamless caller acknowledges an unknown event', async () => {
-      const res = await request(lonely, '/api/events/acknowledge', {
+    it('answers 403 when a teamless caller acknowledges an unknown event', async () => {
+      const unknown = await request(lonely, '/api/events/acknowledge', {
         method: 'POST',
         body: { id: uuidv4() },
       });
-      assert.strictEqual(res.status, 404);
+      // The scope refusal fires before the read (NOC-342), so a teamless caller
+      // is answered 403 for an absent id exactly as for an existing one: the
+      // same status and the same body, and the row is never read or mutated.
+      assert.strictEqual(unknown.status, 403);
+      assert.strictEqual(
+        await unknown.text(),
+        await (await request(lonely, '/api/events/acknowledge', {
+          method: 'POST',
+          body: { id: legacyEventId },
+        })).text(),
+      );
+      assert.strictEqual(scalar('SELECT acknowledged FROM failure_events WHERE id = ?', [legacyEventId]), 0);
     });
   });
 

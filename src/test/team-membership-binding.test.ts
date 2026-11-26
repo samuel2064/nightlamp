@@ -215,7 +215,10 @@ describe('NOC-319 team membership binding and fail-closed scoping', () => {
         method: 'POST',
         body: JSON.stringify({ id: 'noc319-unknown-event' }),
       });
-      assert.strictEqual(unknown.status, 404);
+      // The shared scope refusal fires before the read (NOC-342), so a teamless
+      // caller is answered 403 for an absent id exactly as for an existing one
+      // and cannot tell the two apart.
+      assert.strictEqual(unknown.status, 403);
     });
 
     it('keeps the unscoped monitoring bucket closed to every teamless identity', async () => {

@@ -363,6 +363,12 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             res.end(JSON.stringify({ error: 'id must be a non-empty string' }));
             return;
           }
+          // The shared tenant scope fails closed before the event is read, so a
+          // caller outside any team is refused with 403 for every id, existing
+          // or absent, and no row is ever loaded for it (NOC-342).
+          if (!requireTenantScope(res, teamId)) {
+            return;
+          }
           const event = db.exec('SELECT fe.team_id, c.team_id, c.id FROM failure_events fe LEFT JOIN checks c ON c.id = fe.check_id WHERE fe.id = ?', [id]);
           if (!event.length || event[0].values.length === 0) {
             res.writeHead(404);
@@ -370,9 +376,6 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
             return;
           }
           const [eventTeamId, checkTeamId, checkId] = event[0].values[0];
-          if (!requireTenantScope(res, teamId)) {
-            return;
-          }
           if (!checkId || eventTeamId !== teamId || checkTeamId !== teamId) {
             // A target owned by another organisation, or a target without its
             // owning check row, is indistinguishable from an absent one: the
