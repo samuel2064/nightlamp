@@ -191,6 +191,14 @@ describe('NOC-425 deploy storage gate', () => {
     const result = runGate(health);
     assert.strictEqual(result.code, 1, 'the gate must fail on an ephemeral database file');
     assert.ok(
+      !result.stderr.includes('Cannot find module'),
+      `the gate script must exist for this case to measure the gate: ${result.stderr}`
+    );
+    assert.ok(
+      result.stderr.includes('not on the declared persistent mount'),
+      `the failure must be the mount failure this case is about: ${result.stderr}`
+    );
+    assert.ok(
       !result.stderr.includes('published storage facts disagree'),
       `the facts do not disagree when the health surface says the file is off the mount: ${result.stderr}`
     );
