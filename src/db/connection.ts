@@ -180,9 +180,15 @@ export function getBootId(): string {
   return bootId;
 }
 
+export const DEFAULT_SQLITE_PATH = './data/nightlamp.db';
+
+export function getSqliteDatabasePath(): string {
+  return process.env.DB_PATH || DEFAULT_SQLITE_PATH;
+}
+
 export function getDatabaseConfig(): DatabaseConfig {
   const databaseUrl = process.env.DATABASE_URL;
-  const dbPath = process.env.DB_PATH || './data/nightlamp.db';
+  const dbPath = getSqliteDatabasePath();
 
   if (databaseUrl) {
     return { mode: 'postgres', databaseUrl };
@@ -202,13 +208,21 @@ export function getExpectedDatabasePath(): string {
   return `${getPersistentMountPath()}/${DATABASE_FILE_NAME}`;
 }
 
+/**
+ * Reports whether a sqlite path sits on the declared persistent mount. The
+ * boundary is the path segment, not the raw prefix, so a sibling mount such as
+ * `/mnt/data-other/nightlamp.db` is not on `/mnt/data`.
+ */
+export function isPathOnPersistentMount(sqlitePath: string): boolean {
+  const mount = getPersistentMountPath();
+  return sqlitePath === mount || sqlitePath.startsWith(`${mount}/`);
+}
+
 export function shouldWarnAboutEphemeralStorage(config: DatabaseConfig): string | null {
   if (!isProduction() || config.mode !== 'sqlite') {
     return null;
   }
-  const persistentMountPath = getPersistentMountPath();
-  const isOnPersistentVolume = config.sqlitePath && config.sqlitePath.startsWith(persistentMountPath);
-  if (isOnPersistentVolume) {
+  if (config.sqlitePath && isPathOnPersistentMount(config.sqlitePath)) {
     return null;
   }
   return `WARNING: Running in production with SQLite file storage on local container filesystem. Data will be lost on restart/deploy! DB_PATH must point at the mounted disk at ${getExpectedDatabasePath()}.`;
