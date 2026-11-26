@@ -151,10 +151,6 @@ async function runPostgresMigrations(pool: any): Promise<void> {
   // Import and run the postgres migration ledger
   const { runPostgresMigrations: runLedger } = await import('./migrations/postgres-runner');
   await runLedger(pool);
-
-  // Then run the plan-tier extension (NOC-326) which alters subscriptions
-  const { up: upPlanTier } = await import('./migrations/010-extend-plan-tier-check');
-  await upPlanTier(pool);
 }
 
 export function getStorageMode(config: DatabaseConfig): StorageMode {

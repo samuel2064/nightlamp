@@ -44,13 +44,39 @@ function ledgerContains(db: Database, migrationId: string): boolean {
   return result.length > 0 && result[0].values.length > 0;
 }
 
+// The ledger order is carried by seq, not applied_at: datetime('now') has
+// one-second resolution, so migrations applied inside the same second tie.
+// Every recorded row gets a monotonic seq, so the order is total.
+function ensureLedgerSeq(db: Database): void {
+  if (!hasColumn(db, 'schema_migrations', 'seq')) {
+    db.run('ALTER TABLE schema_migrations ADD COLUMN seq INTEGER');
+  }
+  for (const migration of MIGRATIONS) {
+    db.run(`
+      UPDATE schema_migrations
+         SET seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM schema_migrations)
+       WHERE migration_id = ? AND seq IS NULL
+    `, [migration.id]);
+  }
+  const seqless = db.exec('SELECT migration_id FROM schema_migrations WHERE seq IS NULL');
+  for (const row of seqless[0]?.values ?? []) {
+    db.run(`
+      UPDATE schema_migrations
+         SET seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM schema_migrations)
+       WHERE migration_id = ?
+    `, [row[0]]);
+  }
+}
+
 export function runMigrations(db: Database): void {
   db.run(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       migration_id TEXT PRIMARY KEY,
+      seq INTEGER,
       applied_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
+  ensureLedgerSeq(db);
 
   for (const migration of MIGRATIONS) {
     const alreadyInLedger = ledgerContains(db, migration.id);
@@ -59,7 +85,10 @@ export function runMigrations(db: Database): void {
       db.exec('BEGIN IMMEDIATE');
       try {
         migration.up(db);
-        db.run('INSERT INTO schema_migrations (migration_id) VALUES (?)', [migration.id]);
+        db.run(`
+          INSERT INTO schema_migrations (migration_id, seq)
+          VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM schema_migrations))
+        `, [migration.id]);
         db.exec('COMMIT');
       } catch (error) {
         try {
