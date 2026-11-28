@@ -18,7 +18,7 @@ interface ControlledHealth {
   [key: string]: unknown;
 }
 
-type DurableCheckMode = 'present' | 'absent' | 'missing' | 'not-file';
+type DurableCheckMode = 'present' | 'absent' | 'missing' | 'not-file' | 'unreadable';
 
 interface ProductServerOptions {
   durableCheck?: DurableCheckMode;
@@ -134,6 +134,11 @@ function startHealthServer(
         if (durableCheck === 'not-file') {
           res.writeHead(200, { 'Content-Type': 'application/json', Connection: 'close' });
           res.end(JSON.stringify({ present: true, source: 'memory' }));
+          return;
+        }
+        if (durableCheck === 'unreadable') {
+          res.writeHead(500, { 'Content-Type': 'application/json', Connection: 'close' });
+          res.end(JSON.stringify({ error: 'durability check failed' }));
           return;
         }
         res.writeHead(200, { 'Content-Type': 'application/json', Connection: 'close' });
@@ -477,6 +482,27 @@ describe('NOC-425 deploy storage gate', () => {
       assert.ok(
         result.stderr.includes('did not answer from the file'),
         `the failure must name the non-file answer: ${result.stderr}`
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('fails by name when the durable-check probe cannot read the durable file', async function () {
+    this.timeout(30000);
+    const server = await startHealthServer(durableHealth(), true, { durableCheck: 'unreadable' });
+    try {
+      const started = Date.now();
+      const result = await runGateAsync(['--url', server.url]);
+      const elapsedMs = Date.now() - started;
+      assert.strictEqual(result.code, 1, 'the gate must fail when the durable file cannot be read');
+      assert.ok(
+        result.stderr.includes('could not read the durable file'),
+        `the failure must name the unreadable durable file: ${result.stderr}`
+      );
+      assert.ok(
+        elapsedMs < 10000,
+        `the gate must name the unreadable file instead of waiting out the deadline: ${elapsedMs}ms`
       );
     } finally {
       await server.close();

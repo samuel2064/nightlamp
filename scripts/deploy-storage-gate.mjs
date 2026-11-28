@@ -305,6 +305,15 @@ async function readMarkerBack(origin, marker, boundSec) {
           ],
         };
       }
+      if (response.status === 500) {
+        return {
+          failures: [
+            `the durable-check probe could not read the durable file (GET /api/health/durability-check answered HTTP 500) ` +
+            `- the deployed service cannot open the file the acknowledged write goes to, so the gate cannot prove that the ` +
+            `write reached it. ${FIX_FORWARD}`
+          ],
+        };
+      }
       const text = await response.text();
       let body = null;
       try {
