@@ -40,6 +40,7 @@ import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant, rowBelongsToScope,
 import { getBootId, describeActiveStorageMode, getDatabaseConfig, getSqliteDatabasePath, isPathOnPersistentMount, getPersistentMountPath, type PersistenceStatus } from '../db';
 import { getPersistenceControllerForDatabase } from '../db/persistence';
 import { resolveMountIdentity, resolveBuildIdentity, type MountIdentity } from '../db/mount-identity';
+import { checkDurableFile, durableDatabasePath, InvalidMarkerError } from '../db/durable-check';
 
 export interface ApiConfig {
   port: number;
@@ -88,6 +89,11 @@ interface EndpointRule {
 
 const PUBLIC_ENDPOINTS: EndpointRule[] = [
   { path: '/api/health', exact: true },
+  // The durability probe a deploy gate reads (NOC-432). It is exact-matched like
+  // the other health facts: without the flag the path would fall through to the
+  // auth gate and answer 401, and a gate running without a credential has to be
+  // able to reach it.
+  { path: '/api/health/durability-check', method: 'GET', exact: true },
   { path: '/api/performance/latency', exact: true },
   { path: '/api/leads', method: 'POST', exact: true },
   { path: '/api/webhooks/clerk', method: 'POST', exact: true },
@@ -2128,7 +2134,7 @@ let sql: string;
             : {
                 persistIntervalSeconds: null,
                 lastPersistedAt: null,
-lastPersistedImageDigest: null,
+                lastPersistedImageDigest: null,
                 lastPersistedImageBytes: null,
                 storageOnPersistentMount,
                 durableFile: storageMode === 'sqlite' ? durableFile : null,
@@ -2151,8 +2157,34 @@ lastPersistedImageDigest: null,
         return;
       }
 
+      // The durability probe a deploy gate reads (NOC-432): the marker a gate
+      // wrote through the acknowledged lead path, answered from a fresh read of
+      // the durable file rather than from the in-memory image this process
+      // serves. A health request without a marker never reaches the file.
+      if (path === '/api/health/durability-check' || path === '/api/health/durability-check/') {
+        const marker = parsedUrl.searchParams.get('marker');
+        let checked: Awaited<ReturnType<typeof checkDurableFile>>;
+        try {
+          checked = await checkDurableFile(durableDatabasePath(), marker ?? undefined);
+        } catch (err: any) {
+          if (err instanceof InvalidMarkerError) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: 'invalid durability marker' }));
+            return;
+          }
+          // A file that cannot be read is not an absent write: answer 500 and
+          // name the failure, so a gate never reads it as `present: false`.
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: 'durability check failed' }));
+          return;
+        }
+        res.writeHead(200);
+        res.end(JSON.stringify({ status: 'ok', marker, ...checked }));
+        return;
+      }
+
       res.writeHead(404);
-      res.end(JSON.stringify({ error: 'Not found', available: ['/api/remediation/runs', '/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules', '/api/alerting/log', '/api/alerting/escalation', '/api/notifications/channels', '/api/notifications/send', '/api/notifications/deliver', '/api/x/auth', '/api/x/callback', '/api/x/status', '/api/x/refresh', '/api/x/schedule', '/api/x/schedule-thread', '/api/x/post', '/api/x/posts', '/api/leads', '/api/health', '/api/monitors', '/api/incidents', '/api/dependency-health', '/api/activity', '/api/webhooks/clerk', '/api/teams', '/api/teams/:id', '/api/teams/:id/members', '/api/teams/:id/members/:userId', '/api/teams/:id/workspace', '/api/teams/:id/invitations', '/api/invitations/:token', '/api/invitations/:token/accept', '/api/onboarding/start', '/api/onboarding/:sessionId/status', '/api/onboarding/:sessionId/step', '/api/onboarding/:sessionId/complete', '/api/playbooks/custom', '/api/playbooks/custom/:id', '/api/playbooks/custom/:id/publish', '/api/playbooks/custom/:id/nodes', '/api/playbooks/custom/:id/versions', '/api/playbooks/custom/:id/versions/:versionId', '/api/reports/incident-trends', '/api/reports/uptime-stats', '/api/reports/playbook-effectiveness', '/api/reports/team-summary', '/api/performance/latency', '/api/alerting/escalation', '/api/alerting/self-monitor'] }));
+      res.end(JSON.stringify({ error: 'Not found', available: ['/api/remediation/runs', '/api/events', '/api/check-results', '/api/playbook', '/api/playbook/search', '/api/playbook/match', '/api/playbook/correlations', '/api/playbook/remediate', '/api/playbook/remediation-logs', '/api/dependencies', '/api/dependencies/updates', '/api/remediation/policies', '/api/remediation/approve', '/api/remediation/reject', '/api/remediation/retry', '/api/alerting/channels', '/api/alerting/rules', '/api/alerting/log', '/api/alerting/escalation', '/api/notifications/channels', '/api/notifications/send', '/api/notifications/deliver', '/api/x/auth', '/api/x/callback', '/api/x/status', '/api/x/refresh', '/api/x/schedule', '/api/x/schedule-thread', '/api/x/post', '/api/x/posts', '/api/leads', '/api/health', '/api/health/durability-check', '/api/monitors', '/api/incidents', '/api/dependency-health', '/api/activity', '/api/webhooks/clerk', '/api/teams', '/api/teams/:id', '/api/teams/:id/members', '/api/teams/:id/members/:userId', '/api/teams/:id/workspace', '/api/teams/:id/invitations', '/api/invitations/:token', '/api/invitations/:token/accept', '/api/onboarding/start', '/api/onboarding/:sessionId/status', '/api/onboarding/:sessionId/step', '/api/onboarding/:sessionId/complete', '/api/playbooks/custom', '/api/playbooks/custom/:id', '/api/playbooks/custom/:id/publish', '/api/playbooks/custom/:id/nodes', '/api/playbooks/custom/:id/versions', '/api/playbooks/custom/:id/versions/:versionId', '/api/reports/incident-trends', '/api/reports/uptime-stats', '/api/reports/playbook-effectiveness', '/api/reports/team-summary', '/api/performance/latency', '/api/alerting/escalation', '/api/alerting/self-monitor'] }));
     } catch (err: any) {
       res.writeHead(500);
       res.end(JSON.stringify({ error: err.message }));
