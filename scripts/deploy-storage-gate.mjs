@@ -314,6 +314,20 @@ async function readMarkerBack(origin, marker, boundSec) {
           ],
         };
       }
+      // A permission refusal is permanent for the build that is serving: the
+      // probe is not public there, so polling cannot turn it into an answer.
+      // Carrying it to the deadline would report the wrong cause - that the
+      // acknowledged write is not durable - when the real fact is that this
+      // build does not publish a public probe at all.
+      if (response.status === 401 || response.status === 403) {
+        return {
+          failures: [
+            `the durable-check probe is refused (GET /api/health/durability-check answered HTTP ${response.status}) - the ` +
+            `probe is not public on the build that is serving, so the build that serves it is not the release build. ` +
+            `${FIX_FORWARD}`
+          ],
+        };
+      }
       const text = await response.text();
       let body = null;
       try {
