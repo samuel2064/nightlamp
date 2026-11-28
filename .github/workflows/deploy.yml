@@ -65,21 +65,36 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     environment: production
+    # The deploy is waited on inside this job, so the job needs a budget longer
+    # than the script's own wait budget (8400s = 140min, which is past Render's
+    # 120min build timeout and its 15min start timeout).
+    timeout-minutes: 150
+    outputs:
+      deploy_id: ${{ steps.render_deploy.outputs.deploy_id }}
+      deploy_commit: ${{ steps.render_deploy.outputs.deploy_commit }}
+      deploy_status: ${{ steps.render_deploy.outputs.deploy_status }}
     env:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       SERVICE_ID: ${{ secrets.RENDER_BACKEND_SERVICE_ID }}
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
       - name: Validate Render configuration
         run: |
           test -n "$RENDER_API_KEY" || { echo "::error::RENDER_API_KEY secret is missing or empty"; exit 1; }
           [[ "$SERVICE_ID" =~ ^srv-[a-z0-9]+$ ]] || { echo "::error::RENDER_BACKEND_SERVICE_ID is missing or malformed"; exit 1; }
-      - name: Trigger Render backend deploy
+      - name: Trigger Render backend deploy for the pushed commit and wait for it to go live
+        id: render_deploy
         run: |
-          curl -fsS -X POST \
-            "https://api.render.com/v1/services/$SERVICE_ID/deploys" \
-            -H "Authorization: Bearer $RENDER_API_KEY" \
-            -H "Content-Type: application/json" \
-            -d '{}'
+          # The deploy is pinned to the pushed commit and waited on until it is
+          # live, so the smoke job that follows probes the build this run
+          # shipped instead of whatever happens to be serving.
+          node scripts/render-deploy.mjs \
+            --service-id "$SERVICE_ID" \
+            --commit "$GITHUB_SHA" \
+            --timeout-sec "${RENDER_DEPLOY_TIMEOUT_SEC:-8400}"
 
   deploy-frontend:
     name: Deploy frontend service
@@ -112,8 +127,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Wait for deployment to stabilize
-        run: sleep 60
       - name: Check backend health
         run: |
           for i in $(seq 1 6); do
@@ -263,6 +276,7 @@ jobs:
       DEPLOY_BACKEND_RESULT: ${{ needs['deploy-backend'].result }}
       DEPLOY_FRONTEND_RESULT: ${{ needs['deploy-frontend'].result }}
       SMOKE_RESULT: ${{ needs.smoke.result }}
+      DEPLOY_ID: ${{ needs['deploy-backend'].outputs.deploy_id }}
       WEBHOOK: ${{ secrets.DEPLOY_WEBHOOK_URL }}
     steps:
       - name: Determine failed job
@@ -281,4 +295,4 @@ jobs:
           FAILED_JOB="${{ steps.failed-job.outputs.failed_job }}"
           curl -fsS -X POST "$WEBHOOK" \
             -H "Content-Type: application/json" \
-            -d '{"text":"Nightlamp DEPLOYMENT FAILURE on main","attachments":[{"color":"danger","fields":[{"title":"Failed Job","value":"'"$FAILED_JOB"'"},{"title":"Commit","value":"'"${{ github.sha }}"'"},{"title":"Workflow","value":"'"${{ github.workflow }}"'"},{"title":"Run URL","value":"'"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"'"}]}]}'
+            -d '{"text":"Nightlamp DEPLOYMENT FAILURE on main","attachments":[{"color":"danger","fields":[{"title":"Failed Job","value":"'"$FAILED_JOB"'"},{"title":"Commit","value":"'"${{ github.sha }}"'"},{"title":"Deploy","value":"'"${DEPLOY_ID:-unknown}"'"},{"title":"Workflow","value":"'"${{ github.workflow }}"'"},{"title":"Run URL","value":"'"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"'"}]}]}'
