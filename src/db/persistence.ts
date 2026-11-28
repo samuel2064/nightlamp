@@ -1,3 +1,5 @@
+import { createHash } from 'crypto';
+import * as fs from 'fs';
 import { Database as SqlJsDatabase } from 'sql.js';
 import { saveDatabase } from './schema';
 
@@ -23,6 +25,27 @@ export function getPersistIntervalSeconds(): number {
 export interface PersistenceStatus {
   persistIntervalSeconds: number;
   lastPersistedAt: string | null;
+  /**
+   * sha256 of the durable file's bytes, read back from the file itself after
+   * the last flush that derived it (NOC-427). It describes the file the writer
+   * produced rather than the image the writer held, so a deploy gate running on
+   * a machine that cannot reach the mount can still verify that an
+   * acknowledged write reached the file.
+   */
+  lastPersistedImageDigest: string | null;
+  /** Byte length of the file the digest above describes. */
+  lastPersistedImageBytes: number | null;
+}
+
+export interface FlushOptions {
+  /**
+   * Read the durable file back and derive `lastPersistedImageDigest` /
+   * `lastPersistedImageBytes` from its bytes. The acknowledgement gate asks for
+   * it so every acknowledged write publishes the file-derived fact that proves
+   * it landed; the timer and the boot flush leave it alone so the idle path
+   * stays a single write.
+   */
+  deriveFileFact?: boolean;
 }
 
 export interface PersistenceController {
@@ -34,7 +57,7 @@ export interface PersistenceController {
    * sent when the write is in the file, so a flush that could not complete the
    * atomic write must be observable by the caller instead of swallowed.
    */
-  flush(): boolean;
+  flush(options?: FlushOptions): boolean;
   getStatus(): PersistenceStatus;
 }
 
@@ -64,17 +87,32 @@ export function getPersistenceControllerForDatabase(db: SqlJsDatabase): Persiste
  * retained unchanged (the issue's contract keeps the bounded background
  * flush): a mutating request is therefore written once before its
  * acknowledgement and again by the timer.
+ *
+ * The acknowledgement flush also derives the file-derived digest (`A1` in the
+ * plan's section 2u): the bytes are read back from the file and hashed, so a
+ * gate that cannot reach the mount can still tell an acknowledged write apart
+ * from an idle rewrite that produced a byte-identical image.
  */
 
 export function createPersistenceController(db: SqlJsDatabase, dbPath: string): PersistenceController {
   const intervalSeconds = getPersistIntervalSeconds();
   let timer: NodeJS.Timeout | null = null;
   let lastPersistedAt: string | null = null;
+  let lastPersistedImageDigest: string | null = null;
+  let lastPersistedImageBytes: number | null = null;
 
-  function flush(): boolean {
+  function flush(options: FlushOptions = {}): boolean {
     try {
       saveDatabase(db, dbPath);
       lastPersistedAt = new Date().toISOString();
+      if (options.deriveFileFact) {
+        // Describe the bytes that landed in the file, not the bytes the writer
+        // meant to write: a flush that reports success but leaves the file
+        // unchanged must not be able to answer the gate's question.
+        const written = fs.readFileSync(dbPath);
+        lastPersistedImageDigest = createHash('sha256').update(written).digest('hex');
+        lastPersistedImageBytes = written.length;
+      }
       return true;
     } catch (err: any) {
       // The error is reported, never swallowed into a success: the caller turns
@@ -101,7 +139,12 @@ export function createPersistenceController(db: SqlJsDatabase, dbPath: string): 
     },
     flush,
     getStatus() {
-      return { persistIntervalSeconds: intervalSeconds, lastPersistedAt };
+      return {
+        persistIntervalSeconds: intervalSeconds,
+        lastPersistedAt,
+        lastPersistedImageDigest,
+        lastPersistedImageBytes,
+      };
     },
   };
 

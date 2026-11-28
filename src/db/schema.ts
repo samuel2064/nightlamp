@@ -1,4 +1,5 @@
 import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
+import { randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { runMigrations } from './migrations/runner';
@@ -596,6 +597,23 @@ export async function createDatabase(dbPath?: string): Promise<SqlJsDatabase> {
   return db;
 }
 
+/**
+ * NOC-427: a save writes the whole image, and the acknowledgement gate turns a
+ * failed flush into a refused acknowledgement, so the temp file's name has to be
+ * unique per write rather than per millisecond. It is opened with `wx`
+ * (exclusive): two flushes of the same process inside one millisecond used to
+ * collide with EEXIST and refuse an acknowledgement for an image that would have
+ * persisted. The name therefore carries this process's random salt and a
+ * monotone counter in addition to the pid and the millisecond.
+ */
+let saveTempCounter = 0;
+const saveProcessSalt = randomBytes(8).toString('hex');
+
+function saveTempPath(dbPath: string): string {
+  saveTempCounter += 1;
+  return `${dbPath}.${process.pid}.${Date.now()}.${saveProcessSalt}.${saveTempCounter}.tmp`;
+}
+
 export function saveDatabase(db: SqlJsDatabase, dbPath: string): void {
   const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) {
@@ -603,7 +621,7 @@ export function saveDatabase(db: SqlJsDatabase, dbPath: string): void {
   }
 
   const buffer = Buffer.from(db.export());
-  const tempPath = `${dbPath}.${process.pid}.${Date.now()}.tmp`;
+  const tempPath = saveTempPath(dbPath);
   let fileDescriptor: number | null = null;
 
   try {

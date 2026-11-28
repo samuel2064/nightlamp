@@ -152,7 +152,7 @@ function resolveFlushBeforeAck(db: Database, override?: () => boolean): (() => b
   if (override) return override;
   const controller = getPersistenceControllerForDatabase(db);
   if (!controller) return undefined;
-  return () => controller.flush();
+  return () => controller.flush({ deriveFileFact: true });
 }
 
 /**
@@ -160,23 +160,30 @@ function resolveFlushBeforeAck(db: Database, override?: () => boolean): (() => b
  * dispatcher and before routing, so a route that emits its head from another
  * module (`/api/realtime` writes it in `src/api/sse.ts`) is still covered.
  *
- * Both the head and the body are acknowledgement points: `res.writeHead(2xx)`
- * is a streaming response's acknowledgement and `res.end(body)` is the ordinary
- * one. The first one that commits a status decides the request - a request that
- * acknowledged no mutation has nothing to flush, and a non-2xx answer is not an
- * acknowledgement of a write even when the request mutated the image on its way
- * to the refusal. On a flush failure the gate writes the 500 itself and
- * suppresses the route's own writes - `writeHead`, `write` and `end` - so a
- * client never sees a success body for a write that is not in the file, and a
- * route that keeps writing to the refused response (the SSE frames) cannot take
- * the process down with `ERR_STREAM_WRITE_AFTER_END`.
+ * Every way a response can put a success status on the wire is an
+ * acknowledgement point: `res.writeHead(2xx)`, `res.flushHeaders()`, the first
+ * `res.write()` (in Node a write with no preceding head sends the 200 head with
+ * the first chunk) and `res.end(body)`. The first one that reaches the wire
+ * decides the request - a request that acknowledged no mutation has nothing to
+ * flush, and a non-2xx answer is not an acknowledgement of a write even when the
+ * request mutated the image on its way to the refusal. On a flush failure the
+ * gate writes the 500 itself and suppresses the route's own writes, so a client
+ * never sees a success body for a write that is not in the file, and a route
+ * that keeps writing to the refused response (the SSE frames) cannot take the
+ * process down with `ERR_STREAM_WRITE_AFTER_END`.
+ *
+ * Exported for the acknowledgement-contract tests: the tree has no route that
+ * answers with an implicit head, so the contract's coverage of `write` and
+ * `flushHeaders` is measured on the gate itself rather than left to a route that
+ * would have to be invented to prove it.
  */
-function installAcknowledgementGate(
+export function installAcknowledgementGate(
   res: ServerResponse,
   mutationBaseline: number,
   flushBeforeAck: (() => boolean) | undefined,
 ): void {
   const delegatedWriteHead = res.writeHead.bind(res);
+  const delegatedFlushHeaders = res.flushHeaders.bind(res);
   const delegatedWrite = res.write.bind(res);
   const delegatedEnd = res.end.bind(res);
   // `committed` freezes the request's verdict, `acknowledged` records that the
@@ -219,7 +226,24 @@ function installAcknowledgementGate(
     return (delegatedWriteHead as any)(statusCode, ...rest);
   };
 
+  (res as any).flushHeaders = (...args: any[]): any => {
+    if (refused) return res;
+    if (!committed) {
+      // `flushHeaders()` puts the head on the wire without a status of its own,
+      // so the route's status code is what the client is about to read.
+      commit(typeof res.statusCode === 'number' ? res.statusCode : 200);
+    }
+    if (refused) return res;
+    return (delegatedFlushHeaders as any)(...args);
+  };
+
   (res as any).write = (...args: any[]): any => {
+    if (refused) return true;
+    if (!committed) {
+      // A write with no preceding head sends the 200 head with the first chunk,
+      // so this is the acknowledgement point on the implicit-head path.
+      commit(200);
+    }
     if (refused) return true;
     return (delegatedWrite as any)(...args);
   };
@@ -2063,6 +2087,13 @@ let sql: string;
         // writes, the declared persistent mount, and the product's own on-mount
         // decision. Read at request time through the connection helpers so the
         // published facts never disagree with the boot decisions.
+        //
+        // `persistence.lastPersistedImageDigest` / `lastPersistedImageBytes`
+        // (NOC-427) describe the durable file's own bytes after the last
+        // acknowledged write, so the deploy gate can verify a real acknowledged
+        // write - write a marker through the acknowledged path, then observe the
+        // file-derived fact change - instead of inferring durability from an
+        // idle timer rewriting a byte-identical image.
         const configuredStorageMode = getDatabaseConfig().mode;
         const storagePath = getSqliteDatabasePath();
         const persistentMountPath = getPersistentMountPath();
@@ -2081,9 +2112,17 @@ let sql: string;
             ? {
                 persistIntervalSeconds: persistenceStatus.persistIntervalSeconds,
                 lastPersistedAt: persistenceStatus.lastPersistedAt,
+                lastPersistedImageDigest: persistenceStatus.lastPersistedImageDigest,
+                lastPersistedImageBytes: persistenceStatus.lastPersistedImageBytes,
                 storageOnPersistentMount,
               }
-            : { persistIntervalSeconds: null, lastPersistedAt: null, storageOnPersistentMount },
+            : {
+                persistIntervalSeconds: null,
+                lastPersistedAt: null,
+                lastPersistedImageDigest: null,
+                lastPersistedImageBytes: null,
+                storageOnPersistentMount,
+              },
           stats: {
             checks: checkCount[0]?.values[0]?.[0] || 0,
             failureEvents: eventCount[0]?.values[0]?.[0] || 0,
