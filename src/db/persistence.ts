@@ -28,31 +28,63 @@ export interface PersistenceStatus {
 export interface PersistenceController {
   start(): void;
   stop(): void;
-  flush(): void;
+  /**
+   * Writes the whole image to the file and reports whether it landed. The
+   * boolean is the strict contract (NOC-427): an acknowledgement may only be
+   * sent when the write is in the file, so a flush that could not complete the
+   * atomic write must be observable by the caller instead of swallowed.
+   */
+  flush(): boolean;
   getStatus(): PersistenceStatus;
+}
+
+/**
+ * Controllers this process created, keyed by the database instance they write.
+ * The API layer resolves the flush from the `db` it was started with, so the
+ * acknowledgement gate is bound to the image the request actually mutated and no
+ * wiring crosses `src/index.ts`.
+ */
+const controllersByDatabase = new WeakMap<SqlJsDatabase, PersistenceController>();
+
+export function getPersistenceControllerForDatabase(db: SqlJsDatabase): PersistenceController | null {
+  return controllersByDatabase.get(db) ?? null;
 }
 
 /**
  * Bounded writer for the sql.js image. A repeating timer persists the whole
  * image with the existing atomic temp-file + rename write in `saveDatabase`, so
- * an acknowledged write reaches the file within `persistIntervalSeconds`.
- * `flush()` is the same write and is what the signal handlers call before exit.
+ * a write that belongs to no request (the health-check cron, the notification
+ * and remediation engines) still reaches `DB_PATH` within
+ * `persistIntervalSeconds`. `flush()` is the same write and is what the signal
+ * handlers, the boot and the NOC-427 acknowledgement gate call.
+ *
+ * Under the strict criterion (NOC-427) `flush()` additionally runs **before**
+ * the acknowledgement of a mutating request and reports whether the image
+ * landed, so an HTTP 2xx means the write is in the file. The interval timer is
+ * retained unchanged (the issue's contract keeps the bounded background
+ * flush): a mutating request is therefore written once before its
+ * acknowledgement and again by the timer.
  */
+
 export function createPersistenceController(db: SqlJsDatabase, dbPath: string): PersistenceController {
   const intervalSeconds = getPersistIntervalSeconds();
   let timer: NodeJS.Timeout | null = null;
   let lastPersistedAt: string | null = null;
 
-  function flush(): void {
+  function flush(): boolean {
     try {
       saveDatabase(db, dbPath);
       lastPersistedAt = new Date().toISOString();
+      return true;
     } catch (err: any) {
+      // The error is reported, never swallowed into a success: the caller turns
+      // a failed flush into a failed acknowledgement (NOC-427).
       console.error(`[Nightlamp] Failed to persist the database image to ${dbPath}: ${err.message}`);
+      return false;
     }
   }
 
-  return {
+  const controller: PersistenceController = {
     start() {
       if (timer) return;
       // Persist the boot image first so the file exists before the API answers,
@@ -72,4 +104,7 @@ export function createPersistenceController(db: SqlJsDatabase, dbPath: string): 
       return { persistIntervalSeconds: intervalSeconds, lastPersistedAt };
     },
   };
+
+  controllersByDatabase.set(db, controller);
+  return controller;
 }

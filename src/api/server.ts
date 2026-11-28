@@ -38,6 +38,7 @@ import { appRouter, createTRPCContextFromNodeRequest } from './trpc';
 import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership, authenticateRequestAsync, requireRole, extractBearerToken } from './auth';
 import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant, rowBelongsToScope, scopedTenantFilter, requireChannelOwnership } from './tenant';
 import { getBootId, describeActiveStorageMode, getDatabaseConfig, getSqliteDatabasePath, isPathOnPersistentMount, getPersistentMountPath, type PersistenceStatus } from '../db';
+import { getPersistenceControllerForDatabase } from '../db/persistence';
 
 export interface ApiConfig {
   port: number;
@@ -63,6 +64,19 @@ export interface ApiConfig {
    * Absent when the process runs the API without a persistence controller.
    */
   getPersistenceStatus?: () => PersistenceStatus | undefined;
+  /**
+   * Strict durability (NOC-427) - an **override** of the flush the
+   * acknowledgement gate calls before it lets a mutating request answer. It
+   * writes the database image to the file and reports whether it landed, so an
+   * HTTP 2xx means the write is in the file. When it answers false the
+   * acknowledgement is refused with HTTP 500 `PERSISTENCE_FAILED` - an
+   * acknowledged write that is not in the file is the failure this route
+   * exists to prevent. Left unset in production: the gate then resolves the
+   * controller this process created for the `db` it was started with
+   * (`getPersistenceControllerForDatabase`), and when there is none the
+   * acknowledgement is left as it was.
+   */
+  flushBeforeAck?: () => boolean;
 }
 
 interface EndpointRule {
@@ -105,6 +119,120 @@ const ADMIN_ENDPOINTS: EndpointRule[] = [
 function normalizePath(path: string): string {
   const normalized = path.replace(/\/+$/, '');
   return normalized || '/';
+}
+
+/**
+ * NOC-427: monotone count of every mutation executed against the shared sql.js
+ * image. The API layer writes with `db.run` (all 97 measured request-serving
+ * mutation sites, including the `PRAGMA` session-state toggles and the
+ * variable-SQL updates) and reads with `db.exec`, so one observation point
+ * covers the whole acknowledged surface - helper modules whose acknowledgement
+ * is emitted by the caller included - without a per-route list.
+ */
+let imageMutationCount = 0;
+const instrumentedDatabases = new WeakSet<object>();
+
+function instrumentImageMutations(db: Database): void {
+  if (instrumentedDatabases.has(db)) return;
+  instrumentedDatabases.add(db);
+  const delegated = db.run.bind(db);
+  (db as any).run = (...args: any[]): any => {
+    imageMutationCount += 1;
+    return (delegated as any)(...args);
+  };
+}
+
+/**
+ * NOC-427: the flush the acknowledgement gate calls. The controller this
+ * process created for `db` is preferred so the gate needs no wiring in
+ * `src/index.ts`; an explicit `flushBeforeAck` override still wins (tests use
+ * it), and a process with no controller leaves every acknowledgement as it was.
+ */
+function resolveFlushBeforeAck(db: Database, override?: () => boolean): (() => boolean) | undefined {
+  if (override) return override;
+  const controller = getPersistenceControllerForDatabase(db);
+  if (!controller) return undefined;
+  return () => controller.flush();
+}
+
+/**
+ * NOC-427: installs the acknowledgement gate on one response, in the shared
+ * dispatcher and before routing, so a route that emits its head from another
+ * module (`/api/realtime` writes it in `src/api/sse.ts`) is still covered.
+ *
+ * Both the head and the body are acknowledgement points: `res.writeHead(2xx)`
+ * is a streaming response's acknowledgement and `res.end(body)` is the ordinary
+ * one. The first one that commits a status decides the request - a request that
+ * acknowledged no mutation has nothing to flush, and a non-2xx answer is not an
+ * acknowledgement of a write even when the request mutated the image on its way
+ * to the refusal. On a flush failure the gate writes the 500 itself and
+ * suppresses the route's own writes - `writeHead`, `write` and `end` - so a
+ * client never sees a success body for a write that is not in the file, and a
+ * route that keeps writing to the refused response (the SSE frames) cannot take
+ * the process down with `ERR_STREAM_WRITE_AFTER_END`.
+ */
+function installAcknowledgementGate(
+  res: ServerResponse,
+  mutationBaseline: number,
+  flushBeforeAck: (() => boolean) | undefined,
+): void {
+  const delegatedWriteHead = res.writeHead.bind(res);
+  const delegatedWrite = res.write.bind(res);
+  const delegatedEnd = res.end.bind(res);
+  // `committed` freezes the request's verdict, `acknowledged` records that the
+  // committed status was a success, and `refused` marks a refusal already sent.
+  let committed = false;
+  let acknowledged = false;
+  let refused = false;
+
+  const refuseAcknowledgement = (): void => {
+    refused = true;
+    try {
+      delegatedWriteHead(500, { 'Content-Type': 'application/json' });
+    } catch {
+      // The head was already committed by the route before the flush ran.
+    }
+    try {
+      delegatedEnd(JSON.stringify({ error: 'persistence failed', code: 'PERSISTENCE_FAILED' }));
+    } catch {
+      // The body was already committed; the status is the refusal.
+    }
+  };
+
+  const commit = (statusCode: number): void => {
+    if (committed) return;
+    committed = true;
+    if (imageMutationCount <= mutationBaseline) return;
+    if (statusCode < 200 || statusCode >= 300) return;
+    acknowledged = true;
+    if (!flushBeforeAck) return;
+    if (flushBeforeAck()) return;
+    refuseAcknowledgement();
+  };
+
+  (res as any).writeHead = (statusCode: any, ...rest: any[]): any => {
+    if (refused) return res;
+    if (!committed) {
+      commit(typeof statusCode === 'number' ? statusCode : 200);
+    }
+    if (refused) return res;
+    return (delegatedWriteHead as any)(statusCode, ...rest);
+  };
+
+  (res as any).write = (...args: any[]): any => {
+    if (refused) return true;
+    return (delegatedWrite as any)(...args);
+  };
+
+  (res as any).end = (...args: any[]): any => {
+    if (refused) return res;
+    if (!committed) {
+      // `res.end()` with no preceding head commits the default 200.
+      commit(200);
+    }
+    if (refused) return res;
+    return (delegatedEnd as any)(...args);
+  };
 }
 
 /**
@@ -244,6 +372,12 @@ function buildCheckResultsPayload(db: Database, params: URLSearchParams, teamId:
 }
 
 export function startApiServer(db: Database, config: ApiConfig): http.Server {
+  // NOC-427: one observation point for every mutation this server's handlers
+  // perform against the shared image, and the flush the acknowledgement gate
+  // resolves from the same `db` instance.
+  instrumentImageMutations(db);
+  const flushBeforeAck = resolveFlushBeforeAck(db, config.flushBeforeAck);
+
   const billingApi = config.stripeClient ? new BillingApi({
     db,
     stripeClient: config.stripeClient,
@@ -270,6 +404,10 @@ export function startApiServer(db: Database, config: ApiConfig): http.Server {
   const hotCache = new ApiCache(15_000);
   const server = http.createServer(async (req, res) => {
     const start = process.hrtime.bigint();
+    // NOC-427: the baseline is taken before any handler runs - authentication
+    // writes the identity row - so the gate observes every mutation this request
+    // performs, including the ones its helper modules perform for it.
+    installAcknowledgementGate(res, imageMutationCount, flushBeforeAck);
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Access-Control-Allow-Origin', '*');
 
