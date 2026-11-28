@@ -424,9 +424,16 @@ describe('NOC-434 the deploy workflow waits for the deploy before the storage ga
 
   it('has no blind sleep in the smoke job', () => {
     const job = extractJob(yaml, 'smoke');
+    // The blind wait was a step whose body is `run: sleep 60`, so the
+    // assertion looks for the sleep itself and not for a line that starts with
+    // it. A line-anchored pattern would pass on a workflow that still sleeps.
     assert.ok(
-      !/^\s*sleep\s+60\b/m.test(job),
+      !job.includes('sleep 60'),
       'the smoke job still sleeps blind before the gate runs'
+    );
+    assert.ok(
+      !job.includes('Wait for deployment to stabilize'),
+      'the smoke job still waits blind for the deployment to stabilize'
     );
   });
 
