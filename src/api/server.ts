@@ -39,6 +39,7 @@ import { ApiAuthError, AuthContext, TeamRole, assertTeamMembership, authenticate
 import { tenantFilter, tenantOwnedFilter, rowBelongsToTenant, rowBelongsToScope, scopedTenantFilter, requireChannelOwnership } from './tenant';
 import { getBootId, describeActiveStorageMode, getDatabaseConfig, getSqliteDatabasePath, isPathOnPersistentMount, getPersistentMountPath, type PersistenceStatus } from '../db';
 import { getPersistenceControllerForDatabase } from '../db/persistence';
+import { resolveMountIdentity, resolveBuildIdentity, type MountIdentity } from '../db/mount-identity';
 
 export interface ApiConfig {
   port: number;
@@ -2098,6 +2099,12 @@ let sql: string;
         const storagePath = getSqliteDatabasePath();
         const persistentMountPath = getPersistentMountPath();
         const storageOnPersistentMount = isPathOnPersistentMount(storagePath);
+        // The device identity of the same file (NOC-425). The path-prefix fact
+        // above is advisory for a directory the product creates itself, so the
+        // gate also reads the resolved mount point that carries the file's
+        // `major:minor`. This is a path check plus a device check, and it is
+        // `null` - never a pass - when `/proc/self/mountinfo` cannot be read.
+        const durableFile: MountIdentity = resolveMountIdentity(storagePath, persistentMountPath);
 
         const selfMonitor = {
           status: 'ok',
@@ -2108,6 +2115,7 @@ let sql: string;
           storagePath,
           persistentMountPath,
           bootId,
+          build: resolveBuildIdentity(),
           persistence: persistenceStatus
             ? {
                 persistIntervalSeconds: persistenceStatus.persistIntervalSeconds,
@@ -2115,13 +2123,15 @@ let sql: string;
                 lastPersistedImageDigest: persistenceStatus.lastPersistedImageDigest,
                 lastPersistedImageBytes: persistenceStatus.lastPersistedImageBytes,
                 storageOnPersistentMount,
+                durableFile: storageMode === 'sqlite' ? durableFile : null,
               }
             : {
                 persistIntervalSeconds: null,
                 lastPersistedAt: null,
-                lastPersistedImageDigest: null,
+lastPersistedImageDigest: null,
                 lastPersistedImageBytes: null,
                 storageOnPersistentMount,
+                durableFile: storageMode === 'sqlite' ? durableFile : null,
               },
           stats: {
             checks: checkCount[0]?.values[0]?.[0] || 0,
