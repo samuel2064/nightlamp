@@ -18,11 +18,12 @@ interface ControlledHealth {
   [key: string]: unknown;
 }
 
-type DurableCheckMode = 'present' | 'absent' | 'missing' | 'not-file' | 'unreadable';
+type DurableCheckMode = 'present' | 'absent' | 'missing' | 'not-file' | 'unreadable' | 'refused';
 
 interface ProductServerOptions {
   durableCheck?: DurableCheckMode;
   leadWrite?: 'ok' | 'refused';
+  refusalStatus?: 401 | 403;
 }
 
 const MARKER_PATTERN = /^nl-dur-[0-9a-f]{32}@durability\.invalid$/;
@@ -139,6 +140,13 @@ function startHealthServer(
         if (durableCheck === 'unreadable') {
           res.writeHead(500, { 'Content-Type': 'application/json', Connection: 'close' });
           res.end(JSON.stringify({ error: 'durability check failed' }));
+          return;
+        }
+        if (durableCheck === 'refused') {
+          // The shape the product's own authorization gate answers with on a
+          // build that does not publish the probe as a public route.
+          res.writeHead(options.refusalStatus ?? 401, { 'Content-Type': 'application/json', Connection: 'close' });
+          res.end(JSON.stringify({ error: 'Authentication required', code: 'UNAUTHORIZED' }));
           return;
         }
         res.writeHead(200, { 'Content-Type': 'application/json', Connection: 'close' });
@@ -503,6 +511,64 @@ describe('NOC-425 deploy storage gate', () => {
       assert.ok(
         elapsedMs < 10000,
         `the gate must name the unreadable file instead of waiting out the deadline: ${elapsedMs}ms`
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('fails by name when the durable-check probe is refused with 401', async function () {
+    this.timeout(30000);
+    const server = await startHealthServer(durableHealth(), true, { durableCheck: 'refused', refusalStatus: 401 });
+    try {
+      const started = Date.now();
+      const result = await runGateAsync(['--url', server.url]);
+      const elapsedMs = Date.now() - started;
+      assert.strictEqual(result.code, 1, 'the gate must fail when the durable-check probe refuses an anonymous caller');
+      assert.ok(
+        result.stderr.includes('the durable-check probe is refused'),
+        `the failure must name the refusal: ${result.stderr}`
+      );
+      assert.ok(
+        result.stderr.includes('HTTP 401'),
+        `the failure must name the status it was refused with: ${result.stderr}`
+      );
+      assert.ok(
+        !result.stderr.includes('did not reach the durable file within'),
+        `the failure must not claim the acknowledged write was lost: ${result.stderr}`
+      );
+      assert.ok(
+        elapsedMs < 10000,
+        `the gate must name the refusal instead of waiting out the deadline: ${elapsedMs}ms`
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('fails by name when the durable-check probe is refused with 403', async function () {
+    this.timeout(30000);
+    const server = await startHealthServer(durableHealth(), true, { durableCheck: 'refused', refusalStatus: 403 });
+    try {
+      const started = Date.now();
+      const result = await runGateAsync(['--url', server.url]);
+      const elapsedMs = Date.now() - started;
+      assert.strictEqual(result.code, 1, 'the gate must fail when the durable-check probe refuses an anonymous caller');
+      assert.ok(
+        result.stderr.includes('the durable-check probe is refused'),
+        `the failure must name the refusal: ${result.stderr}`
+      );
+      assert.ok(
+        result.stderr.includes('HTTP 403'),
+        `the failure must name the status it was refused with: ${result.stderr}`
+      );
+      assert.ok(
+        !result.stderr.includes('did not reach the durable file within'),
+        `the failure must not claim the acknowledged write was lost: ${result.stderr}`
+      );
+      assert.ok(
+        elapsedMs < 10000,
+        `the gate must name the refusal instead of waiting out the deadline: ${elapsedMs}ms`
       );
     } finally {
       await server.close();
